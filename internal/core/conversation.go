@@ -10,11 +10,12 @@ const (
 )
 
 type ConversationTurn struct {
-	RunID     RunID
-	AgentID   AgentID
-	Role      ConversationRole
-	Content   string
-	CreatedAt time.Time
+	RunID            RunID
+	AgentID          AgentID
+	Role             ConversationRole
+	Content          string
+	ReasoningContent string
+	CreatedAt        time.Time
 }
 
 func NewConversationTurn(runID RunID, agentID AgentID, role ConversationRole, content string) ConversationTurn {

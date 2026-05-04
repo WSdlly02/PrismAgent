@@ -13,6 +13,8 @@ import (
 	"prismagent/internal/tool"
 )
 
+const maxToolCallIterations = 4
+
 type Store interface {
 	store.WorkspaceStore
 	store.RunStore
@@ -268,14 +270,7 @@ func (k *Kernel) RunMessage(ctx context.Context, req RunTurnRequest) (RunTurnRes
 		return RunTurnResult{}, err
 	}
 	messages := buildModelMessages(turns, bundle.Text)
-	response, err := k.model.Complete(ctx, model.Request{
-		Model:    "default",
-		Messages: messages,
-		Metadata: map[string]string{
-			"run_id":   req.RunID.String(),
-			"agent_id": agent.ID.String(),
-		},
-	})
+	response, err := k.completeWithToolLoop(ctx, req.RunID, agent.ID, messages)
 	if err != nil {
 		_ = k.store.Emit(ctx, core.NewEvent(core.EventRunFailed, req.RunID, "", map[string]string{
 			"error": err.Error(),
@@ -289,6 +284,7 @@ func (k *Kernel) RunMessage(ctx context.Context, req RunTurnRequest) (RunTurnRes
 	}
 
 	agentTurn := core.NewConversationTurn(req.RunID, agent.ID, core.ConversationAgent, response.Text)
+	agentTurn.ReasoningContent = response.ReasoningContent
 	if err := k.store.AppendConversationTurn(ctx, agentTurn); err != nil {
 		return RunTurnResult{}, err
 	}
@@ -452,8 +448,9 @@ func buildModelMessages(turns []core.ConversationTurn, localContext string) []mo
 			role = "assistant"
 		}
 		messages = append(messages, model.Message{
-			Role:    role,
-			Content: turn.Content,
+			Role:             role,
+			Content:          turn.Content,
+			ReasoningContent: turn.ReasoningContent,
 		})
 	}
 	if strings.TrimSpace(localContext) != "" {
@@ -463,4 +460,61 @@ func buildModelMessages(turns []core.ConversationTurn, localContext string) []mo
 		})
 	}
 	return messages
+}
+
+func (k *Kernel) completeWithToolLoop(ctx context.Context, runID core.RunID, agentID core.AgentID, messages []model.Message) (model.Response, error) {
+	tools := k.modelToolDefinitions()
+	for iteration := 0; iteration < maxToolCallIterations; iteration++ {
+		response, err := k.model.Complete(ctx, model.Request{
+			Model:    "default",
+			Messages: messages,
+			Tools:    tools,
+			Metadata: map[string]string{
+				"run_id":   runID.String(),
+				"agent_id": agentID.String(),
+			},
+		})
+		if err != nil {
+			return model.Response{}, err
+		}
+		if len(response.ToolCalls) == 0 {
+			return response, nil
+		}
+		messages = append(messages, model.Message{
+			Role:             "assistant",
+			Content:          response.Text,
+			ReasoningContent: response.ReasoningContent,
+			ToolCalls:        response.ToolCalls,
+		})
+		for _, call := range response.ToolCalls {
+			result, err := k.CallTool(ctx, ToolCallRequest{
+				RunID: runID,
+				Name:  call.Name,
+				Args:  call.Arguments,
+			})
+			content := result.RawOutput
+			if err != nil {
+				content = fmt.Sprintf("tool %s failed: %s", call.Name, err.Error())
+			}
+			messages = append(messages, model.Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				Content:    content,
+			})
+		}
+	}
+	return model.Response{}, fmt.Errorf("tool call iteration limit exceeded")
+}
+
+func (k *Kernel) modelToolDefinitions() []model.ToolDefinition {
+	definitions := k.tools.Definitions()
+	modelDefinitions := make([]model.ToolDefinition, 0, len(definitions))
+	for _, definition := range definitions {
+		modelDefinitions = append(modelDefinitions, model.ToolDefinition{
+			Name:        definition.Name,
+			Description: definition.Description,
+			Parameters:  definition.Parameters,
+		})
+	}
+	return modelDefinitions
 }

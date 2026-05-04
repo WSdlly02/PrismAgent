@@ -38,6 +38,27 @@ type listFilesTool struct{ fs FileSystemTools }
 
 func (t listFilesTool) Name() string { return ToolListFiles }
 
+func (t listFilesTool) Definition() Definition {
+	return Definition{
+		Name:        ToolListFiles,
+		Description: "List files in the workspace. Use this before reading files when you need to inspect project structure.",
+		Parameters: objectSchema(map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Workspace-relative path to list. Use . for workspace root.",
+			},
+			"recursive": map[string]any{
+				"type":        "string",
+				"description": "Whether to list recursively: true or false.",
+			},
+			"max_entries": map[string]any{
+				"type":        "string",
+				"description": "Maximum entries to return, as a decimal string.",
+			},
+		}, []string{"path", "recursive", "max_entries"}),
+	}
+}
+
 func (t listFilesTool) Call(_ context.Context, req Request) (Result, error) {
 	path, err := t.fs.resolve(req.Args["path"])
 	if err != nil {
@@ -121,6 +142,23 @@ type readFileTool struct{ fs FileSystemTools }
 
 func (t readFileTool) Name() string { return ToolReadFile }
 
+func (t readFileTool) Definition() Definition {
+	return Definition{
+		Name:        ToolReadFile,
+		Description: "Read a text file from the workspace.",
+		Parameters: objectSchema(map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Workspace-relative file path to read.",
+			},
+			"limit": map[string]any{
+				"type":        "string",
+				"description": "Maximum bytes to read, as a decimal string.",
+			},
+		}, []string{"path", "limit"}),
+	}
+}
+
 func (t readFileTool) Call(_ context.Context, req Request) (Result, error) {
 	path, err := t.fs.resolve(req.Args["path"])
 	if err != nil {
@@ -155,6 +193,27 @@ func (t readFileTool) Call(_ context.Context, req Request) (Result, error) {
 type replaceInFileTool struct{ fs FileSystemTools }
 
 func (t replaceInFileTool) Name() string { return ToolReplaceInFile }
+
+func (t replaceInFileTool) Definition() Definition {
+	return Definition{
+		Name:        ToolReplaceInFile,
+		Description: "Replace a unique text block in a workspace file. The old text must match exactly once.",
+		Parameters: objectSchema(map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Workspace-relative file path to modify.",
+			},
+			"old": map[string]any{
+				"type":        "string",
+				"description": "Exact old text to replace. Must occur exactly once.",
+			},
+			"new": map[string]any{
+				"type":        "string",
+				"description": "Replacement text.",
+			},
+		}, []string{"path", "old", "new"}),
+	}
+}
 
 func (t replaceInFileTool) Call(_ context.Context, req Request) (Result, error) {
 	path, err := t.fs.resolve(req.Args["path"])
@@ -198,6 +257,23 @@ func (t replaceInFileTool) Call(_ context.Context, req Request) (Result, error) 
 type writeFileCreateOnlyTool struct{ fs FileSystemTools }
 
 func (t writeFileCreateOnlyTool) Name() string { return ToolWriteFileCreateOnly }
+
+func (t writeFileCreateOnlyTool) Definition() Definition {
+	return Definition{
+		Name:        ToolWriteFileCreateOnly,
+		Description: "Create a new workspace file. Fails if the file already exists.",
+		Parameters: objectSchema(map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Workspace-relative file path to create.",
+			},
+			"content": map[string]any{
+				"type":        "string",
+				"description": "File content.",
+			},
+		}, []string{"path", "content"}),
+	}
+}
 
 func (t writeFileCreateOnlyTool) Call(_ context.Context, req Request) (Result, error) {
 	path, err := t.fs.resolve(req.Args["path"])
@@ -282,3 +358,12 @@ func sha256Hex(data []byte) string {
 }
 
 var errStopWalk = fmt.Errorf("stop walk")
+
+func objectSchema(properties map[string]any, required []string) map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"properties":           properties,
+		"required":             required,
+		"additionalProperties": false,
+	}
+}

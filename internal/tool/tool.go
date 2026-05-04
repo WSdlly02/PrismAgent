@@ -20,7 +20,14 @@ type Result struct {
 
 type Tool interface {
 	Name() string
+	Definition() Definition
 	Call(ctx context.Context, req Request) (Result, error)
+}
+
+type Definition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
 }
 
 type Registry struct {
@@ -56,4 +63,12 @@ func (r *Registry) Names() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func (r *Registry) Definitions() []Definition {
+	definitions := make([]Definition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		definitions = append(definitions, tool.Definition())
+	}
+	return definitions
 }
