@@ -39,6 +39,8 @@ type RunStore interface {
 	GetRun(ctx context.Context, id core.RunID) (core.Run, error)
 	UpdateRun(ctx context.Context, run core.Run) error
 	ListRuns(ctx context.Context) ([]core.Run, error)
+	SetCurrentRun(ctx context.Context, id core.RunID) error
+	GetCurrentRun(ctx context.Context) (core.RunID, error)
 }
 
 type AgentStore interface {

@@ -10,6 +10,7 @@ import (
 	"prismagent/internal/core"
 	"prismagent/internal/model"
 	"prismagent/internal/store"
+	"prismagent/internal/tool"
 )
 
 type Store interface {
@@ -29,6 +30,7 @@ type Kernel struct {
 	ids      IDGenerator
 	model    model.Client
 	contexts contextprovider.Provider
+	tools    *tool.Registry
 }
 
 type IDGenerator interface {
@@ -58,6 +60,7 @@ func New(store Store, ids IDGenerator) *Kernel {
 		ids:      ids,
 		model:    model.MockClient{},
 		contexts: contextprovider.NewLocalProvider("."),
+		tools:    tool.NewRegistry(),
 	}
 }
 
@@ -73,7 +76,56 @@ func NewWithServices(store Store, ids IDGenerator, modelClient model.Client, con
 		ids:      ids,
 		model:    modelClient,
 		contexts: contexts,
+		tools:    tool.NewRegistry(),
 	}
+}
+
+func (k *Kernel) RegisterTool(tool tool.Tool) {
+	k.tools.Register(tool)
+}
+
+func (k *Kernel) RegisterTools(tools ...tool.Tool) {
+	for _, item := range tools {
+		k.RegisterTool(item)
+	}
+}
+
+type ToolCallRequest struct {
+	RunID core.RunID
+	Name  string
+	Args  map[string]string
+}
+
+func (k *Kernel) CallTool(ctx context.Context, req ToolCallRequest) (tool.Result, error) {
+	if strings.TrimSpace(req.Name) == "" {
+		return tool.Result{}, fmt.Errorf("tool name is required")
+	}
+	if _, err := k.store.GetRun(ctx, req.RunID); err != nil {
+		return tool.Result{}, err
+	}
+	if err := k.store.Emit(ctx, core.NewEvent(core.EventToolRequested, req.RunID, "", map[string]string{
+		"tool": req.Name,
+	})); err != nil {
+		return tool.Result{}, err
+	}
+	result, err := k.tools.Call(ctx, tool.Request{
+		Name: req.Name,
+		Args: req.Args,
+	})
+	if err != nil {
+		_ = k.store.Emit(ctx, core.NewEvent(core.EventToolFailed, req.RunID, "", map[string]string{
+			"tool":  req.Name,
+			"error": err.Error(),
+		}))
+		return tool.Result{}, err
+	}
+	if err := k.store.Emit(ctx, core.NewEvent(core.EventToolCompleted, req.RunID, "", map[string]string{
+		"tool":    req.Name,
+		"summary": result.Summary,
+	})); err != nil {
+		return tool.Result{}, err
+	}
+	return result, nil
 }
 
 type NewRunRequest struct {
@@ -138,6 +190,9 @@ func (k *Kernel) NewRun(ctx context.Context, req NewRunRequest) (NewRunResult, e
 	})); err != nil {
 		return NewRunResult{}, err
 	}
+	if err := k.store.SetCurrentRun(ctx, run.ID); err != nil {
+		return NewRunResult{}, err
+	}
 
 	result := NewRunResult{
 		Workspace: workspace,
@@ -189,6 +244,10 @@ func (k *Kernel) RunMessage(ctx context.Context, req RunTurnRequest) (RunTurnRes
 	})); err != nil {
 		return RunTurnResult{}, err
 	}
+	turns, err := k.store.ListConversationTurns(ctx, req.RunID)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
 
 	bundle, err := k.contexts.Collect(ctx, message)
 	if err != nil {
@@ -208,18 +267,10 @@ func (k *Kernel) RunMessage(ctx context.Context, req RunTurnRequest) (RunTurnRes
 	})); err != nil {
 		return RunTurnResult{}, err
 	}
+	messages := buildModelMessages(turns, bundle.Text)
 	response, err := k.model.Complete(ctx, model.Request{
-		Model: "default",
-		Messages: []model.Message{
-			{
-				Role:    "system",
-				Content: "You are agent-0 in PrismAgent. Answer the user using the local workspace context. Be concise and explicit about uncertainty.",
-			},
-			{
-				Role:    "user",
-				Content: fmt.Sprintf("User message:\n%s\n\nLocal workspace context:\n%s", message, bundle.Text),
-			},
-		},
+		Model:    "default",
+		Messages: messages,
 		Metadata: map[string]string{
 			"run_id":   req.RunID.String(),
 			"agent_id": agent.ID.String(),
@@ -270,6 +321,13 @@ func (k *Kernel) ListRuns(ctx context.Context, workspaceRoot string) ([]core.Run
 	return k.store.ListRuns(ctx)
 }
 
+func (k *Kernel) CurrentRun(ctx context.Context, workspaceRoot string) (core.RunID, error) {
+	if _, err := k.ensureWorkspace(ctx, workspaceRoot); err != nil {
+		return "", err
+	}
+	return k.store.GetCurrentRun(ctx)
+}
+
 func (k *Kernel) ResumeRun(ctx context.Context, workspaceRoot string, runID core.RunID) (ResumeRunResult, error) {
 	if _, err := k.ensureWorkspace(ctx, workspaceRoot); err != nil {
 		return ResumeRunResult{}, err
@@ -289,6 +347,9 @@ func (k *Kernel) ResumeRun(ctx context.Context, workspaceRoot string, runID core
 	answer, err := k.store.ReadRunArtifact(ctx, runID, "answer.md")
 	if err != nil {
 		answer = ""
+	}
+	if err := k.store.SetCurrentRun(ctx, runID); err != nil {
+		return ResumeRunResult{}, err
 	}
 	if err := k.store.Emit(ctx, core.NewEvent(core.EventRunResumed, runID, "", nil)); err != nil {
 		return ResumeRunResult{}, err
@@ -376,4 +437,30 @@ func (k *Kernel) StartRun(ctx context.Context, req StartRunRequest) (StartRunRes
 		InitialObject: object,
 		Snapshot:      snapshot,
 	}, nil
+}
+
+func buildModelMessages(turns []core.ConversationTurn, localContext string) []model.Message {
+	messages := []model.Message{
+		{
+			Role:    "system",
+			Content: "You are agent-0 in PrismAgent. Answer the user using the current run conversation and local workspace context. Be concise and explicit about uncertainty.",
+		},
+	}
+	for _, turn := range turns {
+		role := "user"
+		if turn.Role == core.ConversationAgent {
+			role = "assistant"
+		}
+		messages = append(messages, model.Message{
+			Role:    role,
+			Content: turn.Content,
+		})
+	}
+	if strings.TrimSpace(localContext) != "" {
+		messages = append(messages, model.Message{
+			Role:    "user",
+			Content: fmt.Sprintf("Local workspace context for this turn:\n%s", localContext),
+		})
+	}
+	return messages
 }

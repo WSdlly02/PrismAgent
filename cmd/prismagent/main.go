@@ -11,6 +11,7 @@ import (
 	"prismagent/internal/filestore"
 	"prismagent/internal/kernel"
 	"prismagent/internal/model"
+	"prismagent/internal/tool"
 )
 
 func main() {
@@ -34,9 +35,10 @@ func dispatch(command string, args []string) error {
 	k := kernel.NewWithServices(
 		filestore.New(root),
 		kernel.NewClockIDGenerator(),
-		model.MockClient{},
+		modelClientFromEnv(),
 		contextprovider.NewLocalProvider(root),
 	)
+	k.RegisterTools(tool.NewFileSystemTools(root)...)
 
 	switch command {
 	case "list":
@@ -44,10 +46,18 @@ func dispatch(command string, args []string) error {
 	case "new":
 		return newRun(ctx, k, root, strings.Join(args, " "))
 	case "run":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: prismagent run <run_id> <message>")
+		runID, message, err := parseRunArgs(args)
+		if err != nil {
+			return err
 		}
-		return runMessage(ctx, k, root, core.RunID(args[0]), strings.Join(args[1:], " "))
+		if runID == "" {
+			currentRunID, err := k.CurrentRun(ctx, root)
+			if err != nil {
+				return fmt.Errorf("no current run; use prismagent new [message] or prismagent run --run <run_id> <message>")
+			}
+			runID = currentRunID
+		}
+		return runMessage(ctx, k, root, runID, message)
 	case "resume":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: prismagent resume <run_id>")
@@ -64,12 +74,17 @@ func listRuns(ctx context.Context, k *kernel.Kernel, root string) error {
 	if err != nil {
 		return err
 	}
+	currentRun, _ := k.CurrentRun(ctx, root)
 	if len(runs) == 0 {
 		fmt.Println("no runs")
 		return nil
 	}
 	for _, run := range runs {
-		fmt.Printf("%s\t%s\t%s\t%s\n", run.ID, run.Status, run.UpdatedAt.Format("2006-01-02 15:04:05"), run.Goal)
+		marker := " "
+		if run.ID == currentRun {
+			marker = "*"
+		}
+		fmt.Printf("%s %s\t%s\t%s\t%s\n", marker, run.ID, run.Status, run.UpdatedAt.Format("2006-01-02 15:04:05"), run.Goal)
 	}
 	return nil
 }
@@ -131,6 +146,37 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  prismagent list")
 	fmt.Fprintln(os.Stderr, "  prismagent new [message]")
-	fmt.Fprintln(os.Stderr, "  prismagent run <run_id> <message>")
+	fmt.Fprintln(os.Stderr, "  prismagent run [--run <run_id>] <message>")
 	fmt.Fprintln(os.Stderr, "  prismagent resume <run_id>")
+}
+
+func parseRunArgs(args []string) (core.RunID, string, error) {
+	if len(args) == 0 {
+		return "", "", fmt.Errorf("usage: prismagent run [--run <run_id>] <message>")
+	}
+	var runID core.RunID
+	if args[0] == "--run" {
+		if len(args) < 3 {
+			return "", "", fmt.Errorf("usage: prismagent run --run <run_id> <message>")
+		}
+		runID = core.RunID(args[1])
+		args = args[2:]
+	}
+	message := strings.TrimSpace(strings.Join(args, " "))
+	if message == "" {
+		return "", "", fmt.Errorf("message is required")
+	}
+	return runID, message, nil
+}
+
+func modelClientFromEnv() model.Client {
+	cfg, ok := model.DeepSeekConfigFromEnv()
+	if !ok {
+		return model.MockClient{}
+	}
+	client, err := model.NewDeepSeekClient(cfg)
+	if err != nil {
+		return model.MockClient{}
+	}
+	return client
 }

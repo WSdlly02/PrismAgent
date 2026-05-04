@@ -79,6 +79,30 @@ func TestStorePersistsAgentsConversationAndRunArtifacts(t *testing.T) {
 	}
 }
 
+func TestStorePersistsCurrentRunPointer(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := New(root)
+	runID := core.RunID("run-1")
+
+	if err := store.InitWorkspace(ctx, core.NewWorkspace("workspace-1", root)); err != nil {
+		t.Fatalf("init workspace: %v", err)
+	}
+	if err := store.CreateRun(ctx, core.NewRun(runID, "workspace-1", "test goal")); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if err := store.SetCurrentRun(ctx, runID); err != nil {
+		t.Fatalf("set current run: %v", err)
+	}
+	current, err := store.GetCurrentRun(ctx)
+	if err != nil {
+		t.Fatalf("get current run: %v", err)
+	}
+	if current != runID {
+		t.Fatalf("expected current run %s, got %s", runID, current)
+	}
+}
+
 func TestStorePersistsTasksContextEventsAndSnapshots(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

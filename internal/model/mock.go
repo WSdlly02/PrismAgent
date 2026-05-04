@@ -12,6 +12,9 @@ func (MockClient) Complete(_ context.Context, req Request) (Response, error) {
 	var user string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
+			if strings.HasPrefix(req.Messages[i].Content, "Local workspace context for this turn:\n") {
+				continue
+			}
 			user = req.Messages[i].Content
 			break
 		}

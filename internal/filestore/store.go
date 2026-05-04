@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"prismagent/internal/core"
@@ -116,6 +117,51 @@ func (s *Store) ListRuns(_ context.Context) ([]core.Run, error) {
 		runs = append(runs, run)
 	}
 	return runs, nil
+}
+
+func (s *Store) SetCurrentRun(_ context.Context, id core.RunID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := os.Stat(s.runFile(id, "run.json")); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("run not found: %s", id)
+	} else if err != nil {
+		return err
+	}
+
+	linkPath := s.currentRunPath()
+	if err := os.Remove(linkPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Symlink(id.String(), linkPath); err == nil {
+		return nil
+	}
+	return writeFileAtomic(linkPath, []byte(id.String()+"\n"))
+}
+
+func (s *Store) GetCurrentRun(_ context.Context) (core.RunID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	target, err := os.Readlink(s.currentRunPath())
+	if err == nil {
+		return core.RunID(filepath.Base(target)), nil
+	}
+	if !errors.Is(err, os.ErrInvalid) && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	data, readErr := os.ReadFile(s.currentRunPath())
+	if errors.Is(readErr, os.ErrNotExist) {
+		return "", fmt.Errorf("current run is not set")
+	}
+	if readErr != nil {
+		return "", readErr
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" {
+		return "", fmt.Errorf("current run is empty")
+	}
+	return core.RunID(id), nil
 }
 
 func (s *Store) WriteAgents(_ context.Context, runID core.RunID, agents []core.Agent) error {
@@ -462,6 +508,10 @@ func (s *Store) runDir(runID core.RunID) string {
 	return filepath.Join(s.stateRoot(), "runs", runID.String())
 }
 
+func (s *Store) currentRunPath() string {
+	return filepath.Join(s.stateRoot(), "runs", "current-run")
+}
+
 func (s *Store) runFile(runID core.RunID, name string) string {
 	return filepath.Join(s.runDir(runID), name)
 }
@@ -553,6 +603,9 @@ func (s *Store) listRunIDs() ([]core.RunID, error) {
 	}
 	runIDs := make([]core.RunID, 0, len(entries))
 	for _, entry := range entries {
+		if entry.Name() == "current-run" {
+			continue
+		}
 		if entry.IsDir() {
 			runIDs = append(runIDs, core.RunID(entry.Name()))
 		}
