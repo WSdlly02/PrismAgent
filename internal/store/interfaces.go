@@ -28,3 +28,30 @@ type SnapshotStore interface {
 type EventSink interface {
 	Emit(ctx context.Context, event core.Event) error
 }
+
+type WorkspaceStore interface {
+	InitWorkspace(ctx context.Context, workspace core.Workspace) error
+	GetWorkspace(ctx context.Context) (core.Workspace, error)
+}
+
+type RunStore interface {
+	CreateRun(ctx context.Context, run core.Run) error
+	GetRun(ctx context.Context, id core.RunID) (core.Run, error)
+	UpdateRun(ctx context.Context, run core.Run) error
+	ListRuns(ctx context.Context) ([]core.Run, error)
+}
+
+type AgentStore interface {
+	WriteAgents(ctx context.Context, runID core.RunID, agents []core.Agent) error
+	ListAgents(ctx context.Context, runID core.RunID) ([]core.Agent, error)
+}
+
+type ConversationStore interface {
+	AppendConversationTurn(ctx context.Context, turn core.ConversationTurn) error
+	ListConversationTurns(ctx context.Context, runID core.RunID) ([]core.ConversationTurn, error)
+}
+
+type RunArtifactStore interface {
+	WriteRunArtifact(ctx context.Context, runID core.RunID, name string, body string) error
+	ReadRunArtifact(ctx context.Context, runID core.RunID, name string) (string, error)
+}

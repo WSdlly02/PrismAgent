@@ -32,6 +32,53 @@ func TestStoreInitializesWorkspaceAndRun(t *testing.T) {
 	assertFileExists(t, filepath.Join(root, ".prismagent", "runs", "run-1", "conversations"))
 }
 
+func TestStorePersistsAgentsConversationAndRunArtifacts(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := New(root)
+	runID := core.RunID("run-1")
+
+	if err := store.InitWorkspace(ctx, core.NewWorkspace("workspace-1", root)); err != nil {
+		t.Fatalf("init workspace: %v", err)
+	}
+	if err := store.CreateRun(ctx, core.NewRun(runID, "workspace-1", "test goal")); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	agent := core.NewRootAgent(runID)
+	if err := store.WriteAgents(ctx, runID, []core.Agent{agent}); err != nil {
+		t.Fatalf("write agents: %v", err)
+	}
+	if err := store.AppendConversationTurn(ctx, core.NewConversationTurn(runID, agent.ID, core.ConversationUser, "hello")); err != nil {
+		t.Fatalf("append conversation: %v", err)
+	}
+	if err := store.WriteRunArtifact(ctx, runID, "answer.md", "world"); err != nil {
+		t.Fatalf("write run artifact: %v", err)
+	}
+
+	agents, err := store.ListAgents(ctx, runID)
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].ID != agent.ID {
+		t.Fatalf("unexpected agents: %#v", agents)
+	}
+	turns, err := store.ListConversationTurns(ctx, runID)
+	if err != nil {
+		t.Fatalf("list conversation: %v", err)
+	}
+	if len(turns) != 1 || turns[0].Content != "hello" {
+		t.Fatalf("unexpected turns: %#v", turns)
+	}
+	answer, err := store.ReadRunArtifact(ctx, runID, "answer.md")
+	if err != nil {
+		t.Fatalf("read run artifact: %v", err)
+	}
+	if answer != "world" {
+		t.Fatalf("unexpected answer: %q", answer)
+	}
+}
+
 func TestStorePersistsTasksContextEventsAndSnapshots(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

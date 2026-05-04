@@ -49,6 +49,20 @@ func (s *Store) InitWorkspace(_ context.Context, workspace core.Workspace) error
 	return nil
 }
 
+func (s *Store) GetWorkspace(_ context.Context) (core.Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var workspace core.Workspace
+	if err := readJSON(filepath.Join(s.stateRoot(), "workspace.json"), &workspace); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return core.Workspace{}, fmt.Errorf("workspace not found")
+		}
+		return core.Workspace{}, err
+	}
+	return workspace, nil
+}
+
 func (s *Store) CreateRun(_ context.Context, run core.Run) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -57,6 +71,146 @@ func (s *Store) CreateRun(_ context.Context, run core.Run) error {
 		return err
 	}
 	return writeJSON(s.runFile(run.ID, "run.json"), run)
+}
+
+func (s *Store) GetRun(_ context.Context, id core.RunID) (core.Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var run core.Run
+	if err := readJSON(s.runFile(id, "run.json"), &run); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return core.Run{}, fmt.Errorf("run not found: %s", id)
+		}
+		return core.Run{}, err
+	}
+	return run, nil
+}
+
+func (s *Store) UpdateRun(_ context.Context, run core.Run) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, err := os.Stat(s.runFile(run.ID, "run.json")); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("run not found: %s", run.ID)
+	} else if err != nil {
+		return err
+	}
+	return writeJSON(s.runFile(run.ID, "run.json"), run)
+}
+
+func (s *Store) ListRuns(_ context.Context) ([]core.Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	runIDs, err := s.listRunIDs()
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]core.Run, 0, len(runIDs))
+	for _, runID := range runIDs {
+		var run core.Run
+		if err := readJSON(s.runFile(runID, "run.json"), &run); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+func (s *Store) WriteAgents(_ context.Context, runID core.RunID, agents []core.Agent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureRunDirs(runID); err != nil {
+		return err
+	}
+	return writeJSON(s.runFile(runID, "agents.json"), agents)
+}
+
+func (s *Store) ListAgents(_ context.Context, runID core.RunID) ([]core.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var agents []core.Agent
+	if err := readJSON(s.runFile(runID, "agents.json"), &agents); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return agents, nil
+}
+
+func (s *Store) AppendConversationTurn(_ context.Context, turn core.ConversationTurn) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureRunDirs(turn.RunID); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(s.runFile(turn.RunID, "conversation.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoded, err := json.Marshal(turn)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(append(encoded, '\n')); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ListConversationTurns(_ context.Context, runID core.RunID) ([]core.ConversationTurn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	file, err := os.Open(s.runFile(runID, "conversation.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	turns := make([]core.ConversationTurn, 0)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var turn core.ConversationTurn
+		if err := json.Unmarshal(scanner.Bytes(), &turn); err != nil {
+			return nil, err
+		}
+		turns = append(turns, turn)
+	}
+	return turns, scanner.Err()
+}
+
+func (s *Store) WriteRunArtifact(_ context.Context, runID core.RunID, name string, body string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureRunDirs(runID); err != nil {
+		return err
+	}
+	return writeFileAtomic(s.runFile(runID, name), []byte(body))
+}
+
+func (s *Store) ReadRunArtifact(_ context.Context, runID core.RunID, name string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := os.ReadFile(s.runFile(runID, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("run artifact not found: %s/%s", runID, name)
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func (s *Store) CreateTask(_ context.Context, task core.Task) error {

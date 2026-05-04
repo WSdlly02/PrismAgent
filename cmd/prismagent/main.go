@@ -6,8 +6,11 @@ import (
 	"os"
 	"strings"
 
+	"prismagent/internal/contextprovider"
 	"prismagent/internal/core"
-	"prismagent/internal/memory"
+	"prismagent/internal/filestore"
+	"prismagent/internal/kernel"
+	"prismagent/internal/model"
 )
 
 func main() {
@@ -16,55 +19,118 @@ func main() {
 		os.Exit(2)
 	}
 
-	switch os.Args[1] {
-	case "run":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "missing goal")
-			os.Exit(2)
-		}
-		if err := run(strings.Join(os.Args[2:], " ")); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	default:
-		printUsage()
-		os.Exit(2)
+	if err := dispatch(os.Args[1], os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
 
-func run(goal string) error {
+func dispatch(command string, args []string) error {
 	ctx := context.Background()
-	runtime := memory.NewRuntime()
-	runID := core.RunID("run-local")
-	task := core.NewTask("task-root", runID, goal)
+	root, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	k := kernel.NewWithServices(
+		filestore.New(root),
+		kernel.NewClockIDGenerator(),
+		model.MockClient{},
+		contextprovider.NewLocalProvider(root),
+	)
 
-	if err := runtime.CreateTask(ctx, task); err != nil {
-		return err
+	switch command {
+	case "list":
+		return listRuns(ctx, k, root)
+	case "new":
+		return newRun(ctx, k, root, strings.Join(args, " "))
+	case "run":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: prismagent run <run_id> <message>")
+		}
+		return runMessage(ctx, k, root, core.RunID(args[0]), strings.Join(args[1:], " "))
+	case "resume":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: prismagent resume <run_id>")
+		}
+		return resumeRun(ctx, k, root, core.RunID(args[0]))
+	default:
+		printUsage()
+		return fmt.Errorf("unknown command: %s", command)
 	}
-	if err := runtime.Emit(ctx, core.NewEvent(core.EventTaskCreated, runID, task.ID, map[string]string{
-		"goal": goal,
-	})); err != nil {
-		return err
-	}
+}
 
-	object := core.NewContextObject("ctx-goal", core.ContextPlan, core.ContextScope{
-		Type:  core.ScopeRun,
-		RunID: runID,
-	}, goal)
-	if err := runtime.PutContextObject(ctx, object); err != nil {
+func listRuns(ctx context.Context, k *kernel.Kernel, root string) error {
+	runs, err := k.ListRuns(ctx, root)
+	if err != nil {
 		return err
 	}
-	if err := runtime.CaptureSnapshot(ctx, core.NewSnapshot("snapshot-initial", runID, "initial run state")); err != nil {
-		return err
+	if len(runs) == 0 {
+		fmt.Println("no runs")
+		return nil
 	}
+	for _, run := range runs {
+		fmt.Printf("%s\t%s\t%s\t%s\n", run.ID, run.Status, run.UpdatedAt.Format("2006-01-02 15:04:05"), run.Goal)
+	}
+	return nil
+}
 
-	fmt.Printf("run_id=%s\n", runID)
-	fmt.Printf("task_id=%s status=%s\n", task.ID, task.Status)
-	fmt.Printf("context_object_id=%s kind=%s\n", object.ID, object.Kind)
-	fmt.Println("snapshot_id=snapshot-initial")
+func newRun(ctx context.Context, k *kernel.Kernel, root string, message string) error {
+	result, err := k.NewRun(ctx, kernel.NewRunRequest{
+		WorkspaceRoot: root,
+		Message:       message,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("run_id=%s\n", result.Run.ID)
+	fmt.Printf("agent_id=%s\n", result.Agent.ID)
+	if result.Turn != nil {
+		fmt.Println()
+		fmt.Println(result.Turn.Answer)
+	}
+	return nil
+}
+
+func runMessage(ctx context.Context, k *kernel.Kernel, root string, runID core.RunID, message string) error {
+	result, err := k.RunMessage(ctx, kernel.RunTurnRequest{
+		WorkspaceRoot: root,
+		RunID:         runID,
+		Message:       message,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(result.Answer)
+	return nil
+}
+
+func resumeRun(ctx context.Context, k *kernel.Kernel, root string, runID core.RunID) error {
+	result, err := k.ResumeRun(ctx, root, runID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("run_id=%s\n", result.Run.ID)
+	fmt.Printf("status=%s\n", result.Run.Status)
+	fmt.Printf("goal=%s\n", result.Run.Goal)
+	fmt.Printf("agents=%d\n", len(result.Agents))
+	if len(result.Conversation) > 0 {
+		fmt.Println()
+		fmt.Println("conversation:")
+		start := len(result.Conversation) - 6
+		if start < 0 {
+			start = 0
+		}
+		for _, turn := range result.Conversation[start:] {
+			fmt.Printf("[%s] %s\n", turn.Role, turn.Content)
+		}
+	}
 	return nil
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: prism run <goal>")
+	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  prismagent list")
+	fmt.Fprintln(os.Stderr, "  prismagent new [message]")
+	fmt.Fprintln(os.Stderr, "  prismagent run <run_id> <message>")
+	fmt.Fprintln(os.Stderr, "  prismagent resume <run_id>")
 }
