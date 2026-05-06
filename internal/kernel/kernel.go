@@ -3,6 +3,8 @@ package kernel
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,7 +15,7 @@ import (
 	"prismagent/internal/tool"
 )
 
-const maxToolCallIterations = 4
+const maxToolCallIterations = 64
 
 type Store interface {
 	store.WorkspaceStore
@@ -480,6 +482,7 @@ func (k *Kernel) completeWithToolLoop(ctx context.Context, runID core.RunID, age
 		if len(response.ToolCalls) == 0 {
 			return response, nil
 		}
+		fmt.Fprintf(os.Stderr, "[tool-loop] iteration=%d agent=%s tool_calls=%d\n", iteration, agentID, len(response.ToolCalls))
 		messages = append(messages, model.Message{
 			Role:             "assistant",
 			Content:          response.Text,
@@ -487,6 +490,7 @@ func (k *Kernel) completeWithToolLoop(ctx context.Context, runID core.RunID, age
 			ToolCalls:        response.ToolCalls,
 		})
 		for _, call := range response.ToolCalls {
+			fmt.Fprintf(os.Stderr, "  [tool-call] %s(%s)\n", call.Name, summarizeArgs(call.Arguments))
 			result, err := k.CallTool(ctx, ToolCallRequest{
 				RunID: runID,
 				Name:  call.Name,
@@ -495,6 +499,9 @@ func (k *Kernel) completeWithToolLoop(ctx context.Context, runID core.RunID, age
 			content := result.RawOutput
 			if err != nil {
 				content = fmt.Sprintf("tool %s failed: %s", call.Name, err.Error())
+				fmt.Fprintf(os.Stderr, "  [tool-result] %s -> FAILED: %s\n", call.Name, err.Error())
+			} else {
+				fmt.Fprintf(os.Stderr, "  [tool-result] %s -> ok (%s)\n", call.Name, result.Summary)
 			}
 			messages = append(messages, model.Message{
 				Role:       "tool",
@@ -517,4 +524,30 @@ func (k *Kernel) modelToolDefinitions() []model.ToolDefinition {
 		})
 	}
 	return modelDefinitions
+}
+
+func summarizeArgs(args map[string]string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	longFields := map[string]bool{"content": true, "old": true, "new": true}
+	parts := make([]string, 0, len(args))
+	if v, ok := args["path"]; ok {
+		parts = append(parts, v)
+	}
+	for k, v := range args {
+		if k == "path" {
+			continue
+		}
+		if longFields[k] {
+			short := v
+			if len(short) > 40 {
+				short = short[:40] + "..."
+			}
+			parts = append(parts, k+"="+strconv.Quote(short))
+		} else {
+			parts = append(parts, k+"="+v)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
