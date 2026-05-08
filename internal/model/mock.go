@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// FuncClient adapts a function to the Client interface.
+type FuncClient func(ctx context.Context, req Request) (Response, error)
+
+func (f FuncClient) Complete(ctx context.Context, req Request) (Response, error) {
+	return f(ctx, req)
+}
+
 type MockClient struct{}
 
 func (MockClient) Complete(_ context.Context, req Request) (Response, error) {

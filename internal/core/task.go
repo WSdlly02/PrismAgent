@@ -22,7 +22,6 @@ type Task struct {
 	Goal        string
 	Description string
 	Status      TaskStatus
-	Budget      Budget
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

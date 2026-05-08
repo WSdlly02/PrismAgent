@@ -18,9 +18,9 @@ const (
 type ContextScopeType string
 
 const (
-	ScopeWorkspace ContextScopeType = "workspace"
-	ScopeRun       ContextScopeType = "run"
-	ScopeTask      ContextScopeType = "task"
+	CtxScopeWorkspace ContextScopeType = "workspace"
+	CtxScopeRun       ContextScopeType = "run"
+	CtxScopeTask      ContextScopeType = "task"
 )
 
 type ContextScope struct {

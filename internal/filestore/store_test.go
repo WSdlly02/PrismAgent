@@ -29,10 +29,9 @@ func TestStoreInitializesWorkspaceAndRun(t *testing.T) {
 	assertFileExists(t, filepath.Join(root, ".prismagent", "runs", "run-1", "run.json"))
 	assertFileExists(t, filepath.Join(root, ".prismagent", "runs", "run-1", "snapshots"))
 	assertFileExists(t, filepath.Join(root, ".prismagent", "runs", "run-1", "artifacts"))
-	assertFileExists(t, filepath.Join(root, ".prismagent", "runs", "run-1", "conversations"))
 }
 
-func TestStorePersistsAgentsConversationAndRunArtifacts(t *testing.T) {
+func TestStorePersistsAgentsAndRunArtifacts(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	store := New(root)
@@ -49,9 +48,6 @@ func TestStorePersistsAgentsConversationAndRunArtifacts(t *testing.T) {
 	if err := store.WriteAgents(ctx, runID, []core.Agent{agent}); err != nil {
 		t.Fatalf("write agents: %v", err)
 	}
-	if err := store.AppendConversationTurn(ctx, core.NewConversationTurn(runID, agent.ID, core.ConversationUser, "hello")); err != nil {
-		t.Fatalf("append conversation: %v", err)
-	}
 	if err := store.WriteRunArtifact(ctx, runID, "answer.md", "world"); err != nil {
 		t.Fatalf("write run artifact: %v", err)
 	}
@@ -62,13 +58,6 @@ func TestStorePersistsAgentsConversationAndRunArtifacts(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].ID != agent.ID {
 		t.Fatalf("unexpected agents: %#v", agents)
-	}
-	turns, err := store.ListConversationTurns(ctx, runID)
-	if err != nil {
-		t.Fatalf("list conversation: %v", err)
-	}
-	if len(turns) != 1 || turns[0].Content != "hello" {
-		t.Fatalf("unexpected turns: %#v", turns)
 	}
 	answer, err := store.ReadRunArtifact(ctx, runID, "answer.md")
 	if err != nil {
@@ -121,21 +110,23 @@ func TestStorePersistsTasksContextEventsAndSnapshots(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	object := core.NewContextObject("ctx-1", core.ContextFact, core.ContextScope{
-		Type:  core.ScopeRun,
+		Type:  core.CtxScopeRun,
 		RunID: runID,
 	}, "a stable fact")
 	if err := store.PutContextObject(ctx, object); err != nil {
 		t.Fatalf("put context object: %v", err)
 	}
-	event := core.NewEvent(core.EventTaskCreated, runID, task.ID, map[string]string{"goal": task.Goal})
+	event := core.NewEvent(core.EventRunCreated, runID, task.ID, map[string]string{"goal": task.Goal})
 	if err := store.Emit(ctx, event); err != nil {
 		t.Fatalf("emit event: %v", err)
 	}
-	snapshot := core.NewSnapshot("snapshot-1", runID, "before mutation")
-	if err := store.CreateSnapshot(ctx, snapshot, core.SnapshotState{
-		Tasks:          []core.Task{task},
-		ContextObjects: []core.ContextObject{object},
-	}); err != nil {
+	snapshot := core.Snapshot{
+		UUID:       "snapshot-1",
+		AgentHeads: map[string]string{"agent-0": "unit-last"},
+		UnitChains: map[string][]string{"agent-0": {"u1", "u2"}},
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := store.CreateSnapshot(ctx, snapshot); err != nil {
 		t.Fatalf("create snapshot: %v", err)
 	}
 
@@ -147,7 +138,7 @@ func TestStorePersistsTasksContextEventsAndSnapshots(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].ID != task.ID {
 		t.Fatalf("unexpected tasks: %#v", tasks)
 	}
-	objects, err := reopened.ListContextObjects(ctx, core.ContextScope{Type: core.ScopeRun, RunID: runID})
+	objects, err := reopened.ListContextObjects(ctx, core.ContextScope{Type: core.CtxScopeRun, RunID: runID})
 	if err != nil {
 		t.Fatalf("list context objects: %v", err)
 	}
@@ -158,64 +149,15 @@ func TestStorePersistsTasksContextEventsAndSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list events: %v", err)
 	}
-	if len(events) != 1 || events[0].Type != core.EventTaskCreated {
+	if len(events) != 1 || events[0].Type != core.EventRunCreated {
 		t.Fatalf("unexpected events: %#v", events)
 	}
-	record, err := reopened.GetSnapshot(ctx, "snapshot-1")
+	got, err := reopened.GetSnapshot(ctx, "snapshot-1")
 	if err != nil {
 		t.Fatalf("get snapshot: %v", err)
 	}
-	if record.Snapshot.ID != snapshot.ID || len(record.State.Tasks) != 1 {
-		t.Fatalf("unexpected snapshot: %#v", record)
-	}
-}
-
-func TestStoreRestoresSnapshot(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	store := New(root)
-	runID := core.RunID("run-1")
-
-	if err := store.InitWorkspace(ctx, core.NewWorkspace("workspace-1", root)); err != nil {
-		t.Fatalf("init workspace: %v", err)
-	}
-	if err := store.CreateRun(ctx, core.NewRun(runID, "workspace-1", "test goal")); err != nil {
-		t.Fatalf("create run: %v", err)
-	}
-	task := core.NewTask("task-1", runID, "test task")
-	object := core.NewContextObject("ctx-1", core.ContextObservation, core.ContextScope{
-		Type:  core.ScopeRun,
-		RunID: runID,
-	}, "initial observation")
-	if err := store.CreateTask(ctx, task); err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	if err := store.PutContextObject(ctx, object); err != nil {
-		t.Fatalf("put context object: %v", err)
-	}
-	if err := store.CreateSnapshot(ctx, core.NewSnapshot("snapshot-1", runID, "before mutation"), core.SnapshotState{
-		Tasks:          []core.Task{task},
-		ContextObjects: []core.ContextObject{object},
-	}); err != nil {
-		t.Fatalf("create snapshot: %v", err)
-	}
-
-	if err := task.Transition(core.TaskDone, time.Now()); err != nil {
-		t.Fatalf("transition task: %v", err)
-	}
-	if err := store.UpdateTask(ctx, task); err != nil {
-		t.Fatalf("update task: %v", err)
-	}
-
-	if _, err := store.RestoreSnapshot(ctx, "snapshot-1"); err != nil {
-		t.Fatalf("restore snapshot: %v", err)
-	}
-	restored, err := store.GetTask(ctx, task.ID)
-	if err != nil {
-		t.Fatalf("get task: %v", err)
-	}
-	if restored.Status != core.TaskReady {
-		t.Fatalf("expected status %s, got %s", core.TaskReady, restored.Status)
+	if got.UUID != snapshot.UUID {
+		t.Fatalf("unexpected snapshot: %#v", got)
 	}
 }
 

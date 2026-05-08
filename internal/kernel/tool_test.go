@@ -18,7 +18,7 @@ func TestKernelCallToolEmitsEvents(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 	store := filestore.New(root)
-	kernel := NewWithServices(store, fixedIDs{}, nil, fixedContextProvider{})
+	kernel := NewWithServices(store, fixedIDs{}, nil, fixedContextProvider{}, root)
 	kernel.RegisterTools(tool.NewFileSystemTools(root)...)
 
 	run, err := kernel.NewRun(ctx, NewRunRequest{WorkspaceRoot: root})
@@ -53,7 +53,7 @@ func TestRunMessageExecutesModelToolCallAndReturnsFinalAnswer(t *testing.T) {
 	}
 	store := filestore.New(root)
 	modelClient := &scriptedToolModel{}
-	kernel := NewWithServices(store, &incrementingIDs{}, modelClient, fixedContextProvider{})
+	kernel := NewWithServices(store, &incrementingIDs{}, modelClient, fixedContextProvider{}, root)
 	kernel.RegisterTools(tool.NewFileSystemTools(root)...)
 
 	run, err := kernel.NewRun(ctx, NewRunRequest{WorkspaceRoot: root})

@@ -174,6 +174,21 @@ func (s *Store) WriteAgents(_ context.Context, runID core.RunID, agents []core.A
 	return writeJSON(s.runFile(runID, "agents.json"), agents)
 }
 
+func (s *Store) AddAgent(_ context.Context, runID core.RunID, agent core.Agent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ensureRunDirs(runID); err != nil {
+		return err
+	}
+	var agents []core.Agent
+	if err := readJSON(s.runFile(runID, "agents.json"), &agents); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	agents = append(agents, agent)
+	return writeJSON(s.runFile(runID, "agents.json"), agents)
+}
+
 func (s *Store) ListAgents(_ context.Context, runID core.RunID) ([]core.Agent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,54 +202,6 @@ func (s *Store) ListAgents(_ context.Context, runID core.RunID) ([]core.Agent, e
 	return agents, nil
 }
 
-func (s *Store) AppendConversationTurn(_ context.Context, turn core.ConversationTurn) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.ensureRunDirs(turn.RunID); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(s.runFile(turn.RunID, "conversation.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoded, err := json.Marshal(turn)
-	if err != nil {
-		return err
-	}
-	if _, err := file.Write(append(encoded, '\n')); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Store) ListConversationTurns(_ context.Context, runID core.RunID) ([]core.ConversationTurn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	file, err := os.Open(s.runFile(runID, "conversation.jsonl"))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	turns := make([]core.ConversationTurn, 0)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var turn core.ConversationTurn
-		if err := json.Unmarshal(scanner.Bytes(), &turn); err != nil {
-			return nil, err
-		}
-		turns = append(turns, turn)
-	}
-	return turns, scanner.Err()
-}
-
 func (s *Store) WriteRunArtifact(_ context.Context, runID core.RunID, name string, body string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -242,14 +209,14 @@ func (s *Store) WriteRunArtifact(_ context.Context, runID core.RunID, name strin
 	if err := s.ensureRunDirs(runID); err != nil {
 		return err
 	}
-	return writeFileAtomic(s.runFile(runID, name), []byte(body))
+	return writeFileAtomic(s.runFile(runID, "artifacts/"+name), []byte(body))
 }
 
 func (s *Store) ReadRunArtifact(_ context.Context, runID core.RunID, name string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.runFile(runID, name))
+	data, err := os.ReadFile(s.runFile(runID, "artifacts/"+name))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("run artifact not found: %s/%s", runID, name)
 	}
@@ -377,65 +344,57 @@ func (s *Store) ListContextObjects(_ context.Context, scope core.ContextScope) (
 	return filtered, nil
 }
 
-func (s *Store) CreateSnapshot(_ context.Context, snapshot core.Snapshot, state core.SnapshotState) error {
+func (s *Store) CreateSnapshot(_ context.Context, snapshot core.Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.ensureRunDirs(snapshot.RunID); err != nil {
+	dir := filepath.Join(s.stateRoot(), "snapshots")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path := s.snapshotPath(snapshot.RunID, snapshot.ID)
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("snapshot already exists: %s", snapshot.ID)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return writeJSON(path, core.SnapshotRecord{
-		Snapshot: snapshot,
-		State:    state,
-	})
+	path := filepath.Join(dir, snapshot.UUID+".json")
+	return writeJSON(path, snapshot)
 }
 
-func (s *Store) GetSnapshot(_ context.Context, id core.SnapshotID) (core.SnapshotRecord, error) {
+func (s *Store) GetSnapshot(_ context.Context, uuid string) (core.Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	runs, err := s.listRunIDs()
-	if err != nil {
-		return core.SnapshotRecord{}, err
+	path := filepath.Join(s.stateRoot(), "snapshots", uuid+".json")
+	var snapshot core.Snapshot
+	if err := readJSON(path, &snapshot); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return core.Snapshot{}, fmt.Errorf("snapshot not found: %s", uuid)
+		}
+		return core.Snapshot{}, err
 	}
-	for _, runID := range runs {
-		path := s.snapshotPath(runID, id)
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	return snapshot, nil
+}
+
+func (s *Store) ListSnapshots(_ context.Context) ([]core.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	dir := filepath.Join(s.stateRoot(), "snapshots")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	snapshots := make([]core.Snapshot, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
-		} else if err != nil {
-			return core.SnapshotRecord{}, err
 		}
-		var record core.SnapshotRecord
-		if err := readJSON(path, &record); err != nil {
-			return core.SnapshotRecord{}, err
+		var snapshot core.Snapshot
+		if err := readJSON(filepath.Join(dir, entry.Name()), &snapshot); err != nil {
+			return nil, err
 		}
-		return record, nil
+		snapshots = append(snapshots, snapshot)
 	}
-	return core.SnapshotRecord{}, fmt.Errorf("snapshot not found: %s", id)
-}
-
-func (s *Store) RestoreSnapshot(ctx context.Context, id core.SnapshotID) (core.SnapshotState, error) {
-	record, err := s.GetSnapshot(ctx, id)
-	if err != nil {
-		return core.SnapshotState{}, err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.writeTasks(record.Snapshot.RunID, record.State.Tasks); err != nil {
-		return core.SnapshotState{}, err
-	}
-	if err := s.writeContextObjects(core.ContextScope{Type: core.ScopeRun, RunID: record.Snapshot.RunID}, record.State.ContextObjects); err != nil {
-		return core.SnapshotState{}, err
-	}
-	return record.State, nil
+	return snapshots, nil
 }
 
 func (s *Store) Emit(_ context.Context, event core.Event) error {
@@ -498,10 +457,7 @@ func (s *Store) ensureRunDirs(runID core.RunID) error {
 	if err := os.MkdirAll(filepath.Join(s.runDir(runID), "snapshots"), 0o755); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(s.runDir(runID), "artifacts"), 0o755); err != nil {
-		return err
-	}
-	return os.MkdirAll(filepath.Join(s.runDir(runID), "conversations"), 0o755)
+	return os.MkdirAll(filepath.Join(s.runDir(runID), "artifacts"), 0o755)
 }
 
 func (s *Store) runDir(runID core.RunID) string {
@@ -514,10 +470,6 @@ func (s *Store) currentRunPath() string {
 
 func (s *Store) runFile(runID core.RunID, name string) string {
 	return filepath.Join(s.runDir(runID), name)
-}
-
-func (s *Store) snapshotPath(runID core.RunID, snapshotID core.SnapshotID) string {
-	return filepath.Join(s.runDir(runID), "snapshots", snapshotID.String()+".json")
 }
 
 func (s *Store) workspaceContextPath() string {
@@ -574,7 +526,7 @@ func (s *Store) readAllContextObjects() ([]core.ContextObject, error) {
 
 func (s *Store) writeContextObjects(scope core.ContextScope, objects []core.ContextObject) error {
 	path := s.contextPath(scope)
-	if scope.Type == core.ScopeWorkspace {
+	if scope.Type == core.CtxScopeWorkspace {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
@@ -587,7 +539,7 @@ func (s *Store) writeContextObjects(scope core.ContextScope, objects []core.Cont
 }
 
 func (s *Store) contextPath(scope core.ContextScope) string {
-	if scope.Type == core.ScopeWorkspace {
+	if scope.Type == core.CtxScopeWorkspace {
 		return s.workspaceContextPath()
 	}
 	return s.runFile(scope.RunID, "context.jsonl")

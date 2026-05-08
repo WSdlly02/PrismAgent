@@ -37,6 +37,7 @@ func dispatch(command string, args []string) error {
 		kernel.NewClockIDGenerator(),
 		modelClientFromEnv(),
 		contextprovider.NewLocalProvider(root),
+		root,
 	)
 	k.RegisterTools(tool.NewFileSystemTools(root)...)
 
@@ -128,16 +129,9 @@ func resumeRun(ctx context.Context, k *kernel.Kernel, root string, runID core.Ru
 	fmt.Printf("status=%s\n", result.Run.Status)
 	fmt.Printf("goal=%s\n", result.Run.Goal)
 	fmt.Printf("agents=%d\n", len(result.Agents))
-	if len(result.Conversation) > 0 {
+	if result.Answer != "" {
 		fmt.Println()
-		fmt.Println("conversation:")
-		start := len(result.Conversation) - 6
-		if start < 0 {
-			start = 0
-		}
-		for _, turn := range result.Conversation[start:] {
-			fmt.Printf("[%s] %s\n", turn.Role, turn.Content)
-		}
+		fmt.Println(result.Answer)
 	}
 	return nil
 }
