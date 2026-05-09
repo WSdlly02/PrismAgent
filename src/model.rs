@@ -5,3 +5,4 @@ pub mod event;
 pub mod kernel;
 pub mod run;
 pub mod unit;
+pub mod workspace;

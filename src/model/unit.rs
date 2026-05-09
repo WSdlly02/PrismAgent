@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug)]
 // $PWD/.prismagent/runs/<run-id>/units/{unit-uuid}.json
 pub struct Unit {
     pub uuid: String,
@@ -8,28 +8,55 @@ pub struct Unit {
     pub kind: UnitKind,
     pub role: UnitRole,
     pub scope: UnitScope,
+    pub visibility: UnitVisibility,
     pub metadata: HashMap<String, String>,
-    pub created_at: u64,
+    pub created_at: i64,
 }
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[serde(rename = "kind")]
 pub enum UnitKind {
-    Message,    // 消息单元
-    ToolCall,   // 工具调用单元
+    #[serde(rename = "user_input")]
+    UserInput, // 用户输入单元
+    #[serde(rename = "llm_input")]
+    LLMInput, // LLM输入单元
+    #[serde(rename = "llm_response")]
+    LLMResponse, // LLM响应单元
+    #[serde(rename = "tool_call")]
+    ToolCall, // 工具调用单元
+    #[serde(rename = "tool_result")]
     ToolResult, // 工具结果单元
-    Spawn,      // 召唤子Agent单元
-    Result,     // 子Agent结果单元
-                // 其他类型可以根据需要添加
+    #[serde(rename = "generic_result")]
+    GenericResult, // 通用执行结果单元，供Agent执行任意操作后记录结果使用
 }
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[serde(rename = "role")]
 pub enum UnitRole {
-    User,
-    Assistant,
+    #[serde(rename = "system")]
     System,
+    #[serde(rename = "user")]
+    User,
+    #[serde(rename = "assistant")]
+    Assistant,
+    #[serde(rename = "tool")]
     Tool,
+    #[serde(rename = "other")]
+    Other,
 }
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[serde(rename = "scope")]
 pub enum UnitScope {
+    #[serde(rename = "workspace")]
     Workspace,
+    #[serde(rename = "run")]
     Run,
+    #[serde(rename = "agent")]
     Agent,
+}
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[serde(rename = "visibility")]
+pub enum UnitVisibility {
+    #[serde(rename = "internal")]
+    Internal, // 仅系统内部可见
+    #[serde(rename = "public")]
+    Public, // 公开可见
 }

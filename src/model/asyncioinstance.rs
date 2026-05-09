@@ -5,6 +5,12 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+// 异步IO实例的元结构体，包含实例和控制句柄
+pub struct AsyncIoBox {
+    instance: AsyncIoInstance,
+    handle: AsyncIoHandle,
+}
 // 异步IO的实例
 pub struct AsyncIoInstance {
     pub uuid: String,
@@ -18,8 +24,6 @@ pub struct AsyncIoInstance {
     pub execution_mode: ExecutionMode, // 是否阻塞等待完成，默认为true，设置为false后实例会以异步方式运行，内核需要通过信号来监控状态
     pub data_transmit_interval: u64,   // 数据传输间隔，单位毫秒，默认100ms
     pub metadata: HashMap<String, String>, // 实例的元数据, 可以存储任意键值对，供内核和Agent使用
-
-    pub handle: Option<AsyncIoHandle>, // 内核使用的控制句柄,实例创建时会生成并存储在这里，提供一个方法取出后置空，防止重复使用
 }
 // 异步IO的控制句柄，提供给内核使用
 pub struct AsyncIoHandle {
@@ -62,7 +66,7 @@ pub enum SignalStatus {
     Cancelled,
 }
 
-impl AsyncIoInstance {
+impl AsyncIoBox {
     pub fn new() -> Self {
         let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<Unit>>(1);
         let (stdout_tx, stdout_rx) = mpsc::channel::<IoOutput>(64);
@@ -70,56 +74,58 @@ impl AsyncIoInstance {
         let (signal_in_tx, signal_in_rx) = mpsc::channel::<Signal>(16);
         let (signal_out_tx, signal_out_rx) = mpsc::channel::<Signal>(16);
         Self {
-            uuid: Uuid::new_v4().to_string(),
-            stdin: stdin_rx,
-            stdout: stdout_tx,
-            stderr: stderr_tx,
-            signal_in: signal_in_rx,
-            signal_out: signal_out_tx,
+            instance: AsyncIoInstance {
+                uuid: Uuid::new_v4().to_string(),
+                stdin: stdin_rx,
+                stdout: stdout_tx,
+                stderr: stderr_tx,
+                signal_in: signal_in_rx,
+                signal_out: signal_out_tx,
 
-            role: AsyncIoInstanceRole::Unknown,
-            execution_mode: ExecutionMode::Blocking,
-            data_transmit_interval: 100,
-            metadata: HashMap::new(),
+                role: AsyncIoInstanceRole::Unknown,
+                execution_mode: ExecutionMode::Blocking,
+                data_transmit_interval: 100,
+                metadata: HashMap::new(),
+            },
 
-            handle: Some(AsyncIoHandle {
+            handle: AsyncIoHandle {
                 stdin: stdin_tx,
                 stdout: stdout_rx,
                 stderr: stderr_rx,
                 signal_in: signal_in_tx,
                 signal_out: signal_out_rx,
-            }),
+            },
         }
     }
     pub fn with_async(mut self) -> Self {
         // Implementation for setting the await flag
-        self.execution_mode = ExecutionMode::Async;
+        self.instance.execution_mode = ExecutionMode::Async;
         self
     }
     pub fn with_data_transmit_interval(mut self, interval: u64) -> Self {
         // Implementation for setting the data transmit interval
-        self.data_transmit_interval = interval;
+        self.instance.data_transmit_interval = interval;
         self
     }
     pub fn with_role(mut self, role: AsyncIoInstanceRole) -> Self {
         // Implementation for setting the role
-        self.role = role;
+        self.instance.role = role;
         self
     }
     pub fn done(self) -> Result<Self> {
         // Finalize the instance and return it
-        if self.role == AsyncIoInstanceRole::Unknown {
+        if self.instance.role == AsyncIoInstanceRole::Unknown {
             anyhow::bail!("Role must be specified");
         }
-        if self.data_transmit_interval <= 50 {
+        if self.instance.data_transmit_interval <= 50 {
             anyhow::bail!("Data transmit interval must be larger than 50ms");
         }
         Ok(self)
     }
 
-    // 最后提供一个方法来获取控制句柄，并将其从实例中取出，防止重复使用
-    pub fn take_handle(&mut self) -> Option<AsyncIoHandle> {
-        self.handle.take()
+    // 最后提供一个方法来获取控制句柄
+    pub fn split(self) -> (AsyncIoInstance, AsyncIoHandle) {
+        (self.instance, self.handle)
     }
 }
 
