@@ -11,10 +11,17 @@ pub struct Run {
 pub struct RunMetadata {
     pub run_id: String,
     pub title: String,
-    pub status: String, // "active", "archived"
+    pub status: RunStatus,
     pub root_agent: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub enum RunStatus {
+    #[serde(rename = "active")]
+    Active,
+    #[serde(rename = "archived")]
+    Archived,
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RunLock {

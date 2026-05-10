@@ -25,7 +25,7 @@ mod tests {
     use super::*;
     use crate::model::{
         agent::Agent,
-        run::{RunLock, RunMetadata},
+        run::{RunLock, RunMetadata, RunStatus},
     };
     use std::{collections::HashMap, path::PathBuf};
     use uuid::Uuid;
@@ -42,7 +42,7 @@ mod tests {
             run_metadata: RunMetadata {
                 run_id: "run-test".to_string(),
                 title: "test".to_string(),
-                status: "active".to_string(),
+                status: RunStatus::Active,
                 root_agent: "agent-0".to_string(),
                 created_at: 1,
                 updated_at: 1,

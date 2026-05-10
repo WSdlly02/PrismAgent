@@ -23,9 +23,6 @@ impl WorkSpace {
         atomic_write_file(workspace_config_path, &DEFAULT_WORKSPACE_CONFIG.as_bytes())?;
         WorkSpace::resume_or_init_workspace()
     }
-    pub fn get_root(&self) -> &PathBuf {
-        &self.root
-    }
 }
 
 pub(crate) fn atomic_write_file(dst: &PathBuf, data: &[u8]) -> Result<()> {

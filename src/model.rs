@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod app;
 pub mod asyncioinstance;
 pub mod atom;
 pub mod event;

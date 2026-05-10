@@ -1,4 +1,4 @@
-use crate::model::run::{Run, RunLock, RunMetadata};
+use crate::model::run::{Run, RunLock, RunMetadata, RunStatus};
 use crate::model::workspace::WorkSpace;
 use crate::store::workspacestore::atomic_write_file;
 use anyhow::{Result, anyhow};
@@ -60,7 +60,7 @@ impl WorkSpace {
         let run_metadata = RunMetadata {
             run_id,
             title: title.to_string(),
-            status: "active".to_string(),
+            status: RunStatus::Active,
             root_agent: "agent-0".to_string(),
             created_at: timestamp,
             updated_at: timestamp,
