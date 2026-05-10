@@ -1,5 +1,8 @@
 use crate::model::asyncioinstance::{IoError, IoOutput};
 pub enum ShellEvent {
+    CommandInput {
+        command: CommandEvent,
+    },
     UserInput {
         run_id: String,
         agent_id: String,
@@ -15,6 +18,12 @@ pub enum ShellEvent {
         agent_id: String,
     },
     Shutdown,
+}
+pub enum CommandEvent {
+    NewRun { title: String },
+    ResumeRun { run_id: String },
+    DeleteRun { run_id: String },
+    ListRuns,
 }
 pub enum KernelEvent {
     Output {

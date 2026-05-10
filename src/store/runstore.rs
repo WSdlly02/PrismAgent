@@ -88,7 +88,7 @@ impl WorkSpace {
     }
     pub fn resume_run(&self, run_id: &str) -> Result<Run> {
         // Resume run indicates checking lock file and metadata.json
-        // the lock file must not exist
+        // the lock file must not exist before resuming, otherwise it means the run is being executed by other process
         let run_dir = &self.root.join("runs").join(run_id);
         if !run_dir.is_dir() {
             return Err(anyhow!("Run does not exist: {}", run_dir.display()));
@@ -105,10 +105,22 @@ impl WorkSpace {
                 run_dir.display()
             ));
         }
+        // create lock file to indicate the run is being executed
+        let run_lock = RunLock {
+            pid: std::process::id(),
+            owner: whoami::username()?,
+            locked_at: Utc::now().timestamp(),
+            hostname: whoami::hostname()?,
+            note: None,
+        };
+        let data = serde_json::to_vec(&run_lock)
+            .map_err(|e| anyhow!("Failed to serialize run lock to JSON: {}", e))?;
+        atomic_write_file(&run_dir.join("run.lock"), &data)?;
+
         Ok(Run {
             root: run_dir.clone(),
             run_metadata,
-            run_lock: None,
+            run_lock: Some(run_lock),
         })
     }
     pub fn release_run_lock(&self, run_id: &str) -> Result<()> {
@@ -180,7 +192,8 @@ mod tests {
         let resumed = workspace.resume_run(&run_id).expect("resume unlocked run");
 
         assert_eq!(resumed.run_metadata.run_id, run_id);
-        assert!(resumed.run_lock.is_none());
+        assert!(resumed.run_lock.is_some());
+        assert!(resumed.root.join("run.lock").is_file());
     }
 
     #[test]

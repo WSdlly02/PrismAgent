@@ -17,28 +17,25 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use prismagent::{
-    model::event::{KernelEvent, ShellEvent},
+    model::event::{CommandEvent, KernelEvent, ShellEvent},
     model::kernel::Kernel,
 };
-#[tokio::main]
-async fn main() -> Result<()> {
-    run().await
-}
 
 const DEFAULT_RUN_ID: &str = "run-dev";
 const DEFAULT_AGENT_ID: &str = "0";
 
-pub async fn run() -> Result<()> {
-    let kernel = Kernel::new();
+#[tokio::main]
+async fn main() -> Result<()> {
+    let kernel = Kernel::new()?;
     let (shell_tx, kernel_rx) = kernel.run();
-    let mut app = TuiApp::new(DEFAULT_RUN_ID, DEFAULT_AGENT_ID, shell_tx, kernel_rx);
-    app.push_system("PrismAgent TUI started. Enter sends a request. Esc or Ctrl-C exits.");
+    let mut tui_app = TuiApp::new(DEFAULT_RUN_ID, DEFAULT_AGENT_ID, shell_tx, kernel_rx);
+    tui_app.push_system("PrismAgent TUI started. Enter sends a request. Esc or Ctrl-C exits.");
 
     let mut terminal = setup_terminal()?;
     let _guard = TerminalGuard;
 
-    let result = run_loop(&mut terminal, &mut app).await;
-    let _ = app.shell_tx.send(ShellEvent::Shutdown).await;
+    let result = run_loop(&mut terminal, &mut tui_app).await;
+    let _ = tui_app.shell_tx.send(ShellEvent::Shutdown).await;
     result
 }
 
@@ -192,18 +189,54 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
             }
             app.push_user(content.clone());
             app.status = "request sent".to_owned();
-            if app
-                .shell_tx
-                .send(ShellEvent::UserInput {
-                    run_id: app.run_id.clone(),
-                    agent_id: app.agent_id.clone(),
-                    content,
-                })
-                .await
-                .is_err()
-            {
-                app.push_error("kernel channel closed");
-                app.status = "kernel disconnected".to_owned();
+            match content.chars().nth(0) {
+                Some('/') => {
+                    let command = content[1..].trim();
+                    if app
+                        .shell_tx
+                        .send(ShellEvent::CommandInput {
+                            command: match command {
+                                cmd if cmd.starts_with("new ") => {
+                                    let title = cmd[4..].trim().to_owned();
+                                    CommandEvent::NewRun { title }
+                                }
+                                cmd if cmd.starts_with("resume ") => {
+                                    let run_id = cmd[7..].trim().to_owned();
+                                    CommandEvent::ResumeRun { run_id }
+                                }
+                                cmd if cmd.starts_with("delete ") => {
+                                    let run_id = cmd[7..].trim().to_owned();
+                                    CommandEvent::DeleteRun { run_id }
+                                }
+                                "list" => CommandEvent::ListRuns,
+                                _ => {
+                                    app.push_error(format!("unknown command: {command}"));
+                                    return Ok(());
+                                }
+                            },
+                        })
+                        .await
+                        .is_err()
+                    {
+                        app.push_error("kernel channel closed");
+                        app.status = "kernel disconnected".to_owned();
+                    }
+                }
+                _ => {
+                    if app
+                        .shell_tx
+                        .send(ShellEvent::UserInput {
+                            run_id: app.run_id.clone(),
+                            agent_id: app.agent_id.clone(),
+                            content,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        app.push_error("kernel channel closed");
+                        app.status = "kernel disconnected".to_owned();
+                    }
+                }
             }
         }
         KeyCode::Backspace => {

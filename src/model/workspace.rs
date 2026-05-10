@@ -37,8 +37,7 @@ pub enum LockScope {
     #[serde(rename = "run")]
     Run,
 }
-pub const DEFAULT_WORKSPACE_CONFIG: &str = r#"
-[workspace]
+pub const DEFAULT_WORKSPACE_CONFIG: &str = r#"[workspace]
 state_version = 1
 
 [runtime]

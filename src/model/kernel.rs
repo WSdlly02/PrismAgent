@@ -1,5 +1,12 @@
+use crate::model::app::App;
 use crate::model::asyncioinstance::AsyncIoHandle;
+use crate::model::run::Run;
 use std::collections::HashMap;
 pub struct Kernel {
-    pub handles: HashMap<String, AsyncIoHandle>,
+    pub app: App,
+    pub runtime: Option<KernelRuntime>,
+}
+pub struct KernelRuntime {
+    pub current_run: Run,                        // 当前正在执行的 run_id
+    pub handles: HashMap<String, AsyncIoHandle>, // agent_id -> handle
 }
