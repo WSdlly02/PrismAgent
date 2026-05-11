@@ -6,12 +6,12 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-// 异步IO实例的元结构体，包含实例和控制句柄
+/// 异步IO实例的元结构体，包含实例和控制句柄
 pub struct AsyncIoBox {
     instance: AsyncIoInstance,
     handle: AsyncIoHandle,
 }
-// 异步IO的实例
+/// 异步IO的实例
 pub struct AsyncIoInstance {
     pub uuid: String,
     pub stdin: mpsc::Receiver<Vec<Unit>>,  // 标准输入-接收方
@@ -25,7 +25,7 @@ pub struct AsyncIoInstance {
     pub data_transmit_interval: u64,   // 数据传输间隔，单位毫秒，默认100ms
     pub metadata: HashMap<String, String>, // 实例的元数据, 可以存储任意键值对，供内核和Agent使用
 }
-// 异步IO的控制句柄，提供给内核使用
+/// 异步IO的控制句柄，提供给内核使用
 pub struct AsyncIoHandle {
     pub stdin: mpsc::Sender<Vec<Unit>>,   // 标准输入-发送方
     pub stdout: mpsc::Receiver<IoOutput>, // 标准流式输出-接收方

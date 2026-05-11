@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-#[derive(Serialize, Deserialize, Debug)]
-// $PWD/.prismagent/runs/<run-id>/units/{unit-uuid}.json
+
+/// $PWD/.prismagent/runs/{run-uuid}/units/{unit-uuid}.json
+///
 /// Unit is a descriptor of an immutable Atom.
 /// It does not own content. It only describes how the Atom should be interpreted
 /// inside an agent's unit_chain.
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Unit {
     pub uuid: String,
     pub atom_hash: String, // Atom的哈希值，用于索引Atom

@@ -43,7 +43,7 @@ mod tests {
         Run {
             root: PathBuf::from(root),
             run_metadata: RunMetadata {
-                run_id: "run-test".to_string(),
+                uuid: "run-test".to_string(),
                 title: "test".to_string(),
                 status: RunStatus::Active,
                 root_agent: "agent-0".to_string(),

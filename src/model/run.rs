@@ -6,10 +6,10 @@ pub struct Run {
     pub run_metadata: RunMetadata, // 从 $PWD/.prismagent/runs/<run-id>/metadata.json 读取
     pub run_lock: Option<RunLock>, // 运行锁，表示当前 run 是否正在被执行
 }
-// $PWD/.prismagent/runs/<run-id>/metadata.json
+/// $PWD/.prismagent/runs/{run-uuid}/metadata.json
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RunMetadata {
-    pub run_id: String,
+    pub uuid: String,
     pub title: String,
     pub status: RunStatus,
     pub root_agent: String,
@@ -33,7 +33,7 @@ pub struct RunLock {
     pub note: Option<String>, // 锁定备注信息
 }
 pub struct RunSummary {
-    pub run_id: String,
+    pub uuid: String,
     pub title: String,
     pub locked: bool,
     pub status: RunStatus,

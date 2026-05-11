@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+/// $PWD/.prismagent
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WorkSpace {
     pub root: PathBuf,                     // $PWD/.prismagent

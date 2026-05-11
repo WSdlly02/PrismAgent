@@ -4,7 +4,7 @@ pub struct App {
     pub global_config: GlobalConfig,
     pub workspace: WorkSpace,
 }
-// ~/.config/prismagent/settings.toml
+/// ~/.config/prismagent/settings.toml
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GlobalConfig {
     pub env: EnvConfigSection,

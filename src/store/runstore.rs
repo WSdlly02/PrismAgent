@@ -16,7 +16,7 @@ impl WorkSpace {
             // $PWD/.prismagent/runs/<run-id>
             let path = entry?.path();
             if !path.is_dir() {
-                return Err(anyhow!("Expected directory for run: {}", path.display()));
+                continue; // skip non-directory files
             };
             let run_metadata: RunMetadata = std::fs::read(path.join("metadata.json"))
                 .map_err(|e| anyhow!("Failed to read unit store: {}", e))
@@ -40,7 +40,7 @@ impl WorkSpace {
                 }
             };
             result.push(RunSummary {
-                run_id: run_metadata.run_id,
+                uuid: run_metadata.uuid,
                 title: run_metadata.title,
                 locked: run_lock.is_some(),
                 status: run_metadata.status,
@@ -60,7 +60,7 @@ impl WorkSpace {
         std::fs::create_dir_all(run_dir)?;
         let timestamp = Utc::now().timestamp();
         let run_metadata = RunMetadata {
-            run_id,
+            uuid: run_id,
             title: title.to_string(),
             status: RunStatus::Active,
             root_agent: "agent-0".to_string(),
@@ -186,14 +186,14 @@ mod tests {
         let run = workspace
             .create_run_and_resume("locked run")
             .expect("create run");
-        let run_id = run.run_metadata.run_id.clone();
+        let run_id = run.run_metadata.uuid.clone();
 
         assert!(workspace.resume_run(&run_id).is_err());
 
         workspace.release_run_lock(&run_id).expect("release lock");
         let resumed = workspace.resume_run(&run_id).expect("resume unlocked run");
 
-        assert_eq!(resumed.run_metadata.run_id, run_id);
+        assert_eq!(resumed.run_metadata.uuid, run_id);
         assert!(resumed.run_lock.is_some());
         assert!(resumed.root.join("run.lock").is_file());
     }
@@ -208,7 +208,7 @@ mod tests {
         let runs = workspace.list_runs().expect("list runs");
 
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_id, run.run_metadata.run_id);
+        assert_eq!(runs[0].uuid, run.run_metadata.uuid);
         assert!(runs[0].locked);
     }
 }

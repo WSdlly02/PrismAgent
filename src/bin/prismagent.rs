@@ -17,25 +17,28 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 use prismagent::{
-    model::event::{CommandEvent, KernelEvent, ShellEvent},
+    model::event::{CommandEvent, KernelToShellEvent, ShellToKernelEvent},
     model::kernel::Kernel,
 };
 
-const DEFAULT_RUN_ID: &str = "run-dev";
-const DEFAULT_AGENT_ID: &str = "0";
+const DEFAULT_RUN_UUID: &str = "none";
+const DEFAULT_AGENT_UUID: &str = "none";
+const DEFAULT_AGENT_NAME: &str = "none";
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let kernel = Kernel::new()?;
     let (shell_tx, kernel_rx) = kernel.run();
-    let mut tui_app = TuiApp::new(DEFAULT_RUN_ID, DEFAULT_AGENT_ID, shell_tx, kernel_rx);
-    tui_app.push_system("PrismAgent TUI started. Enter sends a request. Esc or Ctrl-C exits.");
+    let mut tui_app = TuiApp::new(DEFAULT_RUN_UUID, DEFAULT_AGENT_UUID, shell_tx, kernel_rx);
+    tui_app.push_system(
+        "PrismAgent TUI started. Use /list, /new <title>, or /resume <run-id>. Esc or Ctrl-C exits.",
+    );
 
     let mut terminal = setup_terminal()?;
     let _guard = TerminalGuard;
 
     let result = run_loop(&mut terminal, &mut tui_app).await;
-    let _ = tui_app.shell_tx.send(ShellEvent::Shutdown).await;
+    let _ = tui_app.shell_tx.send(ShellToKernelEvent::Shutdown).await;
     result
 }
 
@@ -82,26 +85,26 @@ impl Drop for TerminalGuard {
 }
 
 struct TuiApp {
-    run_id: String,
-    agent_id: String,
+    run_uuid: String,
+    agent_uuid: String,
     input: String,
     status: String,
     lines: Vec<LogLine>,
     should_quit: bool,
-    shell_tx: mpsc::Sender<ShellEvent>,
-    kernel_rx: mpsc::Receiver<KernelEvent>,
+    shell_tx: mpsc::Sender<ShellToKernelEvent>,
+    kernel_rx: mpsc::Receiver<KernelToShellEvent>,
 }
 
 impl TuiApp {
     fn new(
-        run_id: &str,
-        agent_id: &str,
-        shell_tx: mpsc::Sender<ShellEvent>,
-        kernel_rx: mpsc::Receiver<KernelEvent>,
+        run_uuid: &str,
+        agent_uuid: &str,
+        shell_tx: mpsc::Sender<ShellToKernelEvent>,
+        kernel_rx: mpsc::Receiver<KernelToShellEvent>,
     ) -> Self {
         Self {
-            run_id: run_id.to_owned(),
-            agent_id: agent_id.to_owned(),
+            run_uuid: run_uuid.to_owned(),
+            agent_uuid: agent_uuid.to_owned(),
             input: String::new(),
             status: "idle".to_owned(),
             lines: Vec::new(),
@@ -194,7 +197,7 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                     let command = content[1..].trim();
                     if app
                         .shell_tx
-                        .send(ShellEvent::CommandInput {
+                        .send(ShellToKernelEvent::CommandInput {
                             command: match command {
                                 cmd if cmd.starts_with("new ") => {
                                     let title = cmd[4..].trim().to_owned();
@@ -223,11 +226,16 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                     }
                 }
                 _ => {
+                    if app.run_uuid == DEFAULT_RUN_UUID {
+                        app.push_error("no active run; use /new <title> or /resume <run-id>");
+                        app.status = "no active run".to_owned();
+                        return Ok(());
+                    }
                     if app
                         .shell_tx
-                        .send(ShellEvent::UserInput {
-                            run_id: app.run_id.clone(),
-                            agent_id: app.agent_id.clone(),
+                        .send(ShellToKernelEvent::UserInput {
+                            run_id: app.run_uuid.clone(),
+                            agent_id: app.agent_uuid.clone(),
                             content,
                         })
                         .await
@@ -253,7 +261,20 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
 fn drain_kernel_events(app: &mut TuiApp) {
     while let Ok(event) = app.kernel_rx.try_recv() {
         match event {
-            KernelEvent::Output {
+            KernelToShellEvent::RunActivated {
+                run_id,
+                agent_id,
+                title,
+            } => {
+                app.run_uuid = run_id;
+                app.agent_uuid = agent_id;
+                app.status = format!("active: {}", app.run_uuid);
+                app.push_system(format!(
+                    "active run: {} ({title}), agent: {}",
+                    app.run_uuid, app.agent_uuid
+                ));
+            }
+            KernelToShellEvent::Output {
                 run_id,
                 agent_id,
                 content,
@@ -261,7 +282,7 @@ fn drain_kernel_events(app: &mut TuiApp) {
                 app.status = format!("output from {run_id}/{agent_id}");
                 app.push_kernel(content.content);
             }
-            KernelEvent::Error {
+            KernelToShellEvent::Error {
                 run_id,
                 agent_id,
                 error,
@@ -273,7 +294,7 @@ fn drain_kernel_events(app: &mut TuiApp) {
                     app.push_error(format!("{}: {}", error.error, error.details));
                 }
             }
-            KernelEvent::Done { run_id, agent_id } => {
+            KernelToShellEvent::Done { run_id, agent_id } => {
                 app.status = format!("{run_id}/{agent_id} done");
             }
         }
@@ -301,7 +322,7 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
         ),
         Span::raw(format!(
             "  run={} agent={}  status={}",
-            app.run_id, app.agent_id, app.status
+            app.run_uuid, app.agent_uuid, app.status
         )),
     ]))
     .block(Block::default().borders(Borders::ALL).title("Session"));
