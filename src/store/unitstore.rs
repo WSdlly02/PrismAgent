@@ -1,6 +1,6 @@
 use crate::model::run::Run;
 use crate::model::unit::Unit;
-use crate::store::workspacestore::atomic_write_file;
+use crate::store::workspacestore::atomic_create_file;
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
@@ -19,7 +19,7 @@ impl Run {
     pub fn write_unit_store(unit_dst: &PathBuf, unit: &Unit) -> Result<()> {
         let data = serde_json::to_vec(unit)
             .map_err(|e| anyhow!("Failed to serialize unit to JSON: {}", e))?;
-        atomic_write_file(unit_dst, &data)
+        atomic_create_file(unit_dst, &data)
     }
 }
 

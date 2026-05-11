@@ -1,24 +1,24 @@
-use crate::model::run::{Run, RunLock, RunMetadata, RunStatus};
+use crate::model::run::{Run, RunLock, RunMetadata, RunStatus, RunSummary};
 use crate::model::workspace::WorkSpace;
-use crate::store::workspacestore::atomic_write_file;
+use crate::store::workspacestore::atomic_create_file;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
 
 impl WorkSpace {
-    pub fn list_runs(&self) -> Result<Vec<Run>> {
+    pub fn list_runs(&self) -> Result<Vec<RunSummary>> {
         // $PWD/.prismagent/runs
         let runs_dir = &self.root.join("runs");
         if !runs_dir.is_dir() {
             return Err(anyhow!("{} is not a directory", &runs_dir.display()));
         }
-        let mut result: Vec<Run> = Vec::new();
+        let mut result: Vec<RunSummary> = Vec::new();
         for entry in std::fs::read_dir(runs_dir)? {
             // $PWD/.prismagent/runs/<run-id>
             let path = entry?.path();
             if !path.is_dir() {
                 return Err(anyhow!("Expected directory for run: {}", path.display()));
             };
-            let run_metadata = std::fs::read(path.join("metadata.json"))
+            let run_metadata: RunMetadata = std::fs::read(path.join("metadata.json"))
                 .map_err(|e| anyhow!("Failed to read unit store: {}", e))
                 .and_then(|data| {
                     serde_json::from_slice(&data)
@@ -39,10 +39,12 @@ impl WorkSpace {
                     None
                 }
             };
-            result.push(Run {
-                root: path,
-                run_metadata,
-                run_lock,
+            result.push(RunSummary {
+                run_id: run_metadata.run_id,
+                title: run_metadata.title,
+                locked: run_lock.is_some(),
+                status: run_metadata.status,
+                updated_at: run_metadata.updated_at,
             });
         }
         Ok(result)
@@ -75,10 +77,10 @@ impl WorkSpace {
 
         let data = serde_json::to_vec(&run_metadata)
             .map_err(|e| anyhow!("Failed to serialize run to JSON: {}", e))?;
-        atomic_write_file(&run_dir.join("metadata.json"), &data)?;
+        atomic_create_file(&run_dir.join("metadata.json"), &data)?;
         let data = serde_json::to_vec(&run_lock)
             .map_err(|e| anyhow!("Failed to serialize run lock to JSON: {}", e))?;
-        atomic_write_file(&run_dir.join("run.lock"), &data)?;
+        atomic_create_file(&run_dir.join("run.lock"), &data)?;
 
         Ok(Run {
             root: run_dir.clone(),
@@ -115,7 +117,7 @@ impl WorkSpace {
         };
         let data = serde_json::to_vec(&run_lock)
             .map_err(|e| anyhow!("Failed to serialize run lock to JSON: {}", e))?;
-        atomic_write_file(&run_dir.join("run.lock"), &data)?;
+        atomic_create_file(&run_dir.join("run.lock"), &data)?;
 
         Ok(Run {
             root: run_dir.clone(),
@@ -206,7 +208,7 @@ mod tests {
         let runs = workspace.list_runs().expect("list runs");
 
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].run_metadata.run_id, run.run_metadata.run_id);
-        assert!(runs[0].run_lock.is_some());
+        assert_eq!(runs[0].run_id, run.run_metadata.run_id);
+        assert!(runs[0].locked);
     }
 }

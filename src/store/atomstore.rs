@@ -1,6 +1,6 @@
 use crate::model::atom::Atom;
 use crate::model::workspace::WorkSpace;
-use crate::store::workspacestore::atomic_write_file;
+use crate::store::workspacestore::atomic_create_file;
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
 
@@ -33,7 +33,7 @@ impl WorkSpace {
         if atom_store_path.exists() {
             return Ok(hash_hex);
         }
-        atomic_write_file(atom_store_path, data)?;
+        atomic_create_file(atom_store_path, data)?;
         Ok(hash_hex)
     }
 }

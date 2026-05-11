@@ -13,19 +13,22 @@ impl WorkSpace {
                     .context("Failed to read workspace config as string")?;
                 from_str(&data_str).context("Failed to parse workspace config TOML")?
             };
-
+            // Make atoms directory
+            std::fs::create_dir_all(&root.join("atoms"))?;
+            // Make runs directory
+            std::fs::create_dir_all(&root.join("runs"))?;
             return Ok(Self {
                 root,
                 workspace_config,
             });
         }
         // Initialize new workspace
-        atomic_write_file(workspace_config_path, &DEFAULT_WORKSPACE_CONFIG.as_bytes())?;
+        atomic_create_file(workspace_config_path, &DEFAULT_WORKSPACE_CONFIG.as_bytes())?;
         WorkSpace::resume_or_init_workspace()
     }
 }
 
-pub(crate) fn atomic_write_file(dst: &PathBuf, data: &[u8]) -> Result<()> {
+pub(crate) fn atomic_create_file(dst: &PathBuf, data: &[u8]) -> Result<()> {
     if dst.exists() {
         return Err(anyhow!("File already exists: {}", dst.display()));
     }
@@ -33,6 +36,15 @@ pub(crate) fn atomic_write_file(dst: &PathBuf, data: &[u8]) -> Result<()> {
         dst.parent()
             .ok_or_else(|| anyhow!("Invalid path: no parent directory"))?,
     )?;
+    let tmp_dst = dst.with_extension("tmp");
+    std::fs::write(&tmp_dst, data)?;
+    std::fs::rename(tmp_dst, dst)?;
+    Ok(())
+}
+pub(crate) fn atomic_replace_file(dst: &PathBuf, data: &[u8]) -> Result<()> {
+    if !dst.exists() {
+        return Err(anyhow!("File does not exist: {}", dst.display()));
+    }
     let tmp_dst = dst.with_extension("tmp");
     std::fs::write(&tmp_dst, data)?;
     std::fs::rename(tmp_dst, dst)?;
@@ -61,8 +73,8 @@ mod tests {
             .join(uuid::Uuid::new_v4().to_string())
             .join("file.txt");
 
-        atomic_write_file(&path, b"first").expect("first write");
-        assert!(atomic_write_file(&path, b"second").is_err());
+        atomic_create_file(&path, b"first").expect("first write");
+        assert!(atomic_create_file(&path, b"second").is_err());
         assert_eq!(std::fs::read(&path).expect("read file"), b"first");
     }
 }
