@@ -1,8 +1,11 @@
+use crate::model::agent::Agent;
 use crate::model::run::{Run, RunLock, RunMetadata, RunStatus, RunSummary};
 use crate::model::workspace::WorkSpace;
 use crate::store::workspacestore::atomic_create_file;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 impl WorkSpace {
     pub fn list_runs(&self) -> Result<Vec<RunSummary>> {
@@ -13,7 +16,7 @@ impl WorkSpace {
         }
         let mut result: Vec<RunSummary> = Vec::new();
         for entry in std::fs::read_dir(runs_dir)? {
-            // $PWD/.prismagent/runs/<run-id>
+            // $PWD/.prismagent/runs/{uuid}
             let path = entry?.path();
             if !path.is_dir() {
                 continue; // skip non-directory files
@@ -51,21 +54,31 @@ impl WorkSpace {
     }
     pub fn create_run_and_resume(&self, title: &str) -> Result<Run> {
         // Create new run indicates creating lock file and metadata.json
-        // $PWD/.prismagent/runs/{run_id}/metadata.json
-        let run_id = format!("run-{}", Utc::now().timestamp());
-        let run_dir = &self.root.join("runs").join(&run_id);
+        // $PWD/.prismagent/runs/{run_uuid}/metadata.json
+        let run_uuid = Uuid::now_v7().to_string();
+        let root_agent_uuid = Uuid::now_v7().to_string();
+        let run_dir = &self.root.join("runs").join(&run_uuid);
         if run_dir.exists() {
             return Err(anyhow!("Run already exists: {}", run_dir.display()));
         }
-        std::fs::create_dir_all(run_dir)?;
+        std::fs::create_dir_all(run_dir.join("agents"))?;
+        std::fs::create_dir_all(run_dir.join("units"))?;
         let timestamp = Utc::now().timestamp();
         let run_metadata = RunMetadata {
-            uuid: run_id,
+            uuid: run_uuid,
             title: title.to_string(),
             status: RunStatus::Active,
-            root_agent: "agent-0".to_string(),
+            root_agent_uuid: root_agent_uuid.clone(),
             created_at: timestamp,
             updated_at: timestamp,
+        };
+        let root_agent = Agent {
+            uuid: root_agent_uuid.clone(),
+            name: "root".to_string(),
+            unit_chain: Vec::new(),
+            unit_head: String::new(),
+            children_agents: Vec::new(),
+            snapshots: HashMap::new(),
         };
         let run_lock = RunLock {
             pid: std::process::id(),
@@ -78,6 +91,14 @@ impl WorkSpace {
         let data = serde_json::to_vec(&run_metadata)
             .map_err(|e| anyhow!("Failed to serialize run to JSON: {}", e))?;
         atomic_create_file(&run_dir.join("metadata.json"), &data)?;
+        let data = serde_json::to_vec(&root_agent)
+            .map_err(|e| anyhow!("Failed to serialize root agent to JSON: {}", e))?;
+        atomic_create_file(
+            &run_dir
+                .join("agents")
+                .join(format!("{root_agent_uuid}.json")),
+            &data,
+        )?;
         let data = serde_json::to_vec(&run_lock)
             .map_err(|e| anyhow!("Failed to serialize run lock to JSON: {}", e))?;
         atomic_create_file(&run_dir.join("run.lock"), &data)?;
@@ -88,10 +109,10 @@ impl WorkSpace {
             run_lock: Some(run_lock),
         })
     }
-    pub fn resume_run(&self, run_id: &str) -> Result<Run> {
+    pub fn resume_run(&self, run_uuid: &str) -> Result<Run> {
         // Resume run indicates checking lock file and metadata.json
         // the lock file must not exist before resuming, otherwise it means the run is being executed by other process
-        let run_dir = &self.root.join("runs").join(run_id);
+        let run_dir = &self.root.join("runs").join(run_uuid);
         if !run_dir.is_dir() {
             return Err(anyhow!("Run does not exist: {}", run_dir.display()));
         }
@@ -125,8 +146,8 @@ impl WorkSpace {
             run_lock: Some(run_lock),
         })
     }
-    pub fn release_run_lock(&self, run_id: &str) -> Result<()> {
-        let run_dir = &self.root.join("runs").join(run_id);
+    pub fn release_run_lock(&self, run_uuid: &str) -> Result<()> {
+        let run_dir = &self.root.join("runs").join(run_uuid);
         if !run_dir.is_dir() {
             return Err(anyhow!("Run does not exist: {}", run_dir.display()));
         }
@@ -151,7 +172,7 @@ mod tests {
     fn test_workspace() -> WorkSpace {
         let root = std::env::temp_dir()
             .join("prismagent-tests")
-            .join(Uuid::new_v4().to_string())
+            .join(Uuid::now_v7().to_string())
             .join(".prismagent");
         WorkSpace {
             root: PathBuf::from(root),
@@ -178,6 +199,14 @@ mod tests {
         assert!(run.run_lock.is_some());
         assert!(run.root.join("metadata.json").is_file());
         assert!(run.root.join("run.lock").is_file());
+        assert!(run.root.join("agents").is_dir());
+        assert!(run.root.join("units").is_dir());
+        assert!(
+            run.root
+                .join("agents")
+                .join(format!("{}.json", run.run_metadata.root_agent_uuid))
+                .is_file()
+        );
     }
 
     #[test]
@@ -186,14 +215,16 @@ mod tests {
         let run = workspace
             .create_run_and_resume("locked run")
             .expect("create run");
-        let run_id = run.run_metadata.uuid.clone();
+        let run_uuid = run.run_metadata.uuid.clone();
 
-        assert!(workspace.resume_run(&run_id).is_err());
+        assert!(workspace.resume_run(&run_uuid).is_err());
 
-        workspace.release_run_lock(&run_id).expect("release lock");
-        let resumed = workspace.resume_run(&run_id).expect("resume unlocked run");
+        workspace.release_run_lock(&run_uuid).expect("release lock");
+        let resumed = workspace
+            .resume_run(&run_uuid)
+            .expect("resume unlocked run");
 
-        assert_eq!(resumed.run_metadata.uuid, run_id);
+        assert_eq!(resumed.run_metadata.uuid, run_uuid);
         assert!(resumed.run_lock.is_some());
         assert!(resumed.root.join("run.lock").is_file());
     }

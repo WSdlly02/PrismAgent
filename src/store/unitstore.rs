@@ -4,7 +4,7 @@ use crate::store::workspacestore::atomic_create_file;
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
-// const UNIT_STORE_DIR: &str = ".prismagent/runs/{run-id}/units";
+// const UNIT_STORE_DIR: &str = ".prismagent/runs/{uuid}/units";
 // 单元路径是传入的函数参数
 
 impl Run {
@@ -36,17 +36,17 @@ mod tests {
     fn test_run() -> Run {
         let root = std::env::temp_dir()
             .join("prismagent-tests")
-            .join(Uuid::new_v4().to_string())
+            .join(Uuid::now_v7().to_string())
             .join(".prismagent")
             .join("runs")
-            .join("run-test");
+            .join("018f0000-0000-7000-8000-000000000001");
         Run {
             root: PathBuf::from(root),
             run_metadata: RunMetadata {
-                uuid: "run-test".to_string(),
+                uuid: "018f0000-0000-7000-8000-000000000001".to_string(),
                 title: "test".to_string(),
                 status: RunStatus::Active,
-                root_agent: "agent-0".to_string(),
+                root_agent_uuid: "018f0000-0000-7000-8000-000000000002".to_string(),
                 created_at: 1,
                 updated_at: 1,
             },
@@ -68,7 +68,10 @@ mod tests {
             role: UnitRole::User,
             scope: UnitScope::Agent,
             visibility: UnitVisibility::Public,
-            metadata: HashMap::from([("agent".to_string(), "agent-0".to_string())]),
+            metadata: HashMap::from([(
+                "agent_uuid".to_string(),
+                "018f0000-0000-7000-8000-000000000002".to_string(),
+            )]),
             created_at: 1,
         }
     }
@@ -88,7 +91,10 @@ mod tests {
         assert_eq!(actual.role, expected.role);
         assert_eq!(actual.scope, expected.scope);
         assert_eq!(actual.visibility, expected.visibility);
-        assert_eq!(actual.metadata.get("agent"), Some(&"agent-0".to_string()));
+        assert_eq!(
+            actual.metadata.get("agent_uuid"),
+            Some(&"018f0000-0000-7000-8000-000000000002".to_string())
+        );
     }
 
     #[test]

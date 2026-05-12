@@ -2,17 +2,17 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub struct Run {
-    pub root: PathBuf,             // $PWD/.prismagent/runs/<run-id>
-    pub run_metadata: RunMetadata, // 从 $PWD/.prismagent/runs/<run-id>/metadata.json 读取
+    pub root: PathBuf,             // $PWD/.prismagent/runs/{uuid}
+    pub run_metadata: RunMetadata, // 从 $PWD/.prismagent/runs/{uuid}/metadata.json 读取
     pub run_lock: Option<RunLock>, // 运行锁，表示当前 run 是否正在被执行
 }
-/// $PWD/.prismagent/runs/{run-uuid}/metadata.json
+/// $PWD/.prismagent/runs/{uuid}/metadata.json
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RunMetadata {
     pub uuid: String,
     pub title: String,
     pub status: RunStatus,
-    pub root_agent: String,
+    pub root_agent_uuid: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -23,7 +23,7 @@ pub enum RunStatus {
     #[serde(rename = "archived")]
     Archived,
 }
-// $PWD/.prismagent/runs/<run-id>/run.lock
+// $PWD/.prismagent/runs/{uuid}/run.lock
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RunLock {
     pub pid: u32,             // 锁定进程的 PID

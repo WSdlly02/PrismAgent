@@ -51,7 +51,7 @@ mod tests {
     fn test_workspace() -> WorkSpace {
         let root = std::env::temp_dir()
             .join("prismagent-tests")
-            .join(Uuid::new_v4().to_string())
+            .join(Uuid::now_v7().to_string())
             .join(".prismagent");
         WorkSpace {
             root: PathBuf::from(root),

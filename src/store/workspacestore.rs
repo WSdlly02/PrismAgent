@@ -70,7 +70,7 @@ mod tests {
     fn atomic_write_file_is_create_only() {
         let path = std::env::temp_dir()
             .join("prismagent-tests")
-            .join(uuid::Uuid::new_v4().to_string())
+            .join(uuid::Uuid::now_v7().to_string())
             .join("file.txt");
 
         atomic_create_file(&path, b"first").expect("first write");

@@ -75,7 +75,7 @@ impl AsyncIoBox {
         let (signal_out_tx, signal_out_rx) = mpsc::channel::<Signal>(16);
         Self {
             instance: AsyncIoInstance {
-                uuid: Uuid::new_v4().to_string(),
+                uuid: Uuid::now_v7().to_string(),
                 stdin: stdin_rx,
                 stdout: stdout_tx,
                 stderr: stderr_tx,

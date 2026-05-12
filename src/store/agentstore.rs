@@ -33,17 +33,17 @@ mod tests {
     fn test_run() -> Run {
         let root = std::env::temp_dir()
             .join("prismagent-tests")
-            .join(Uuid::new_v4().to_string())
+            .join(Uuid::now_v7().to_string())
             .join(".prismagent")
             .join("runs")
-            .join("run-test");
+            .join("018f0000-0000-7000-8000-000000000001");
         Run {
             root: PathBuf::from(root),
             run_metadata: RunMetadata {
-                uuid: "run-test".to_string(),
+                uuid: "018f0000-0000-7000-8000-000000000001".to_string(),
                 title: "test".to_string(),
                 status: RunStatus::Active,
-                root_agent: "agent-0".to_string(),
+                root_agent_uuid: "018f0000-0000-7000-8000-000000000002".to_string(),
                 created_at: 1,
                 updated_at: 1,
             },
@@ -59,15 +59,15 @@ mod tests {
 
     fn agent() -> Agent {
         Agent {
-            uuid: "agent-uuid".to_string(),
-            name: "agent-0".to_string(),
+            uuid: "018f0000-0000-7000-8000-000000000002".to_string(),
+            name: "root".to_string(),
             unit_chain: vec![
                 "unit-system-0".to_string(),
                 "unit-user-1".to_string(),
                 "unit-assistant-2".to_string(),
             ],
             unit_head: "unit-assistant-2".to_string(),
-            children_agents: vec!["agent-1".to_string()],
+            children_agents: vec!["018f0000-0000-7000-8000-000000000003".to_string()],
             snapshots: HashMap::from([(
                 "snapshot-before-tool".to_string(),
                 vec!["unit-system-0".to_string(), "unit-user-1".to_string()],
@@ -78,8 +78,11 @@ mod tests {
     #[test]
     fn agent_store_round_trips_chain_and_inline_snapshots() {
         let run = test_run();
-        let path = run.root.join("agent-0.json");
         let expected = agent();
+        let path = run
+            .root
+            .join("agents")
+            .join(format!("{}.json", expected.uuid));
 
         Run::write_agent_store(&path, &expected).expect("write agent");
         let actual = Run::read_agent_store(&path).expect("read agent");
@@ -97,8 +100,11 @@ mod tests {
     #[test]
     fn agent_store_is_create_only() {
         let run = test_run();
-        let path = run.root.join("agent-0.json");
         let expected = agent();
+        let path = run
+            .root
+            .join("agents")
+            .join(format!("{}.json", expected.uuid));
 
         Run::write_agent_store(&path, &expected).expect("first write");
         assert!(Run::write_agent_store(&path, &expected).is_err());

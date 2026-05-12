@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// $PWD/.prismagent/runs/{run-uuid}/{agent-uuid}.json
+/// $PWD/.prismagent/runs/{run-uuid}/agents/{uuid}.json
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Agent {
     pub uuid: String,                 // Agent的唯一标识符

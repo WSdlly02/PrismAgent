@@ -5,10 +5,8 @@ use crate::model::run::RunSummary;
 ///
 /// 这里刻意保持极简：
 ///
-/// - `Input`：用户输入的一行文本。Kernel 根据当前 input sink 决定把它送给谁：
-///   - main agent
-///   - 正在等待输入的 HumanInputInstance
-///   - 其他阻塞等待 stdin 的 AsyncIoInstance
+/// - `Input`：用户输入的一行文本。Shell/TUI 必须显式指定目标，
+///   Kernel 负责校验目标是否存在且是否可以接收输入。
 ///
 /// - `Command`：真正属于 Kernel 管理面的命令，例如创建 run、恢复 run、取消任务、关闭 kernel。
 ///
@@ -23,8 +21,8 @@ use crate::model::run::RunSummary;
 pub enum ShellToKernelEvent {
     /// 普通输入。
     ///
-    /// Shell/TUI 不需要知道这行输入应该给谁。
-    /// Kernel 根据当前 input sink 路由。
+    /// Shell/TUI 必须显式指定目标。
+    /// Kernel 不猜测路由，只校验与执行。
     Input(UserInput),
 
     /// Kernel 管理命令。
@@ -35,16 +33,27 @@ pub enum ShellToKernelEvent {
 
 /// 用户输入。
 ///
-/// 这不是“发给 main agent 的消息”，而是“用户给 Kernel 的一行输入”。
-/// 具体路由目标由 Kernel 内部的 input sink 决定。
+/// 这不是“发给当前 agent 的消息”，而是“用户给某个明确目标的一行输入”。
 pub struct UserInput {
     /// 请求 ID。
     ///
     /// 用于日志、调试、必要时和 Kernel 输出做关联。
     pub request_uuid: String,
 
+    /// 输入目标。
+    pub target: InputTarget,
+
     /// 用户输入的原始内容。
     pub content: String,
+}
+
+/// 用户输入目标。
+///
+/// Agent 表示普通对话输入；Instance 表示投递给某个正在等待 stdin 的具体
+/// AsyncIoInstance，例如人工确认、选择题、审批等。
+pub enum InputTarget {
+    Agent { agent_uuid: String },
+    Instance { asyncioinstance_uuid: String },
 }
 
 /// Shell/TUI 发给 Kernel 的控制命令请求。
@@ -197,16 +206,32 @@ pub struct KernelStatus {
     /// 可选作用域：asyncioinstance。
     pub asyncioinstance_uuid: Option<String>,
 
+    /// 机器可读运行状态。
+    pub runtime_status: Option<RuntimeStatus>,
+
     /// 给用户看的简短状态文本。
     pub message: String,
 }
 
 /// 状态级别。
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum StatusLevel {
     Info,
     Warn,
     Error,
+}
+
+/// Kernel/实例运行状态。
+///
+/// TUI 应根据这个字段控制输入框状态，而不是解析 message 文本。
+#[derive(PartialEq, Eq)]
+pub enum RuntimeStatus {
+    Accepted,
+    Running,
+    WaitingInput,
+    Done,
+    Failed,
+    Cancelled,
 }
 
 /// Kernel 返回给 Shell/TUI 的视图数据。
