@@ -17,7 +17,7 @@ pub struct Unit {
     pub metadata: HashMap<String, String>,
     pub created_at: i64,
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 #[serde(rename = "kind")]
 pub enum UnitKind {
     #[serde(rename = "user_input")]
@@ -33,7 +33,7 @@ pub enum UnitKind {
     #[serde(rename = "generic_result")]
     GenericResult, // 通用执行结果单元，供Agent执行任意操作后记录结果使用
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 #[serde(rename = "role")]
 pub enum UnitRole {
     #[serde(rename = "system")]
@@ -47,7 +47,7 @@ pub enum UnitRole {
     #[serde(rename = "other")]
     Other,
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 #[serde(rename = "scope")]
 pub enum UnitScope {
     #[serde(rename = "workspace")]
@@ -57,7 +57,7 @@ pub enum UnitScope {
     #[serde(rename = "agent")]
     Agent,
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 #[serde(rename = "visibility")]
 pub enum UnitVisibility {
     #[serde(rename = "internal")]

@@ -25,14 +25,14 @@ pub struct RuntimeConfigSection {
 pub struct ConcurrencyConfigSection {
     pub lock_scope: LockScope, // "workspace"
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub enum EntryMode {
     #[serde(rename = "manual_resume")]
     ManualResume,
     #[serde(rename = "auto_start")]
     AutoStart,
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub enum LockScope {
     #[serde(rename = "workspace")]
     Workspace,

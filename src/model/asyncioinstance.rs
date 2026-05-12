@@ -33,13 +33,13 @@ pub struct AsyncIoHandle {
     pub signal_in: mpsc::Sender<Signal>,  // 双向通信的信号通道
     pub signal_out: mpsc::Receiver<Signal>,
 }
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum AsyncIoInstanceRole {
     Unknown,
     LLM,
     Tool,
 }
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum ExecutionMode {
     Blocking,
     Async,
@@ -57,7 +57,7 @@ pub struct Signal {
     pub status: SignalStatus,
     pub details: String,
 }
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub enum SignalStatus {
     Waiting,
     Running,

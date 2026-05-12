@@ -16,7 +16,7 @@ pub struct RunMetadata {
     pub created_at: i64,
     pub updated_at: i64,
 }
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub enum RunStatus {
     #[serde(rename = "active")]
     Active,
