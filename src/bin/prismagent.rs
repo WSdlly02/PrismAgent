@@ -15,15 +15,18 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 use prismagent::{
-    model::event::{CommandEvent, KernelToShellEvent, ShellToKernelEvent},
+    model::event::{
+        KernelToShellEvent, KernelToShellPayload, KernelView, ShellToKernelEvent, StatusLevel,
+        UserCommand, UserCommandRequest, UserInput,
+    },
     model::kernel::Kernel,
 };
 
 const DEFAULT_RUN_UUID: &str = "none";
 const DEFAULT_AGENT_UUID: &str = "none";
-const DEFAULT_AGENT_NAME: &str = "none";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,7 +41,10 @@ async fn main() -> Result<()> {
     let _guard = TerminalGuard;
 
     let result = run_loop(&mut terminal, &mut tui_app).await;
-    let _ = tui_app.shell_tx.send(ShellToKernelEvent::Shutdown).await;
+    let _ = tui_app
+        .shell_tx
+        .send(command_event(UserCommand::Shutdown))
+        .await;
     result
 }
 
@@ -172,6 +178,17 @@ impl LogLine {
     }
 }
 
+fn request_uuid() -> String {
+    Uuid::new_v4().to_string()
+}
+
+fn command_event(command: UserCommand) -> ShellToKernelEvent {
+    ShellToKernelEvent::Command(UserCommandRequest {
+        request_uuid: request_uuid(),
+        command,
+    })
+}
+
 async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
     if key.kind != KeyEventKind::Press {
         return Ok(());
@@ -195,49 +212,61 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
             match content.chars().nth(0) {
                 Some('/') => {
                     let command = content[1..].trim();
-                    if app
-                        .shell_tx
-                        .send(ShellToKernelEvent::CommandInput {
-                            command: match command {
-                                cmd if cmd.starts_with("new ") => {
-                                    let title = cmd[4..].trim().to_owned();
-                                    CommandEvent::NewRun { title }
-                                }
-                                cmd if cmd.starts_with("resume ") => {
-                                    let run_id = cmd[7..].trim().to_owned();
-                                    CommandEvent::ResumeRun { run_id }
-                                }
-                                cmd if cmd.starts_with("delete ") => {
-                                    let run_id = cmd[7..].trim().to_owned();
-                                    CommandEvent::DeleteRun { run_id }
-                                }
-                                "list" => CommandEvent::ListRuns,
-                                _ => {
-                                    app.push_error(format!("unknown command: {command}"));
-                                    return Ok(());
-                                }
-                            },
-                        })
-                        .await
-                        .is_err()
-                    {
+                    let event = match command {
+                        "list" => command_event(UserCommand::ListRuns),
+                        "context" => command_event(UserCommand::FetchCurrentContext),
+                        "cancel" => command_event(UserCommand::Cancel {
+                            run_uuid: None,
+                            agent_uuid: None,
+                            asyncioinstance_uuid: None,
+                        }),
+                        "new" => command_event(UserCommand::NewRun { title: None }),
+                        cmd if cmd.starts_with("new ") => {
+                            let title = cmd[4..].trim();
+                            command_event(UserCommand::NewRun {
+                                title: if title.is_empty() {
+                                    None
+                                } else {
+                                    Some(title.to_owned())
+                                },
+                            })
+                        }
+                        cmd if cmd.starts_with("resume ") => {
+                            let run_uuid = cmd[7..].trim().to_owned();
+                            command_event(UserCommand::ResumeRun { run_uuid })
+                        }
+                        cmd if cmd.starts_with("delete ") => {
+                            let run_uuid = cmd[7..].trim().to_owned();
+                            command_event(UserCommand::DeleteRun { run_uuid })
+                        }
+                        cmd if cmd.starts_with("snapshot") => {
+                            let snapshot_uid = cmd
+                                .strip_prefix("snapshot")
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                                .map(str::to_owned);
+                            command_event(UserCommand::Snapshot {
+                                run_uuid: None,
+                                snapshot_uid,
+                            })
+                        }
+                        _ => {
+                            app.push_error(format!("unknown command: {command}"));
+                            return Ok(());
+                        }
+                    };
+                    if app.shell_tx.send(event).await.is_err() {
                         app.push_error("kernel channel closed");
                         app.status = "kernel disconnected".to_owned();
                     }
                 }
                 _ => {
-                    if app.run_uuid == DEFAULT_RUN_UUID {
-                        app.push_error("no active run; use /new <title> or /resume <run-id>");
-                        app.status = "no active run".to_owned();
-                        return Ok(());
-                    }
                     if app
                         .shell_tx
-                        .send(ShellToKernelEvent::UserInput {
-                            run_id: app.run_uuid.clone(),
-                            agent_id: app.agent_uuid.clone(),
+                        .send(ShellToKernelEvent::Input(UserInput {
+                            request_uuid: request_uuid(),
                             content,
-                        })
+                        }))
                         .await
                         .is_err()
                     {
@@ -260,43 +289,101 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
 
 fn drain_kernel_events(app: &mut TuiApp) {
     while let Ok(event) = app.kernel_rx.try_recv() {
-        match event {
-            KernelToShellEvent::RunActivated {
-                run_id,
-                agent_id,
-                title,
-            } => {
-                app.run_uuid = run_id;
-                app.agent_uuid = agent_id;
-                app.status = format!("active: {}", app.run_uuid);
-                app.push_system(format!(
-                    "active run: {} ({title}), agent: {}",
-                    app.run_uuid, app.agent_uuid
-                ));
-            }
-            KernelToShellEvent::Output {
-                run_id,
-                agent_id,
-                content,
-            } => {
-                app.status = format!("output from {run_id}/{agent_id}");
+        match event.payload {
+            KernelToShellPayload::Output(output) => {
+                let run_uuid = output.run_uuid.unwrap_or_else(|| "N/A".to_string());
+                let agent_uuid = output.agent_uuid.unwrap_or_else(|| "N/A".to_string());
+                app.status = format!("output from {run_uuid}/{agent_uuid}");
+                app.run_uuid = if run_uuid == "N/A" {
+                    app.run_uuid.clone()
+                } else {
+                    run_uuid
+                };
+                app.agent_uuid = if agent_uuid == "N/A" {
+                    app.agent_uuid.clone()
+                } else {
+                    agent_uuid
+                };
+                let content = output.content;
                 app.push_kernel(content.content);
             }
-            KernelToShellEvent::Error {
-                run_id,
-                agent_id,
-                error,
-            } => {
-                app.status = format!("error from {run_id}/{agent_id}");
+            KernelToShellPayload::Error(kernel_error) => {
+                let run_uuid = kernel_error.run_uuid.unwrap_or_else(|| "N/A".to_string());
+                let agent_uuid = kernel_error.agent_uuid.unwrap_or_else(|| "N/A".to_string());
+                app.status = format!("error from {run_uuid}/{agent_uuid}");
+                let error = kernel_error.error;
                 if error.details.is_empty() {
                     app.push_error(error.error);
                 } else {
                     app.push_error(format!("{}: {}", error.error, error.details));
                 }
             }
-            KernelToShellEvent::Done { run_id, agent_id } => {
-                app.status = format!("{run_id}/{agent_id} done");
+            KernelToShellPayload::Status(status) => {
+                if let Some(run_uuid) = status.run_uuid {
+                    app.run_uuid = run_uuid;
+                }
+                if let Some(agent_uuid) = status.agent_uuid {
+                    app.agent_uuid = agent_uuid;
+                }
+                app.status = status.message.clone();
+                match status.level {
+                    StatusLevel::Info => app.push_system(status.message),
+                    StatusLevel::Warn => app.push_system(format!("warn: {}", status.message)),
+                    StatusLevel::Error => app.push_error(status.message),
+                }
             }
+            KernelToShellPayload::View(view) => match view {
+                KernelView::Runs { runs } => {
+                    if runs.is_empty() {
+                        app.push_system("No runs.");
+                    } else {
+                        let lines = runs
+                            .into_iter()
+                            .map(|run| {
+                                let lock = if run.locked { "locked" } else { "available" };
+                                format!("{} [{lock}] {} {:?}", run.uuid, run.title, run.status)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        app.push_system(format!("Runs:\n{lines}"));
+                    }
+                    app.status = "runs listed".to_owned();
+                }
+                KernelView::CurrentContext {
+                    run_uuid,
+                    agent_uuid,
+                    title,
+                    unit_count,
+                    head_unit_uuid,
+                } => {
+                    app.run_uuid = run_uuid.unwrap_or_else(|| DEFAULT_RUN_UUID.to_string());
+                    app.agent_uuid = agent_uuid.unwrap_or_else(|| DEFAULT_AGENT_UUID.to_string());
+                    app.status = format!("active: {}", app.run_uuid);
+                    app.push_system(format!(
+                        "context run={} agent={} title={} units={} head={}",
+                        app.run_uuid,
+                        app.agent_uuid,
+                        title.unwrap_or_else(|| "none".to_string()),
+                        unit_count,
+                        head_unit_uuid.unwrap_or_else(|| "none".to_string())
+                    ));
+                }
+                KernelView::SnapshotCreated {
+                    run_uuid,
+                    snapshot_uid,
+                    name,
+                } => {
+                    app.status = format!("snapshot created: {snapshot_uid}");
+                    app.push_system(format!(
+                        "snapshot created: run={run_uuid} uid={snapshot_uid} name={}",
+                        name.unwrap_or_else(|| "none".to_string())
+                    ));
+                }
+                KernelView::RunDeleted { run_uuid } => {
+                    app.status = format!("run deleted: {run_uuid}");
+                    app.push_system(format!("run deleted: {run_uuid}"));
+                }
+            },
         }
     }
 }

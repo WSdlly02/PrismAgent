@@ -8,5 +8,5 @@ pub struct Kernel {
 }
 pub struct KernelRuntime {
     pub current_run: Run,                        // 当前正在执行的 run
-    pub handles: HashMap<String, AsyncIoHandle>, // agent_uuid -> handle
+    pub handles: HashMap<String, AsyncIoHandle>, // asyncioinstance_uuid -> handle
 }
