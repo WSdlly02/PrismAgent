@@ -3,6 +3,10 @@ name = "prismagent"
 version = "0.9.0"
 edition = "2024"
 
+[[bin]]
+name = "prismagent"
+path = "src/bin/prismagent.rs"
+
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 anyhow = "1.0.102"
@@ -18,3 +22,10 @@ toml = "1.1.2"
 chrono = "0.4.44"
 whoami = "2.1.2"
 directories = "6.0.0"
+
+[profile.release]
+opt-level = 3
+lto = "fat"       # 跨 crate 链接时全局优化，性能提升 10-30%
+codegen-units = 1 # 禁止并行编译，允许更激进的内联优化
+strip = true      # 去除符号表，减小体积
+panic = "abort"   # 减小体积并略微提升性能

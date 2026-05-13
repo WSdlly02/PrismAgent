@@ -21,6 +21,12 @@ impl WorkSpace {
             if !path.is_dir() {
                 continue; // skip non-directory files
             };
+            let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue; // skip directories with invalid names
+            };
+            if Uuid::parse_str(dir_name).is_err() {
+                continue; // skip directories that are not valid UUIDs
+            }
             let run_metadata: RunMetadata = std::fs::read(path.join("metadata.json"))
                 .map_err(|e| anyhow!("Failed to read unit store: {}", e))
                 .and_then(|data| {

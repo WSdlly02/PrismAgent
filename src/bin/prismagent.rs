@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use prismagent::{
     model::event::{
-        KernelToShellEvent, KernelToShellPayload, KernelView, ShellToKernelEvent, StatusLevel,
-        UserCommand, UserCommandRequest, UserInput,
+        InputTarget, KernelToShellEvent, KernelToShellPayload, KernelView, RuntimeStatus,
+        ShellToKernelEvent, StatusLevel, UserCommand, UserCommandRequest, UserInput,
     },
     model::kernel::Kernel,
 };
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     let (shell_tx, kernel_rx) = kernel.run();
     let mut tui_app = TuiApp::new(DEFAULT_RUN_UUID, DEFAULT_AGENT_UUID, shell_tx, kernel_rx);
     tui_app.push_system(
-        "PrismAgent TUI started. Use /list, /new <title>, or /resume <run-id>. Esc or Ctrl-C exits.",
+        "PrismAgent TUI started. Use /list, /new <title>, or /resume <run-uuid>. Esc or Ctrl-C exits.",
     );
 
     let mut terminal = setup_terminal()?;
@@ -60,10 +60,10 @@ async fn run_loop(
             break;
         }
 
-        if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(app, key).await?;
-            }
+        if event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = event::read()?
+        {
+            handle_key(app, key).await?;
         }
 
         tokio::task::yield_now().await;
@@ -94,6 +94,7 @@ struct TuiApp {
     run_uuid: String,
     agent_uuid: String,
     input: String,
+    input_enabled: bool,
     status: String,
     lines: Vec<LogLine>,
     should_quit: bool,
@@ -112,6 +113,7 @@ impl TuiApp {
             run_uuid: run_uuid.to_owned(),
             agent_uuid: agent_uuid.to_owned(),
             input: String::new(),
+            input_enabled: true,
             status: "idle".to_owned(),
             lines: Vec::new(),
             should_quit: false,
@@ -179,7 +181,7 @@ impl LogLine {
 }
 
 fn request_uuid() -> String {
-    Uuid::new_v4().to_string()
+    Uuid::now_v7().to_string()
 }
 
 fn command_event(command: UserCommand) -> ShellToKernelEvent {
@@ -261,10 +263,22 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                     }
                 }
                 _ => {
+                    if !app.input_enabled {
+                        app.push_error("input is disabled while the selected target is running");
+                        return Ok(());
+                    }
+                    if app.run_uuid == DEFAULT_RUN_UUID || app.agent_uuid == DEFAULT_AGENT_UUID {
+                        app.push_error("no active run; use /new <title> or /resume <run-uuid>");
+                        app.status = "no active run".to_owned();
+                        return Ok(());
+                    }
                     if app
                         .shell_tx
                         .send(ShellToKernelEvent::Input(UserInput {
                             request_uuid: request_uuid(),
+                            target: InputTarget::Agent {
+                                agent_uuid: app.agent_uuid.clone(),
+                            },
                             content,
                         }))
                         .await
@@ -319,11 +333,24 @@ fn drain_kernel_events(app: &mut TuiApp) {
                 }
             }
             KernelToShellPayload::Status(status) => {
+                let runtime_status = status.runtime_status;
                 if let Some(run_uuid) = status.run_uuid {
                     app.run_uuid = run_uuid;
                 }
                 if let Some(agent_uuid) = status.agent_uuid {
                     app.agent_uuid = agent_uuid;
+                }
+                match runtime_status {
+                    Some(RuntimeStatus::Accepted) | Some(RuntimeStatus::Running) => {
+                        app.input_enabled = false;
+                    }
+                    Some(RuntimeStatus::WaitingInput)
+                    | Some(RuntimeStatus::Done)
+                    | Some(RuntimeStatus::Failed)
+                    | Some(RuntimeStatus::Cancelled) => {
+                        app.input_enabled = true;
+                    }
+                    None => {}
                 }
                 app.status = status.message.clone();
                 match status.level {
@@ -408,8 +435,11 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "  run={} agent={}  status={}",
-            app.run_uuid, app.agent_uuid, app.status
+            "  run={} agent={}  input={}  status={}",
+            app.run_uuid,
+            app.agent_uuid,
+            if app.input_enabled { "on" } else { "off" },
+            app.status
         )),
     ]))
     .block(Block::default().borders(Borders::ALL).title("Session"));

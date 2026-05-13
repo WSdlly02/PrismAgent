@@ -11,7 +11,7 @@ impl WorkSpace {
             return Err(anyhow!("Invalid atom hash: expected 64 hex characters"));
         }
         let atom_store_path = &self.root.join("atoms").join(&hash[0..2]).join(&hash[2..]);
-        std::fs::read(&atom_store_path).map_err(|e| anyhow!("Failed to read atom store: {}", e))
+        std::fs::read(atom_store_path).map_err(|e| anyhow!("Failed to read atom store: {}", e))
     }
     pub fn write_atom_store(&self, data: &[u8]) -> Result<String> {
         if data.is_empty() {

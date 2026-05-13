@@ -20,9 +20,8 @@ pub struct AsyncIoInstance {
     pub signal_in: mpsc::Receiver<Signal>, // 双向通信的信号通道
     pub signal_out: mpsc::Sender<Signal>,
 
-    pub role: AsyncIoInstanceRole, // 实例的角色，决定了它的行为和权限
-    pub execution_mode: ExecutionMode, // 是否阻塞等待完成，默认为true，设置为false后实例会以异步方式运行，内核需要通过信号来监控状态
-    pub data_transmit_interval: u64,   // 数据传输间隔，单位毫秒，默认100ms
+    pub role: AsyncIoInstanceRole,   // 实例的角色，决定了它的行为和权限
+    pub data_transmit_interval: u64, // 数据传输间隔，单位毫秒，默认100ms
     pub metadata: HashMap<String, String>, // 实例的元数据, 可以存储任意键值对，供内核和Agent使用
 }
 /// 异步IO的控制句柄，提供给内核使用
@@ -38,11 +37,6 @@ pub enum AsyncIoInstanceRole {
     Unknown,
     LLM,
     Tool,
-}
-#[derive(PartialEq, Eq)]
-pub enum ExecutionMode {
-    Blocking,
-    Async,
 }
 pub struct IoOutput {
     pub streaming: bool,
@@ -83,7 +77,6 @@ impl AsyncIoBox {
                 signal_out: signal_out_tx,
 
                 role: AsyncIoInstanceRole::Unknown,
-                execution_mode: ExecutionMode::Blocking,
                 data_transmit_interval: 100,
                 metadata: HashMap::new(),
             },
@@ -96,11 +89,6 @@ impl AsyncIoBox {
                 signal_out: signal_out_rx,
             },
         }
-    }
-    pub fn with_async(mut self) -> Self {
-        // Implementation for setting the await flag
-        self.instance.execution_mode = ExecutionMode::Async;
-        self
     }
     pub fn with_data_transmit_interval(mut self, interval: u64) -> Self {
         // Implementation for setting the data transmit interval

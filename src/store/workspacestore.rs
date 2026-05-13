@@ -9,21 +9,21 @@ impl WorkSpace {
         let workspace_config_path = &root.join("config.toml");
         if workspace_config_path.is_file() {
             let workspace_config: WorkspaceConfig = {
-                let data_str = std::fs::read_to_string(&workspace_config_path)
+                let data_str = std::fs::read_to_string(workspace_config_path)
                     .context("Failed to read workspace config as string")?;
                 from_str(&data_str).context("Failed to parse workspace config TOML")?
             };
             // Make atoms directory
-            std::fs::create_dir_all(&root.join("atoms"))?;
+            std::fs::create_dir_all(root.join("atoms"))?;
             // Make runs directory
-            std::fs::create_dir_all(&root.join("runs"))?;
+            std::fs::create_dir_all(root.join("runs"))?;
             return Ok(Self {
                 root,
                 workspace_config,
             });
         }
         // Initialize new workspace
-        atomic_create_file(workspace_config_path, &DEFAULT_WORKSPACE_CONFIG.as_bytes())?;
+        atomic_create_file(workspace_config_path, DEFAULT_WORKSPACE_CONFIG.as_bytes())?;
         WorkSpace::resume_or_init_workspace()
     }
 }
