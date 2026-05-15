@@ -1,4 +1,3 @@
-use crate::model::atom::Atom;
 use crate::model::unit::Unit;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,8 +14,8 @@ pub struct AsyncIoBox {
 pub struct AsyncIoInstance {
     pub uuid: String,
     pub stdin: mpsc::Receiver<Vec<Unit>>,  // 标准输入-接收方
-    pub stdout: mpsc::Sender<IoOutput>,    // 标准流式输出-发送方
-    pub stderr: mpsc::Sender<IoError>,     // 标准错误-发送方
+    pub stdout: mpsc::Sender<Vec<Unit>>,   // 标准输出-发送方
+    pub stderr: mpsc::Sender<Vec<Unit>>,   // 标准错误-发送方
     pub signal_in: mpsc::Receiver<Signal>, // 双向通信的信号通道
     pub signal_out: mpsc::Sender<Signal>,
 
@@ -26,26 +25,17 @@ pub struct AsyncIoInstance {
 }
 /// 异步IO的控制句柄，提供给内核使用
 pub struct AsyncIoHandle {
-    pub stdin: mpsc::Sender<Vec<Unit>>,   // 标准输入-发送方
-    pub stdout: mpsc::Receiver<IoOutput>, // 标准流式输出-接收方
-    pub stderr: mpsc::Receiver<IoError>,  // 标准错误-接收方
-    pub signal_in: mpsc::Sender<Signal>,  // 双向通信的信号通道
+    pub stdin: mpsc::Sender<Vec<Unit>>,    // 标准输入-发送方
+    pub stdout: mpsc::Receiver<Vec<Unit>>, // 标准输出-接收方
+    pub stderr: mpsc::Receiver<Vec<Unit>>, // 标准错误-接收方
+    pub signal_in: mpsc::Sender<Signal>,   // 双向通信的信号通道
     pub signal_out: mpsc::Receiver<Signal>,
 }
 #[derive(PartialEq, Eq)]
 pub enum AsyncIoInstanceRole {
     Unknown,
-    LLM,
-    Tool,
-}
-pub struct IoOutput {
-    pub streaming: bool,
-    pub content: String,
-    pub final_content: Option<Atom>,
-}
-pub struct IoError {
-    pub error: String,
-    pub details: String,
+    LLM,  // 收到Vec<Unit>后会被解析成LLM输入，输出会被解析成LLM输出
+    Tool, // 收到Vec<Unit>后会判断尾部Unit是否批准、解析工具输入，输出会被解析成工具输出
 }
 pub struct Signal {
     pub status: SignalStatus,
@@ -63,8 +53,8 @@ pub enum SignalStatus {
 impl AsyncIoBox {
     pub fn new() -> Self {
         let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<Unit>>(1);
-        let (stdout_tx, stdout_rx) = mpsc::channel::<IoOutput>(64);
-        let (stderr_tx, stderr_rx) = mpsc::channel::<IoError>(16);
+        let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<Unit>>(64);
+        let (stderr_tx, stderr_rx) = mpsc::channel::<Vec<Unit>>(16);
         let (signal_in_tx, signal_in_rx) = mpsc::channel::<Signal>(16);
         let (signal_out_tx, signal_out_rx) = mpsc::channel::<Signal>(16);
         Self {

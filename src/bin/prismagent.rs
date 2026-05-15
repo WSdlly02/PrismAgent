@@ -318,9 +318,9 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
 fn drain_kernel_events(app: &mut TuiApp) {
     while let Ok(event) = app.kernel_rx.try_recv() {
         match event.payload {
-            KernelToShellPayload::Output(output) => {
-                let run_uuid = output.run_uuid.unwrap_or_else(|| "N/A".to_string());
-                let agent_uuid = output.agent_uuid.unwrap_or_else(|| "N/A".to_string());
+            KernelToShellPayload::Stdout(stream) => {
+                let run_uuid = stream.run_uuid.unwrap_or_else(|| "N/A".to_string());
+                let agent_uuid = stream.agent_uuid.unwrap_or_else(|| "N/A".to_string());
                 app.status = format!("output from {run_uuid}/{agent_uuid}");
                 app.run_uuid = if run_uuid == "N/A" {
                     app.run_uuid.clone()
@@ -332,19 +332,13 @@ fn drain_kernel_events(app: &mut TuiApp) {
                 } else {
                     agent_uuid
                 };
-                let content = output.content;
-                app.push_kernel(content.content);
+                app.push_kernel(render_units(&stream.units));
             }
-            KernelToShellPayload::Error(kernel_error) => {
-                let run_uuid = kernel_error.run_uuid.unwrap_or_else(|| "N/A".to_string());
-                let agent_uuid = kernel_error.agent_uuid.unwrap_or_else(|| "N/A".to_string());
+            KernelToShellPayload::Stderr(stream) => {
+                let run_uuid = stream.run_uuid.unwrap_or_else(|| "N/A".to_string());
+                let agent_uuid = stream.agent_uuid.unwrap_or_else(|| "N/A".to_string());
                 app.status = format!("error from {run_uuid}/{agent_uuid}");
-                let error = kernel_error.error;
-                if error.details.is_empty() {
-                    app.push_error(error.error);
-                } else {
-                    app.push_error(format!("{}: {}", error.error, error.details));
-                }
+                app.push_error(render_units(&stream.units));
             }
             KernelToShellPayload::Status(status) => {
                 let runtime_status = status.runtime_status;
@@ -427,6 +421,19 @@ fn drain_kernel_events(app: &mut TuiApp) {
             },
         }
     }
+}
+
+fn render_units(units: &[prismagent::model::unit::Unit]) -> String {
+    units
+        .iter()
+        .filter_map(|unit| {
+            unit.metadata
+                .get("content")
+                .or_else(|| unit.metadata.get("preview"))
+                .cloned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn draw(frame: &mut Frame<'_>, app: &TuiApp) {

@@ -1,12 +1,13 @@
 use crate::model::app::App;
-use crate::model::asyncioinstance::{IoError, IoOutput};
 use crate::model::event::{
-    InputTarget, KernelError, KernelOutput, KernelStatus, KernelToShellEvent, KernelToShellPayload,
+    InputTarget, KernelStatus, KernelToShellEvent, KernelToShellPayload, KernelUnitStream,
     KernelView, RuntimeStatus, ShellToKernelEvent, StatusLevel, UserKernelCommand,
 };
 use crate::model::kernel::{Kernel, KernelRuntime};
 use crate::model::run::Run;
+use crate::model::unit::{Unit, UnitKind, UnitRole, UnitScope, UnitVisibility};
 use anyhow::{Result, anyhow};
+use chrono::Utc;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -128,18 +129,20 @@ impl Kernel {
                 };
             }
 
-            macro_rules! emit_error {
+            macro_rules! emit_stderr {
                 ($correlation_uuid:expr, $run_uuid:expr, $agent_uuid:expr, $instance_uuid:expr, $message:expr) => {
                     emit!(
                         $correlation_uuid,
-                        KernelToShellPayload::Error(KernelError {
+                        KernelToShellPayload::Stderr(KernelUnitStream {
                             asyncioinstance_uuid: $instance_uuid,
                             run_uuid: $run_uuid,
                             agent_uuid: $agent_uuid,
-                            error: IoError {
-                                error: $message,
-                                details: String::new(),
-                            },
+                            units: vec![unit_with_message(
+                                UnitKind::GenericResult,
+                                UnitRole::System,
+                                UnitVisibility::Public,
+                                $message,
+                            )],
                         })
                     );
                 };
@@ -222,7 +225,7 @@ impl Kernel {
                                         emit_current_context!(correlation_uuid);
                                     }
                                     Err(error) => {
-                                        emit_error!(
+                                        emit_stderr!(
                                             correlation_uuid,
                                             None,
                                             None,
@@ -259,7 +262,7 @@ impl Kernel {
                                         emit_current_context!(correlation_uuid);
                                     }
                                     Err(error) => {
-                                        emit_error!(
+                                        emit_stderr!(
                                             correlation_uuid,
                                             Some(run_uuid),
                                             None,
@@ -288,7 +291,7 @@ impl Kernel {
                                     );
                                 }
                                 Err(error) => {
-                                    emit_error!(
+                                    emit_stderr!(
                                         correlation_uuid,
                                         None,
                                         None,
@@ -336,7 +339,7 @@ impl Kernel {
                                         );
                                     }
                                     Err(error) => {
-                                        emit_error!(
+                                        emit_stderr!(
                                             correlation_uuid,
                                             None,
                                             None,
@@ -352,7 +355,7 @@ impl Kernel {
                     ShellToKernelEvent::Input(input) => {
                         // 阻塞校验输入的 run_uuid 和 agent_uuid 是否与当前 runtime 匹配
                         let Some(runtime) = &kernel.runtime else {
-                            emit_error!(
+                            emit_stderr!(
                                 Some(input.request_uuid),
                                 None,
                                 None,
@@ -384,7 +387,7 @@ impl Kernel {
 
                         // 目前仅支持发送给 root agent 的输入，后续会根据 agent_uuid 查找对应的 agent 和 unit 来路由输入
                         if agent_uuid != runtime.current_run.run_metadata.root_agent_uuid {
-                            emit_error!(
+                            emit_stderr!(
                                 Some(input.request_uuid),
                                 Some(run_uuid),
                                 Some(agent_uuid),
@@ -455,15 +458,16 @@ fn spawn_input_instance(
             message: "Input processing started.".to_string(),
         }));
 
-        send_or_return!(KernelToShellPayload::Output(KernelOutput {
+        send_or_return!(KernelToShellPayload::Stdout(KernelUnitStream {
             asyncioinstance_uuid: Some(instance_uuid.clone()),
             run_uuid: Some(run_uuid.clone()),
             agent_uuid: Some(agent_uuid.clone()),
-            content: IoOutput {
-                streaming: false,
-                content: format!("kernel received: {content}"),
-                final_content: None,
-            },
+            units: vec![unit_with_message(
+                UnitKind::GenericResult,
+                UnitRole::Assistant,
+                UnitVisibility::Public,
+                format!("kernel received: {content}"),
+            )],
         }));
 
         send_or_return!(KernelToShellPayload::Status(KernelStatus {
@@ -475,4 +479,22 @@ fn spawn_input_instance(
             message: "Input processing finished.".to_string(),
         }));
     });
+}
+
+fn unit_with_message(
+    kind: UnitKind,
+    role: UnitRole,
+    visibility: UnitVisibility,
+    message: String,
+) -> Unit {
+    Unit {
+        uuid: Uuid::now_v7().to_string(),
+        atom_hash: "0".repeat(64),
+        kind,
+        role,
+        scope: UnitScope::Agent,
+        visibility,
+        metadata: HashMap::from([("content".to_string(), message)]),
+        created_at: Utc::now().timestamp(),
+    }
 }

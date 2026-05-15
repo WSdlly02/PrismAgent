@@ -1,5 +1,5 @@
-use crate::model::asyncioinstance::{IoError, IoOutput};
 use crate::model::run::RunSummary;
+use crate::model::unit::Unit;
 
 /// Shell -> Kernel 的事件。
 ///
@@ -128,8 +128,8 @@ pub struct UserShellCommandRequest {
 ///
 /// 这一侧也保持极简：
 ///
-/// - `Output`：某个 AsyncIoInstance 的 stdout
-/// - `Error`：某个 AsyncIoInstance 的 stderr
+/// - `Stdout`：某个 AsyncIoInstance 的 stdout
+/// - `Stderr`：某个 AsyncIoInstance 的 stderr
 /// - `Status`：Kernel 状态提示
 /// - `View`：查询类视图结果，例如 run 列表、当前上下文
 ///
@@ -145,10 +145,10 @@ pub struct KernelToShellEvent {
 
 pub enum KernelToShellPayload {
     /// stdout 输出。
-    Output(KernelOutput),
+    Stdout(KernelUnitStream),
 
     /// stderr 输出。
-    Error(KernelError),
+    Stderr(KernelUnitStream),
 
     /// Kernel 状态变化或提示。
     Status(KernelStatus),
@@ -157,10 +157,10 @@ pub enum KernelToShellPayload {
     View(KernelView),
 }
 
-/// 某个 AsyncIoInstance 的 stdout。
+/// 某个 AsyncIoInstance 的 stdout/stderr。
 ///
-/// LLM、Tool、HumanInput、SubAgent 都可以通过这个事件把 stdout 交给 Shell/TUI 显示。
-pub struct KernelOutput {
+/// LLM、Tool、HumanInput、SubAgent 都通过 Vec<Unit> 与 Shell/TUI 交换内容。
+pub struct KernelUnitStream {
     /// 产生输出的 asyncioinstance ID。
     pub asyncioinstance_uuid: Option<String>,
 
@@ -170,25 +170,8 @@ pub struct KernelOutput {
     /// 所属 agent。
     pub agent_uuid: Option<String>,
 
-    /// 实际输出内容。
-    pub content: IoOutput,
-}
-
-/// 某个 AsyncIoInstance 的 stderr。
-///
-/// 工具失败、用户拒绝审批、超时、LLM 调用失败等，都可以走 stderr。
-pub struct KernelError {
-    /// 产生错误的 instance ID。
-    pub asyncioinstance_uuid: Option<String>,
-
-    /// 所属 run。
-    pub run_uuid: Option<String>,
-
-    /// 所属 agent。
-    pub agent_uuid: Option<String>,
-
-    /// 实际错误内容。
-    pub error: IoError,
+    /// 实际 unit 链。
+    pub units: Vec<Unit>,
 }
 
 /// Kernel 状态提示。
