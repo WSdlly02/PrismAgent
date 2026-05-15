@@ -41,12 +41,16 @@ pub(crate) fn atomic_create_file(dst: &PathBuf, data: &[u8]) -> Result<()> {
     std::fs::rename(tmp_dst, dst)?;
     Ok(())
 }
-pub(crate) fn atomic_replace_file(dst: &PathBuf, data: &[u8]) -> Result<()> {
+pub(crate) fn atomic_replace_file(dst: &PathBuf, old: &[u8], new: &[u8]) -> Result<()> {
     if !dst.exists() {
         return Err(anyhow!("File does not exist: {}", dst.display()));
     }
+    let current_data = std::fs::read(dst)?;
+    if current_data != old {
+        return Err(anyhow!("File content does not match expected old content"));
+    }
     let tmp_dst = dst.with_extension("tmp");
-    std::fs::write(&tmp_dst, data)?;
+    std::fs::write(&tmp_dst, new)?;
     std::fs::rename(tmp_dst, dst)?;
     Ok(())
 }

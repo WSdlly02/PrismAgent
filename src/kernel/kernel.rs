@@ -2,7 +2,7 @@ use crate::model::app::App;
 use crate::model::asyncioinstance::{IoError, IoOutput};
 use crate::model::event::{
     InputTarget, KernelError, KernelOutput, KernelStatus, KernelToShellEvent, KernelToShellPayload,
-    KernelView, RuntimeStatus, ShellToKernelEvent, StatusLevel, UserCommand,
+    KernelView, RuntimeStatus, ShellToKernelEvent, StatusLevel, UserKernelCommand,
 };
 use crate::model::kernel::{Kernel, KernelRuntime};
 use crate::model::run::Run;
@@ -177,10 +177,25 @@ impl Kernel {
 
             while let Some(event) = shell_rx.recv().await {
                 match event {
-                    ShellToKernelEvent::Command(request) => {
+                    ShellToKernelEvent::ShellCommand(request) => {
+                        let correlation_uuid = Some(Uuid::now_v7().to_string());
+                        emit_status!(
+                            correlation_uuid,
+                            StatusLevel::Warn,
+                            None,
+                            None,
+                            None,
+                            None,
+                            format!(
+                                "Shell command execution is not implemented yet: {}",
+                                request.command
+                            )
+                        );
+                    }
+                    ShellToKernelEvent::KernelCommand(request) => {
                         let correlation_uuid = Some(request.request_uuid.clone());
                         match request.command {
-                            UserCommand::NewRun { title } => {
+                            UserKernelCommand::NewRun { title } => {
                                 let title = title.unwrap_or_else(|| "Untitled run".to_string());
                                 match kernel.initialize_runtime_with_new_run(&title) {
                                     Ok(()) => {
@@ -217,7 +232,7 @@ impl Kernel {
                                     }
                                 }
                             }
-                            UserCommand::ResumeRun { run_uuid } => {
+                            UserKernelCommand::ResumeRun { run_uuid } => {
                                 match kernel.initialize_runtime(&run_uuid) {
                                     Ok(()) => {
                                         let runtime =
@@ -254,7 +269,7 @@ impl Kernel {
                                     }
                                 }
                             }
-                            UserCommand::DeleteRun { run_uuid } => {
+                            UserKernelCommand::DeleteRun { run_uuid } => {
                                 emit_status!(
                                     correlation_uuid,
                                     StatusLevel::Warn,
@@ -265,7 +280,7 @@ impl Kernel {
                                     "Delete run is not implemented yet.".to_string()
                                 );
                             }
-                            UserCommand::ListRuns => match kernel.app.workspace.list_runs() {
+                            UserKernelCommand::ListRuns => match kernel.app.workspace.list_runs() {
                                 Ok(runs) => {
                                     emit!(
                                         correlation_uuid,
@@ -282,10 +297,10 @@ impl Kernel {
                                     );
                                 }
                             },
-                            UserCommand::FetchCurrentContext => {
+                            UserKernelCommand::FetchCurrentContext => {
                                 emit_current_context!(correlation_uuid);
                             }
-                            UserCommand::Cancel { .. } => {
+                            UserKernelCommand::Cancel { .. } => {
                                 emit_status!(
                                     correlation_uuid,
                                     StatusLevel::Warn,
@@ -296,7 +311,7 @@ impl Kernel {
                                     "Cancel is not implemented yet.".to_string()
                                 );
                             }
-                            UserCommand::Snapshot { .. } => {
+                            UserKernelCommand::Snapshot { .. } => {
                                 emit_status!(
                                     correlation_uuid,
                                     StatusLevel::Warn,
@@ -307,7 +322,7 @@ impl Kernel {
                                     "Snapshot is not implemented yet.".to_string()
                                 );
                             }
-                            UserCommand::Shutdown => {
+                            UserKernelCommand::Shutdown => {
                                 match kernel.release_current_run_lock() {
                                     Ok(()) => {
                                         emit_status!(

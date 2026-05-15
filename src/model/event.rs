@@ -28,7 +28,12 @@ pub enum ShellToKernelEvent {
     /// Kernel 管理命令。
     ///
     /// 只保留无法自然建模为 AsyncIoInstance stdin/stdout/stderr 的控制操作。
-    Command(UserCommandRequest),
+    KernelCommand(UserKernelCommandRequest),
+
+    /// 直接让 Kernel 执行一个 shell 命令。
+    ///
+    /// 直接执行命令，绕过 AsyncIoInstance 的输入输出管理。
+    ShellCommand(UserShellCommandRequest),
 }
 
 /// 用户输入。
@@ -61,12 +66,12 @@ pub enum InputTarget {
 /// 与 `UserInput` 一样，控制命令也带 request_uuid。
 /// Kernel 后续发布 View / Status / Error 时，可以通过 correlation_uuid
 /// 与这个请求建立弱关联；这不是 RPC，只是事件流上的可追踪性。
-pub struct UserCommandRequest {
+pub struct UserKernelCommandRequest {
     /// 请求 ID。
     pub request_uuid: String,
 
     /// 实际控制命令。
-    pub command: UserCommand,
+    pub command: UserKernelCommand,
 }
 
 /// Shell/TUI 发给 Kernel 的控制命令。
@@ -75,7 +80,7 @@ pub struct UserCommandRequest {
 ///
 /// 不要把“用户批准工具调用”放在这里；
 /// 那应该由 HumanInputInstance 通过 stdout/stderr 表达。
-pub enum UserCommand {
+pub enum UserKernelCommand {
     /// 创建一个新的 run。
     NewRun { title: Option<String> },
 
@@ -115,6 +120,10 @@ pub enum UserCommand {
     },
 }
 
+pub struct UserShellCommandRequest {
+    /// 实际 shell 命令，无状态，直接执行。
+    pub command: String,
+}
 /// Kernel -> Shell 的事件。
 ///
 /// 这一侧也保持极简：

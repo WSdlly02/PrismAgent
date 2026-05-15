@@ -20,7 +20,8 @@ use uuid::Uuid;
 use prismagent::{
     model::event::{
         InputTarget, KernelToShellEvent, KernelToShellPayload, KernelView, RuntimeStatus,
-        ShellToKernelEvent, StatusLevel, UserCommand, UserCommandRequest, UserInput,
+        ShellToKernelEvent, StatusLevel, UserInput, UserKernelCommand, UserKernelCommandRequest,
+        UserShellCommandRequest,
     },
     model::kernel::Kernel,
 };
@@ -43,7 +44,7 @@ async fn main() -> Result<()> {
     let result = run_loop(&mut terminal, &mut tui_app).await;
     let _ = tui_app
         .shell_tx
-        .send(command_event(UserCommand::Shutdown))
+        .send(command_event(UserKernelCommand::Shutdown))
         .await;
     result
 }
@@ -184,8 +185,8 @@ fn request_uuid() -> String {
     Uuid::now_v7().to_string()
 }
 
-fn command_event(command: UserCommand) -> ShellToKernelEvent {
-    ShellToKernelEvent::Command(UserCommandRequest {
+fn command_event(command: UserKernelCommand) -> ShellToKernelEvent {
+    ShellToKernelEvent::KernelCommand(UserKernelCommandRequest {
         request_uuid: request_uuid(),
         command,
     })
@@ -212,20 +213,21 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
             app.push_user(content.clone());
             app.status = "request sent".to_owned();
             match content.chars().nth(0) {
+                // 以 '/' 开头的输入被视为UserKernelCommandRequest
                 Some('/') => {
                     let command = content[1..].trim();
                     let event = match command {
-                        "list" => command_event(UserCommand::ListRuns),
-                        "context" => command_event(UserCommand::FetchCurrentContext),
-                        "cancel" => command_event(UserCommand::Cancel {
+                        "list" => command_event(UserKernelCommand::ListRuns),
+                        "context" => command_event(UserKernelCommand::FetchCurrentContext),
+                        "cancel" => command_event(UserKernelCommand::Cancel {
                             run_uuid: None,
                             agent_uuid: None,
                             asyncioinstance_uuid: None,
                         }),
-                        "new" => command_event(UserCommand::NewRun { title: None }),
+                        "new" => command_event(UserKernelCommand::NewRun { title: None }),
                         cmd if cmd.starts_with("new ") => {
                             let title = cmd[4..].trim();
-                            command_event(UserCommand::NewRun {
+                            command_event(UserKernelCommand::NewRun {
                                 title: if title.is_empty() {
                                     None
                                 } else {
@@ -235,11 +237,11 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                         }
                         cmd if cmd.starts_with("resume ") => {
                             let run_uuid = cmd[7..].trim().to_owned();
-                            command_event(UserCommand::ResumeRun { run_uuid })
+                            command_event(UserKernelCommand::ResumeRun { run_uuid })
                         }
                         cmd if cmd.starts_with("delete ") => {
                             let run_uuid = cmd[7..].trim().to_owned();
-                            command_event(UserCommand::DeleteRun { run_uuid })
+                            command_event(UserKernelCommand::DeleteRun { run_uuid })
                         }
                         cmd if cmd.starts_with("snapshot") => {
                             let snapshot_uid = cmd
@@ -247,7 +249,7 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_owned);
-                            command_event(UserCommand::Snapshot {
+                            command_event(UserKernelCommand::Snapshot {
                                 run_uuid: None,
                                 snapshot_uid,
                             })
@@ -262,6 +264,18 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                         app.status = "kernel disconnected".to_owned();
                     }
                 }
+                // 以 '!' 开头的输入被视为直接的 shell 命令
+                Some('!') => {
+                    let command = content[1..].trim();
+                    let event = ShellToKernelEvent::ShellCommand(UserShellCommandRequest {
+                        command: command.to_owned(),
+                    });
+                    if app.shell_tx.send(event).await.is_err() {
+                        app.push_error("kernel channel closed");
+                        app.status = "kernel disconnected".to_owned();
+                    }
+                }
+                // 其他输入被视为针对当前 agent 的用户输入
                 _ => {
                     if !app.input_enabled {
                         app.push_error("input is disabled while the selected target is running");
