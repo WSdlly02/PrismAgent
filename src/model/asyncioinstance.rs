@@ -1,3 +1,4 @@
+use crate::model::kernel::InstanceToKernelEvent;
 use crate::model::unit::Unit;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,23 +14,19 @@ pub struct AsyncIoBox {
 /// 异步IO的实例
 pub struct AsyncIoInstance {
     pub uuid: String,
-    pub stdin: mpsc::Receiver<Vec<Unit>>,  // 标准输入-接收方
-    pub stdout: mpsc::Sender<Vec<Unit>>,   // 标准输出-发送方
-    pub stderr: mpsc::Sender<Vec<Unit>>,   // 标准错误-发送方
-    pub signal_in: mpsc::Receiver<Signal>, // 双向通信的信号通道
-    pub signal_out: mpsc::Sender<Signal>,
+    pub role: AsyncIoInstanceRole, // 实例的角色，决定了它的行为和权限
+    pub execution_mode: AsyncIoInstanceExecutionMode, // 实例的执行模式，决定了它的生命周期和调度方式
 
-    pub role: AsyncIoInstanceRole,   // 实例的角色，决定了它的行为和权限
-    pub data_transmit_interval: u64, // 数据传输间隔，单位毫秒，默认100ms
+    pub stdin: mpsc::Receiver<Vec<Unit>>, // 数据输入通道
+    pub signal_rx: mpsc::Receiver<InstanceSignal>, // Kernel -> Instance 的控制信号
+    pub kernel_tx: mpsc::Sender<InstanceToKernelEvent>, // Instance -> Kernel 的事件通道
+
     pub metadata: HashMap<String, String>, // 实例的元数据, 可以存储任意键值对，供内核和Agent使用
 }
 /// 异步IO的控制句柄，提供给内核使用
 pub struct AsyncIoHandle {
-    pub stdin: mpsc::Sender<Vec<Unit>>,    // 标准输入-发送方
-    pub stdout: mpsc::Receiver<Vec<Unit>>, // 标准输出-接收方
-    pub stderr: mpsc::Receiver<Vec<Unit>>, // 标准错误-接收方
-    pub signal_in: mpsc::Sender<Signal>,   // 双向通信的信号通道
-    pub signal_out: mpsc::Receiver<Signal>,
+    pub stdin: mpsc::Sender<Vec<Unit>>,          // 数据输入通道
+    pub signal_tx: mpsc::Sender<InstanceSignal>, // Kernel -> Instance 的控制信号
 }
 #[derive(PartialEq, Eq)]
 pub enum AsyncIoInstanceRole {
@@ -37,71 +34,54 @@ pub enum AsyncIoInstanceRole {
     LLM,  // 收到Vec<Unit>后会被解析成LLM输入，输出会被解析成LLM输出
     Tool, // 收到Vec<Unit>后会判断尾部Unit是否批准、解析工具输入，输出会被解析成工具输出
 }
-pub struct Signal {
-    pub status: SignalStatus,
-    pub details: String,
+#[derive(PartialEq, Eq)]
+pub enum AsyncIoInstanceExecutionMode {
+    Blocking, // 阻塞模式
+    Detached, // 分离模式，异步执行，内核不会等待它完成，适合长时间运行的任务，例如工具调用、外部事件监听等
 }
 #[derive(PartialEq, Eq)]
-pub enum SignalStatus {
-    Waiting,
-    Running,
-    Done,
-    Failed,
-    Cancelled,
+pub enum InstanceSignal {
+    Terminate,
+    Interrupt,
 }
 
 impl AsyncIoBox {
-    pub fn new() -> Self {
+    pub fn new(kernel_tx: mpsc::Sender<InstanceToKernelEvent>) -> Self {
         let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<Unit>>(1);
-        let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<Unit>>(64);
-        let (stderr_tx, stderr_rx) = mpsc::channel::<Vec<Unit>>(16);
-        let (signal_in_tx, signal_in_rx) = mpsc::channel::<Signal>(16);
-        let (signal_out_tx, signal_out_rx) = mpsc::channel::<Signal>(16);
+        let (signal_tx, signal_rx) = mpsc::channel::<InstanceSignal>(16);
         Self {
             instance: AsyncIoInstance {
                 uuid: Uuid::now_v7().to_string(),
-                stdin: stdin_rx,
-                stdout: stdout_tx,
-                stderr: stderr_tx,
-                signal_in: signal_in_rx,
-                signal_out: signal_out_tx,
-
                 role: AsyncIoInstanceRole::Unknown,
-                data_transmit_interval: 100,
+                execution_mode: AsyncIoInstanceExecutionMode::Blocking, // 默认阻塞模式
+
+                stdin: stdin_rx,
+                kernel_tx,
+                signal_rx,
+
                 metadata: HashMap::new(),
             },
-
             handle: AsyncIoHandle {
                 stdin: stdin_tx,
-                stdout: stdout_rx,
-                stderr: stderr_rx,
-                signal_in: signal_in_tx,
-                signal_out: signal_out_rx,
+                signal_tx,
             },
         }
     }
-    pub fn with_data_transmit_interval(mut self, interval: u64) -> Self {
-        // Implementation for setting the data transmit interval
-        self.instance.data_transmit_interval = interval;
+    pub fn with_detach_mode(mut self) -> Self {
+        self.instance.execution_mode = AsyncIoInstanceExecutionMode::Detached;
         self
     }
     pub fn with_role(mut self, role: AsyncIoInstanceRole) -> Self {
-        // Implementation for setting the role
         self.instance.role = role;
         self
     }
     pub fn done(self) -> Result<Self> {
-        // Finalize the instance and return it
         if self.instance.role == AsyncIoInstanceRole::Unknown {
             anyhow::bail!("Role must be specified");
-        }
-        if self.instance.data_transmit_interval <= 50 {
-            anyhow::bail!("Data transmit interval must be larger than 50ms");
         }
         Ok(self)
     }
 
-    // 最后提供一个方法来获取控制句柄
     pub fn split(self) -> (AsyncIoInstance, AsyncIoHandle) {
         (self.instance, self.handle)
     }

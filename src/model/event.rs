@@ -16,8 +16,8 @@ use crate::model::unit::Unit;
 /// 用户审批、澄清、选择题都应该复用 AsyncIoInstance：
 ///
 /// - stdin 传入提示内容
-/// - stdout 表示用户批准 / 正常回答
-/// - stderr 表示拒绝 / 取消 / 超时 / 错误
+/// - InstanceToKernelEvent::Output 表示用户批准 / 正常回答
+/// - InstanceToKernelEvent::Error 表示拒绝 / 取消 / 超时 / 错误
 pub enum ShellToKernelEvent {
     /// 普通输入。
     ///
@@ -27,7 +27,7 @@ pub enum ShellToKernelEvent {
 
     /// Kernel 管理命令。
     ///
-    /// 只保留无法自然建模为 AsyncIoInstance stdin/stdout/stderr 的控制操作。
+    /// 只保留无法自然建模为 AsyncIoInstance 输入输出的控制操作。
     KernelCommand(UserKernelCommandRequest),
 
     /// 直接让 Kernel 执行一个 shell 命令。
@@ -79,7 +79,7 @@ pub struct UserKernelCommandRequest {
 /// 这里只放真正属于 Kernel 生命周期、Run 管理、视图查询的动作。
 ///
 /// 不要把“用户批准工具调用”放在这里；
-/// 那应该由 HumanInputInstance 通过 stdout/stderr 表达。
+/// 那应该由 HumanInputInstance 通过实例输出表达。
 pub enum UserKernelCommand {
     /// 创建一个新的 run。
     NewRun { title: Option<String> },
@@ -128,8 +128,8 @@ pub struct UserShellCommandRequest {
 ///
 /// 这一侧也保持极简：
 ///
-/// - `Stdout`：某个 AsyncIoInstance 的 stdout
-/// - `Stderr`：某个 AsyncIoInstance 的 stderr
+/// - `Stdout`：某个 AsyncIoInstance 的普通输出
+/// - `Stderr`：某个 AsyncIoInstance 的错误输出
 /// - `Status`：Kernel 状态提示
 /// - `View`：查询类视图结果，例如 run 列表、当前上下文
 ///
@@ -157,7 +157,7 @@ pub enum KernelToShellPayload {
     View(KernelView),
 }
 
-/// 某个 AsyncIoInstance 的 stdout/stderr。
+/// 某个 AsyncIoInstance 的输出流。
 ///
 /// LLM、Tool、HumanInput、SubAgent 都通过 Vec<Unit> 与 Shell/TUI 交换内容。
 pub struct KernelUnitStream {

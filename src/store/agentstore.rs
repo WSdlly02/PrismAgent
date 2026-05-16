@@ -1,6 +1,6 @@
 use crate::model::agent::Agent;
 use crate::model::run::Run;
-use crate::store::workspacestore::atomic_create_file;
+use crate::store::workspacestore::{atomic_create_file, atomic_replace_file};
 use anyhow::{Result, anyhow};
 use std::path::PathBuf;
 
@@ -17,6 +17,11 @@ impl Run {
         let data = serde_json::to_vec(agent)
             .map_err(|e| anyhow!("Failed to serialize agent to JSON: {}", e))?;
         atomic_create_file(agent_dst, &data)
+    }
+    pub fn replace_agent_store(agent_dst: &PathBuf, old_data: &[u8], new: &Agent) -> Result<()> {
+        let new_data = serde_json::to_vec(new)
+            .map_err(|e| anyhow!("Failed to serialize new agent to JSON: {}", e))?;
+        atomic_replace_file(agent_dst, old_data, &new_data)
     }
 }
 
