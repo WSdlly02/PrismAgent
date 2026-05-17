@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
     let (shell_tx, kernel_rx) = kernel.run();
     let mut tui_app = TuiApp::new(DEFAULT_RUN_UUID, DEFAULT_AGENT_UUID, shell_tx, kernel_rx);
     tui_app.push_system(
-        "PrismAgent TUI started. Use /list, /new <title>, or /resume <run-uuid>. Esc or Ctrl-C exits.",
+        "PrismAgent TUI started. Use /list, /new <title>, or /resume <run-uuid>. Esc/Ctrl-C cancels the current request. Ctrl-D exits.",
     );
 
     let mut terminal = setup_terminal()?;
@@ -96,6 +96,7 @@ struct TuiApp {
     agent_uuid: String,
     input: String,
     input_enabled: bool,
+    active_instance_uuid: Option<String>,
     status: String,
     lines: Vec<LogLine>,
     should_quit: bool,
@@ -115,6 +116,7 @@ impl TuiApp {
             agent_uuid: agent_uuid.to_owned(),
             input: String::new(),
             input_enabled: true,
+            active_instance_uuid: None,
             status: "idle".to_owned(),
             lines: Vec::new(),
             should_quit: false,
@@ -192,6 +194,41 @@ fn command_event(command: UserKernelCommand) -> ShellToKernelEvent {
     })
 }
 
+fn cancel_event(app: &TuiApp) -> ShellToKernelEvent {
+    ShellToKernelEvent::KernelCommand(UserKernelCommandRequest {
+        request_uuid: request_uuid(),
+        command: UserKernelCommand::Cancel {
+            run_uuid: if app.run_uuid == DEFAULT_RUN_UUID {
+                None
+            } else {
+                Some(app.run_uuid.clone())
+            },
+            agent_uuid: if app.agent_uuid == DEFAULT_AGENT_UUID {
+                None
+            } else {
+                Some(app.agent_uuid.clone())
+            },
+            asyncioinstance_uuid: app.active_instance_uuid.clone(),
+        },
+    })
+}
+
+async fn request_cancel(app: &mut TuiApp) {
+    if app.active_instance_uuid.is_none() && app.input_enabled {
+        app.push_system("no active request to cancel");
+        app.status = "idle".to_owned();
+        return;
+    }
+
+    if app.shell_tx.send(cancel_event(app)).await.is_err() {
+        app.push_error("kernel channel closed");
+        app.status = "kernel disconnected".to_owned();
+        return;
+    }
+
+    app.status = "cancel requested".to_owned();
+}
+
 async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
     if key.kind != KeyEventKind::Press {
         return Ok(());
@@ -199,9 +236,12 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
 
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.should_quit = true;
+            request_cancel(app).await;
         }
         KeyCode::Esc => {
+            request_cancel(app).await;
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
         KeyCode::Enter => {
@@ -220,9 +260,17 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                         "list" => command_event(UserKernelCommand::ListRuns),
                         "context" => command_event(UserKernelCommand::FetchCurrentContext),
                         "cancel" => command_event(UserKernelCommand::Cancel {
-                            run_uuid: None,
-                            agent_uuid: None,
-                            asyncioinstance_uuid: None,
+                            run_uuid: if app.run_uuid == DEFAULT_RUN_UUID {
+                                None
+                            } else {
+                                Some(app.run_uuid.clone())
+                            },
+                            agent_uuid: if app.agent_uuid == DEFAULT_AGENT_UUID {
+                                None
+                            } else {
+                                Some(app.agent_uuid.clone())
+                            },
+                            asyncioinstance_uuid: app.active_instance_uuid.clone(),
                         }),
                         "new" => command_event(UserKernelCommand::NewRun { title: None }),
                         cmd if cmd.starts_with("new ") => {
@@ -342,6 +390,7 @@ fn drain_kernel_events(app: &mut TuiApp) {
             }
             KernelToShellPayload::Status(status) => {
                 let runtime_status = status.runtime_status;
+                let status_instance_uuid = status.asyncioinstance_uuid;
                 if let Some(run_uuid) = status.run_uuid {
                     app.run_uuid = run_uuid;
                 }
@@ -351,12 +400,20 @@ fn drain_kernel_events(app: &mut TuiApp) {
                 match runtime_status {
                     Some(RuntimeStatus::Accepted) | Some(RuntimeStatus::Running) => {
                         app.input_enabled = false;
+                        if let Some(instance_uuid) = status_instance_uuid {
+                            app.active_instance_uuid = Some(instance_uuid);
+                        }
                     }
                     Some(RuntimeStatus::WaitingInput)
                     | Some(RuntimeStatus::Done)
                     | Some(RuntimeStatus::Failed)
                     | Some(RuntimeStatus::Cancelled) => {
                         app.input_enabled = true;
+                        if status_instance_uuid.as_ref().is_none_or(|instance_uuid| {
+                            app.active_instance_uuid.as_ref() == Some(instance_uuid)
+                        }) {
+                            app.active_instance_uuid = None;
+                        }
                     }
                     None => {}
                 }
@@ -486,6 +543,6 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[2]);
 
-    let help = Paragraph::new("Enter send  Esc/Ctrl-C quit");
+    let help = Paragraph::new("Enter send  Esc/Ctrl-C cancel  Ctrl-D quit");
     frame.render_widget(help, chunks[3]);
 }
