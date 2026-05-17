@@ -95,12 +95,11 @@ pub enum UserKernelCommand {
 
     /// 取消当前或指定的执行对象。
     ///
-    /// MVP 可以先只支持全部为 None，表示取消当前活动 asyncioinstance。
-    /// 后续再按 run_uuid / agent_uuid / asyncioinstance_uuid 精准取消。
+    /// Shell 只表达“取消某个 agent 的前台任务”的意图；
+    /// 具体映射到哪个 AsyncIoInstance 由 Kernel 根据 handles 决定。
     Cancel {
         run_uuid: Option<String>,
         agent_uuid: Option<String>,
-        asyncioinstance_uuid: Option<String>,
     },
 
     /// 关闭 Kernel，释放锁并退出。

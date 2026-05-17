@@ -8,7 +8,7 @@ pub struct Agent {
     pub name: String,                 // Agent的展示名称，最好不要重复
     pub unit_chain: Vec<String>,      // 存储Agent执行的单元ID列表
     pub unit_head: String,            // 最后一个执行的单元ID
-    pub children_agents: Vec<String>, // 召唤的子Agent ID列表
+    pub children_agents: Vec<String>, // 召唤的子Agent UUID列表
     /// 快照UID到单元UUID列表的映射
     ///
     /// 快照UID可以是一个时间戳字符串，也可以是一个用户指定的名称，例如

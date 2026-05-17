@@ -1,5 +1,7 @@
 use crate::model::app::App;
-use crate::model::asyncioinstance::AsyncIoHandle;
+use crate::model::asyncioinstance::{
+    AsyncIoHandle, AsyncIoInstanceExecutionMode, AsyncIoInstanceRole,
+};
 use crate::model::run::Run;
 use crate::model::unit::Unit;
 use std::collections::HashMap;
@@ -10,8 +12,21 @@ pub struct Kernel {
 }
 
 pub struct KernelRuntime {
-    pub current_run: Run,                        // 当前正在执行的 run
-    pub handles: HashMap<String, AsyncIoHandle>, // asyncioinstance_uuid -> handle
+    pub current_run: Run,                             // 当前正在执行的 run
+    pub handles: HashMap<String, AsyncIoHandleEntry>, // asyncioinstance_uuid -> handle entry
+}
+
+pub struct AsyncIoHandleEntry {
+    pub run_uuid: String,
+    pub owner: AsyncIoOwner,
+    pub role: AsyncIoInstanceRole,
+    pub execution_mode: AsyncIoInstanceExecutionMode,
+    pub handle: AsyncIoHandle,
+}
+
+pub enum AsyncIoOwner {
+    Kernel,
+    Agent { agent_uuid: String },
 }
 
 /// AsyncIoInstance -> Kernel 的内部事件。

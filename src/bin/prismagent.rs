@@ -95,7 +95,6 @@ struct TuiApp {
     agent_uuid: String,
     input: String,
     input_enabled: bool,
-    active_instance_uuid: Option<String>,
     status: String,
     lines: Vec<LogLine>,
     should_quit: bool,
@@ -115,7 +114,6 @@ impl TuiApp {
             agent_uuid: agent_uuid.to_owned(),
             input: String::new(),
             input_enabled: true,
-            active_instance_uuid: None,
             status: "idle".to_owned(),
             lines: Vec::new(),
             should_quit: false,
@@ -207,13 +205,12 @@ fn cancel_event(app: &TuiApp) -> ShellToKernelEvent {
             } else {
                 Some(app.agent_uuid.clone())
             },
-            asyncioinstance_uuid: app.active_instance_uuid.clone(),
         },
     })
 }
 
 async fn request_cancel(app: &mut TuiApp) {
-    if app.active_instance_uuid.is_none() && app.input_enabled {
+    if app.input_enabled {
         app.push_system("no active request to cancel");
         app.status = "idle".to_owned();
         return;
@@ -269,7 +266,6 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                             } else {
                                 Some(app.agent_uuid.clone())
                             },
-                            asyncioinstance_uuid: app.active_instance_uuid.clone(),
                         }),
                         "new" => command_event(UserKernelCommand::NewRun { title: None }),
                         cmd if cmd.starts_with("new ") => {
@@ -378,7 +374,6 @@ fn drain_kernel_events(app: &mut TuiApp) {
             }
             KernelToShellPayload::Status(status) => {
                 let runtime_status = status.runtime_status;
-                let status_instance_uuid = status.asyncioinstance_uuid;
                 if let Some(run_uuid) = status.run_uuid {
                     app.run_uuid = run_uuid;
                 }
@@ -388,20 +383,12 @@ fn drain_kernel_events(app: &mut TuiApp) {
                 match runtime_status {
                     Some(RuntimeStatus::Accepted) | Some(RuntimeStatus::Running) => {
                         app.input_enabled = false;
-                        if let Some(instance_uuid) = status_instance_uuid {
-                            app.active_instance_uuid = Some(instance_uuid);
-                        }
                     }
                     Some(RuntimeStatus::WaitingInput)
                     | Some(RuntimeStatus::Done)
                     | Some(RuntimeStatus::Failed)
                     | Some(RuntimeStatus::Cancelled) => {
                         app.input_enabled = true;
-                        if status_instance_uuid.as_ref().is_none_or(|instance_uuid| {
-                            app.active_instance_uuid.as_ref() == Some(instance_uuid)
-                        }) {
-                            app.active_instance_uuid = None;
-                        }
                     }
                     None => {}
                 }

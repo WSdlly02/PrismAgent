@@ -28,18 +28,18 @@ pub struct AsyncIoHandle {
     pub stdin: mpsc::Sender<Vec<Unit>>,          // 数据输入通道
     pub signal_tx: mpsc::Sender<InstanceSignal>, // Kernel -> Instance 的控制信号
 }
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum AsyncIoInstanceRole {
     Unknown,
     LLM,  // 收到Vec<Unit>后会被解析成LLM输入，输出会被解析成LLM输出
     Tool, // 收到Vec<Unit>后会判断尾部Unit是否批准、解析工具输入，输出会被解析成工具输出
 }
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum AsyncIoInstanceExecutionMode {
     Blocking, // 阻塞模式
     Detached, // 分离模式，异步执行，内核不会等待它完成，适合长时间运行的任务，例如工具调用、外部事件监听等
 }
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum InstanceSignal {
     Terminate,
     Interrupt,

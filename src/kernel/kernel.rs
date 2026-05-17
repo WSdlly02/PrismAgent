@@ -7,6 +7,7 @@ use crate::model::event::{
     InputTarget, KernelStatus, KernelToShellEvent, KernelToShellPayload, KernelUnitStream,
     KernelView, RuntimeStatus, ShellToKernelEvent, StatusLevel, UserKernelCommand,
 };
+use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner};
 use crate::model::kernel::{InstanceStream, InstanceToKernelEvent, Kernel, KernelRuntime};
 use crate::model::run::Run;
 use crate::model::unit::{UnitKind, UnitRole, UnitVisibility};
@@ -288,15 +289,86 @@ impl Kernel {
                             UserKernelCommand::FetchCurrentContext => {
                                 emit_current_context!(correlation_uuid);
                             }
-                            UserKernelCommand::Cancel { .. } => {
+                            UserKernelCommand::Cancel {
+                                run_uuid,
+                                agent_uuid,
+                            } => {
+                                let Some(runtime) = kernel.runtime.as_mut() else {
+                                    emit_status!(
+                                        correlation_uuid,
+                                        StatusLevel::Warn,
+                                        None,
+                                        run_uuid,
+                                        agent_uuid,
+                                        None,
+                                        "No active run to cancel.".to_string()
+                                    );
+                                    continue;
+                                };
+                                let target_run_uuid = run_uuid
+                                    .unwrap_or_else(|| runtime.current_run.run_metadata.uuid.clone());
+                                if target_run_uuid != runtime.current_run.run_metadata.uuid {
+                                    emit_status!(
+                                        correlation_uuid,
+                                        StatusLevel::Warn,
+                                        None,
+                                        Some(target_run_uuid),
+                                        agent_uuid,
+                                        None,
+                                        "Cannot cancel a task outside the active run.".to_string()
+                                    );
+                                    continue;
+                                }
+                                let target_agent_uuid = agent_uuid.unwrap_or_else(|| {
+                                    runtime.current_run.run_metadata.root_agent_uuid.clone()
+                                });
+                                let Some((instance_uuid, entry)) =
+                                    runtime.handles.iter().find(|(_, entry)| {
+                                        entry.run_uuid == target_run_uuid
+                                            && entry.execution_mode
+                                                == crate::model::asyncioinstance::AsyncIoInstanceExecutionMode::Blocking
+                                            && matches!(
+                                                &entry.owner,
+                                                AsyncIoOwner::Agent { agent_uuid }
+                                                    if agent_uuid == &target_agent_uuid
+                                            )
+                                    })
+                                else {
+                                    emit_status!(
+                                        correlation_uuid,
+                                        StatusLevel::Info,
+                                        None,
+                                        Some(target_run_uuid),
+                                        Some(target_agent_uuid),
+                                        None,
+                                        "No active request to cancel.".to_string()
+                                    );
+                                    continue;
+                                };
+                                let instance_uuid = instance_uuid.clone();
+                                let signal_result =
+                                    entry.handle.signal_tx.send(InstanceSignal::Terminate).await;
+                                if let Err(error) = signal_result {
+                                    runtime.handles.remove(&instance_uuid);
+                                    emit_status!(
+                                        correlation_uuid,
+                                        StatusLevel::Warn,
+                                        Some(RuntimeStatus::Failed),
+                                        Some(target_run_uuid),
+                                        Some(target_agent_uuid),
+                                        Some(instance_uuid),
+                                        format!("Failed to cancel active request: {error}")
+                                    );
+                                    continue;
+                                }
                                 emit_status!(
                                     correlation_uuid,
-                                    StatusLevel::Warn,
+                                    StatusLevel::Info,
                                     Some(RuntimeStatus::Cancelled),
-                                    None,
-                                    None,
-                                    None,
-                                    "Cancel is not implemented yet.".to_string()
+                                    Some(target_run_uuid),
+                                    Some(target_agent_uuid),
+                                    Some(instance_uuid),
+                                    "Cancel signal sent.".to_string()
                                 );
                             }
                             UserKernelCommand::Snapshot { .. } => {
@@ -429,7 +501,18 @@ impl Kernel {
                             );
                             continue;
                         }
-                        runtime.handles.insert(instance_uuid.clone(), handle);
+                        runtime.handles.insert(
+                            instance_uuid.clone(),
+                            AsyncIoHandleEntry {
+                                run_uuid: run_uuid.clone(),
+                                owner: AsyncIoOwner::Agent {
+                                    agent_uuid: agent_uuid.clone(),
+                                },
+                                role: instance.role,
+                                execution_mode: instance.execution_mode,
+                                handle,
+                            },
+                        );
 
                         emit_status!(
                             Some(input.request_uuid.clone()),
