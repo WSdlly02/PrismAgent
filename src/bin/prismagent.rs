@@ -21,7 +21,6 @@ use prismagent::{
     model::event::{
         InputTarget, KernelToShellEvent, KernelToShellPayload, KernelView, RuntimeStatus,
         ShellToKernelEvent, StatusLevel, UserInput, UserKernelCommand, UserKernelCommandRequest,
-        UserShellCommandRequest,
     },
     model::kernel::Kernel,
 };
@@ -307,17 +306,6 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                             return Ok(());
                         }
                     };
-                    if app.shell_tx.send(event).await.is_err() {
-                        app.push_error("kernel channel closed");
-                        app.status = "kernel disconnected".to_owned();
-                    }
-                }
-                // 以 '!' 开头的输入被视为直接的 shell 命令
-                Some('!') => {
-                    let command = content[1..].trim();
-                    let event = ShellToKernelEvent::ShellCommand(UserShellCommandRequest {
-                        command: command.to_owned(),
-                    });
                     if app.shell_tx.send(event).await.is_err() {
                         app.push_error("kernel channel closed");
                         app.status = "kernel disconnected".to_owned();

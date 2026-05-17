@@ -13,7 +13,6 @@ use crate::model::unit::{UnitKind, UnitRole, UnitVisibility};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 impl Kernel {
     /// 新建 Kernel，不具有运行时。
@@ -181,21 +180,6 @@ impl Kernel {
                         };
 
                         match shell_event {
-                            ShellToKernelEvent::ShellCommand(request) => {
-                        let correlation_uuid = Some(Uuid::now_v7().to_string());
-                        emit_status!(
-                            correlation_uuid,
-                            StatusLevel::Warn,
-                            None,
-                            None,
-                            None,
-                            None,
-                            format!(
-                                "Shell command execution is not implemented yet: {}",
-                                request.command
-                            )
-                        );
-                            }
                             ShellToKernelEvent::KernelCommand(request) => {
                         let correlation_uuid = Some(request.request_uuid.clone());
                         match request.command {

@@ -29,11 +29,6 @@ pub enum ShellToKernelEvent {
     ///
     /// 只保留无法自然建模为 AsyncIoInstance 输入输出的控制操作。
     KernelCommand(UserKernelCommandRequest),
-
-    /// 直接让 Kernel 执行一个 shell 命令。
-    ///
-    /// 直接执行命令，绕过 AsyncIoInstance 的输入输出管理。
-    ShellCommand(UserShellCommandRequest),
 }
 
 /// 用户输入。
@@ -120,10 +115,6 @@ pub enum UserKernelCommand {
     },
 }
 
-pub struct UserShellCommandRequest {
-    /// 实际 shell 命令，无状态，直接执行。
-    pub command: String,
-}
 /// Kernel -> Shell 的事件。
 ///
 /// 这一侧也保持极简：
