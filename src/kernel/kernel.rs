@@ -5,8 +5,7 @@ use crate::model::asyncioinstance::{
     AsyncIoBox, AsyncIoInstance, AsyncIoInstanceRole, InstanceSignal,
 };
 use crate::model::event::{
-    AgentSnapshot, InputTarget, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent,
-    UserKernelCommand,
+    AgentSnapshot, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent, UserKernelCommand,
 };
 use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner};
 use crate::model::kernel::{InstanceStream, InstanceToKernelEvent, Kernel, KernelRuntime};
@@ -274,27 +273,24 @@ impl Kernel {
                             continue;
                         };
 
-                        let run_uuid = runtime.current_run.run_metadata.uuid.clone();
-                        let agent_uuid = match input.target {
-                            InputTarget::Agent { agent_uuid } => agent_uuid,
-                            InputTarget::Instance {
-                                asyncioinstance_uuid,
-                            } => {
-                                emit_patch!(
-                                    Some(input.request_uuid),
-                                    format!(
-                                        "Instance input routing is not implemented yet: {asyncioinstance_uuid}"
-                                    )
-                                );
-                                continue;
-                            }
-                        };
-
-                        // 目前仅支持发送给 root agent 的输入，后续会根据 agent_uuid 查找对应的 agent 和 unit 来路由输入
-                        if agent_uuid != runtime.current_run.run_metadata.root_agent_uuid {
+                        let run_uuid = input.run_uuid;
+                        let agent_uuid = input.agent_uuid;
+                        if run_uuid != runtime.current_run.run_metadata.uuid {
                             emit_patch!(
                                 Some(input.request_uuid),
-                                "Target agent is not available in current run.".to_string()
+                                "Input run does not match active run.".to_string()
+                            );
+                            continue;
+                        }
+                        let agent_path = runtime
+                            .current_run
+                            .root
+                            .join("agents")
+                            .join(format!("{agent_uuid}.json"));
+                        if !agent_path.is_file() {
+                            emit_patch!(
+                                Some(input.request_uuid),
+                                "Target agent does not exist in active run.".to_string()
                             );
                             continue;
                         }

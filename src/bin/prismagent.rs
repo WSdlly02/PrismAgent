@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use prismagent::{
     model::event::{
-        AgentSnapshot, InputTarget, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent,
-        UserInput, UserKernelCommand, UserKernelCommandRequest,
+        AgentSnapshot, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent, UserInput,
+        UserKernelCommand, UserKernelCommandRequest,
     },
     model::kernel::Kernel,
     model::unit::{Unit, UnitRole},
@@ -324,9 +324,8 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                         .shell_tx
                         .send(ShellToKernelEvent::Input(UserInput {
                             request_uuid: request_uuid(),
-                            target: InputTarget::Agent {
-                                agent_uuid: app.agent_uuid.clone(),
-                            },
+                            run_uuid: app.run_uuid.clone(),
+                            agent_uuid: app.agent_uuid.clone(),
                             content,
                         }))
                         .await

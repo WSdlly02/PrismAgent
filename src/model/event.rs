@@ -41,20 +41,14 @@ pub struct UserInput {
     /// 用于日志、调试、必要时和 Kernel 输出做关联。
     pub request_uuid: String,
 
-    /// 输入目标。
-    pub target: InputTarget,
+    /// 所属 run。
+    pub run_uuid: String,
+
+    /// 所属 agent。
+    pub agent_uuid: String,
 
     /// 用户输入的原始内容。
     pub content: String,
-}
-
-/// 用户输入目标。
-///
-/// Agent 表示普通对话输入；Instance 表示投递给某个正在等待 stdin 的具体
-/// AsyncIoInstance，例如人工确认、选择题、审批等。
-pub enum InputTarget {
-    Agent { agent_uuid: String },
-    Instance { asyncioinstance_uuid: String },
 }
 
 /// Shell/TUI 发给 Kernel 的控制命令请求。
