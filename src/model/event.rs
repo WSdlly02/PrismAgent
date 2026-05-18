@@ -1,4 +1,5 @@
-use crate::model::run::RunSummary;
+use crate::model::agent::Agent;
+use crate::model::run::RunMetadata;
 use crate::model::unit::Unit;
 
 /// Shell -> Kernel 的事件。
@@ -88,11 +89,6 @@ pub enum UserKernelCommand {
     /// 列出所有 run。
     ListRuns,
 
-    /// 获取当前上下文视图。
-    ///
-    /// 例如当前 run、当前 agent、当前 unit_chain 摘要等。
-    FetchCurrentContext,
-
     /// 取消当前或指定的执行对象。
     ///
     /// Shell 只表达“取消某个 agent 的前台任务”的意图；
@@ -116,139 +112,25 @@ pub enum UserKernelCommand {
 
 /// Kernel -> Shell 的事件。
 ///
-/// 这一侧也保持极简：
-///
-/// - `Stdout`：某个 AsyncIoInstance 的普通输出
-/// - `Stderr`：某个 AsyncIoInstance 的错误输出
-/// - `Status`：Kernel 状态提示
-/// - `View`：查询类视图结果，例如 run 列表、当前上下文
-///
-/// Shell/TUI 只负责渲染，不拥有真实状态。
-pub struct KernelToShellEvent {
-    /// 与 ShellToKernelEvent 的 request_uuid 对应。
-    ///
-    /// 异步输出、后台状态变化等没有直接来源请求的事件可以为 None。
-    pub correlation_uuid: Option<String>,
-
-    pub payload: KernelToShellPayload,
+/// Snapshot 是当前 run 的完整状态投影；Shell 只负责保存、比对和渲染。
+/// Patch 是无法自然建模到当前 run snapshot 的一次性可打印文本，例如 /list。
+pub enum KernelToShellEvent {
+    Snapshot {
+        correlation_uuid: Option<String>,
+        snapshot: KernelSnapshot,
+    },
+    Patch {
+        correlation_uuid: Option<String>,
+        text: String,
+    },
 }
 
-pub enum KernelToShellPayload {
-    /// stdout 输出。
-    Stdout(KernelUnitStream),
-
-    /// stderr 输出。
-    Stderr(KernelUnitStream),
-
-    /// Kernel 状态变化或提示。
-    Status(KernelStatus),
-
-    /// 查询结果 / 视图数据。
-    View(KernelView),
+pub struct KernelSnapshot {
+    pub run_metadata: RunMetadata,
+    pub agents: Vec<AgentSnapshot>,
 }
 
-/// 某个 AsyncIoInstance 的输出流。
-///
-/// LLM、Tool、HumanInput、SubAgent 都通过 Vec<Unit> 与 Shell/TUI 交换内容。
-pub struct KernelUnitStream {
-    /// 产生输出的 asyncioinstance ID。
-    pub asyncioinstance_uuid: Option<String>,
-
-    /// 所属 run。
-    pub run_uuid: Option<String>,
-
-    /// 所属 agent。
-    pub agent_uuid: Option<String>,
-
-    /// 实际 unit 链。
+pub struct AgentSnapshot {
+    pub agent: Agent,
     pub units: Vec<Unit>,
-}
-
-/// Kernel 状态提示。
-///
-/// 这不是严格业务状态机，只是给 Shell/TUI 展示状态变化。
-/// 例如：
-///
-/// - 已创建 run
-/// - 已恢复 run
-/// - 正在运行 LLM
-/// - 已取消任务
-/// - Kernel 即将关闭
-
-pub struct KernelStatus {
-    /// 状态级别。
-    pub level: StatusLevel,
-
-    /// 可选作用域：run。
-    pub run_uuid: Option<String>,
-
-    /// 可选作用域：agent。
-    pub agent_uuid: Option<String>,
-
-    /// 可选作用域：asyncioinstance。
-    pub asyncioinstance_uuid: Option<String>,
-
-    /// 机器可读运行状态。
-    pub runtime_status: Option<RuntimeStatus>,
-
-    /// 给用户看的简短状态文本。
-    pub message: String,
-}
-
-/// 状态级别。
-#[derive(PartialEq, Eq)]
-pub enum StatusLevel {
-    Info,
-    Warn,
-    Error,
-}
-
-/// Kernel/实例运行状态。
-///
-/// TUI 应根据这个字段控制输入框状态，而不是解析 message 文本。
-#[derive(PartialEq, Eq)]
-pub enum RuntimeStatus {
-    Accepted,
-    Running,
-    WaitingInput,
-    Done,
-    Failed,
-    Cancelled,
-}
-
-/// Kernel 返回给 Shell/TUI 的视图数据。
-///
-/// 视图类事件用于回答：
-///
-/// - ListRuns
-/// - FetchCurrentContext
-/// - Snapshot
-///
-/// 它们不是“Response”，只是 Kernel 发布的 View。
-pub enum KernelView {
-    /// run 列表。
-    Runs { runs: Vec<RunSummary> },
-
-    /// 当前上下文视图。
-    ///
-    /// 注意：这里暂时不直接暴露完整 unit_chain，
-    /// 而是先给足够 TUI 展示的信息。
-    /// 后续如果需要，可以单独加 `units: Vec<Unit>` 或 `unit_ids: Vec<String>`。
-    CurrentContext {
-        run_uuid: Option<String>,
-        agent_uuid: Option<String>,
-        title: Option<String>,
-        unit_count: usize,
-        head_unit_uuid: Option<String>,
-    },
-
-    /// 快照已创建。
-    SnapshotCreated {
-        run_uuid: String,
-        snapshot_uid: String,
-        name: Option<String>,
-    },
-
-    /// run 已删除。
-    RunDeleted { run_uuid: String },
 }

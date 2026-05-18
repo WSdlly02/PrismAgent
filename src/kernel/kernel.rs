@@ -1,15 +1,16 @@
 use crate::kernel::pipeline::{input_pipeline, output_pipeline, unit_with_content};
+use crate::model::agent::Agent;
 use crate::model::app::App;
 use crate::model::asyncioinstance::{
     AsyncIoBox, AsyncIoInstance, AsyncIoInstanceRole, InstanceSignal,
 };
 use crate::model::event::{
-    InputTarget, KernelStatus, KernelToShellEvent, KernelToShellPayload, KernelUnitStream,
-    KernelView, RuntimeStatus, ShellToKernelEvent, StatusLevel, UserKernelCommand,
+    AgentSnapshot, InputTarget, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent,
+    UserKernelCommand,
 };
 use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner};
 use crate::model::kernel::{InstanceStream, InstanceToKernelEvent, Kernel, KernelRuntime};
-use crate::model::run::Run;
+use crate::model::run::{Run, RunMetadata, RunSummary};
 use crate::model::unit::{UnitKind, UnitRole, UnitVisibility};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
@@ -92,83 +93,35 @@ impl Kernel {
             let mut kernel = self;
 
             macro_rules! emit {
-                ($correlation_uuid:expr, $payload:expr) => {
-                    if kernel_tx
-                        .send(KernelToShellEvent {
-                            correlation_uuid: $correlation_uuid,
-                            payload: $payload,
-                        })
-                        .await
-                        .is_err()
-                    {
+                ($event:expr) => {
+                    if kernel_tx.send($event).await.is_err() {
                         break;
                     }
                 };
             }
 
-            macro_rules! emit_status {
-                ($correlation_uuid:expr, $level:expr, $runtime_status:expr, $run_uuid:expr, $agent_uuid:expr, $instance_uuid:expr, $message:expr) => {
-                    emit!(
-                        $correlation_uuid,
-                        KernelToShellPayload::Status(KernelStatus {
-                            level: $level,
-                            run_uuid: $run_uuid,
-                            agent_uuid: $agent_uuid,
-                            asyncioinstance_uuid: $instance_uuid,
-                            runtime_status: $runtime_status,
-                            message: $message,
-                        })
-                    );
+            macro_rules! emit_patch {
+                ($correlation_uuid:expr, $text:expr) => {
+                    emit!(KernelToShellEvent::Patch {
+                        correlation_uuid: $correlation_uuid,
+                        text: $text,
+                    });
                 };
             }
 
-            macro_rules! emit_stderr {
-                ($correlation_uuid:expr, $run_uuid:expr, $agent_uuid:expr, $instance_uuid:expr, $message:expr) => {
-                    emit!(
-                        $correlation_uuid,
-                        KernelToShellPayload::Stderr(KernelUnitStream {
-                            asyncioinstance_uuid: $instance_uuid,
-                            run_uuid: $run_uuid,
-                            agent_uuid: $agent_uuid,
-                            units: vec![unit_with_content(
-                                UnitKind::GenericResult,
-                                UnitRole::System,
-                                UnitVisibility::Public,
-                                None,
-                                $message,
-                                HashMap::new(),
-                            )],
-                        })
-                    );
-                };
-            }
-
-            macro_rules! emit_current_context {
+            macro_rules! emit_snapshot {
                 ($correlation_uuid:expr) => {
-                    if let Some(runtime) = &kernel.runtime {
-                        emit!(
-                            $correlation_uuid,
-                            KernelToShellPayload::View(KernelView::CurrentContext {
-                                run_uuid: Some(runtime.current_run.run_metadata.uuid.clone()),
-                                agent_uuid: Some(
-                                    runtime.current_run.run_metadata.root_agent_uuid.clone()
-                                ),
-                                title: Some(runtime.current_run.run_metadata.title.clone()),
-                                unit_count: 0,
-                                head_unit_uuid: None,
-                            })
-                        );
-                    } else {
-                        emit!(
-                            $correlation_uuid,
-                            KernelToShellPayload::View(KernelView::CurrentContext {
-                                run_uuid: None,
-                                agent_uuid: None,
-                                title: None,
-                                unit_count: 0,
-                                head_unit_uuid: None,
-                            })
-                        );
+                    match build_current_snapshot(&kernel) {
+                        Ok(snapshot) => emit!(KernelToShellEvent::Snapshot {
+                            correlation_uuid: $correlation_uuid,
+                            snapshot,
+                        }),
+                        Err(error) => {
+                            emit_patch!(
+                                $correlation_uuid,
+                                format!("Failed to build kernel snapshot: {error}")
+                            );
+                        }
                     }
                 };
             }
@@ -188,34 +141,11 @@ impl Kernel {
                                 let title = title.unwrap_or_else(|| "Untitled run".to_string());
                                 match kernel.initialize_runtime_with_new_run(&title) {
                                     Ok(()) => {
-                                        let runtime =
-                                            kernel.runtime.as_ref().expect("runtime exists");
-                                        let run_uuid =
-                                            runtime.current_run.run_metadata.uuid.clone();
-                                        let agent_uuid = runtime
-                                            .current_run
-                                            .run_metadata
-                                            .root_agent_uuid
-                                            .clone();
-                                        emit_status!(
-                                            correlation_uuid.clone(),
-                                            StatusLevel::Info,
-                                            None,
-                                            Some(run_uuid.clone()),
-                                            Some(agent_uuid),
-                                            None,
-                                            format!(
-                                                "New run created and resumed: {run_uuid} ({title})"
-                                            )
-                                        );
-                                        emit_current_context!(correlation_uuid);
+                                        emit_snapshot!(correlation_uuid);
                                     }
                                     Err(error) => {
-                                        emit_stderr!(
+                                        emit_patch!(
                                             correlation_uuid,
-                                            None,
-                                            None,
-                                            None,
                                             format!("Failed to create and resume new run: {error}")
                                         );
                                     }
@@ -224,83 +154,40 @@ impl Kernel {
                             UserKernelCommand::ResumeRun { run_uuid } => {
                                 match kernel.initialize_runtime(&run_uuid) {
                                     Ok(()) => {
-                                        let runtime =
-                                            kernel.runtime.as_ref().expect("runtime exists");
-                                        let run_uuid =
-                                            runtime.current_run.run_metadata.uuid.clone();
-                                        let agent_uuid = runtime
-                                            .current_run
-                                            .run_metadata
-                                            .root_agent_uuid
-                                            .clone();
-                                        emit_status!(
-                                            correlation_uuid.clone(),
-                                            StatusLevel::Info,
-                                            None,
-                                            Some(run_uuid.clone()),
-                                            Some(agent_uuid),
-                                            None,
-                                            format!(
-                                                "Run resumed: {} ({})",
-                                                run_uuid, runtime.current_run.run_metadata.title
-                                            )
-                                        );
-                                        emit_current_context!(correlation_uuid);
+                                        emit_snapshot!(correlation_uuid);
                                     }
                                     Err(error) => {
-                                        emit_stderr!(
+                                        emit_patch!(
                                             correlation_uuid,
-                                            Some(run_uuid),
-                                            None,
-                                            None,
                                             format!("Failed to resume run: {error}")
                                         );
                                     }
                                 }
                             }
                             UserKernelCommand::DeleteRun { run_uuid } => {
-                                emit_status!(
+                                emit_patch!(
                                     correlation_uuid,
-                                    StatusLevel::Warn,
-                                    None,
-                                    Some(run_uuid),
-                                    None,
-                                    None,
-                                    "Delete run is not implemented yet.".to_string()
+                                    format!("Delete run is not implemented yet: {run_uuid}")
                                 );
                             }
                             UserKernelCommand::ListRuns => match kernel.app.workspace.list_runs() {
                                 Ok(runs) => {
-                                    emit!(
-                                        correlation_uuid,
-                                        KernelToShellPayload::View(KernelView::Runs { runs })
-                                    );
+                                    emit_patch!(correlation_uuid, format_run_list(&runs));
                                 }
                                 Err(error) => {
-                                    emit_stderr!(
+                                    emit_patch!(
                                         correlation_uuid,
-                                        None,
-                                        None,
-                                        None,
                                         format!("Failed to list runs: {error}")
                                     );
                                 }
                             },
-                            UserKernelCommand::FetchCurrentContext => {
-                                emit_current_context!(correlation_uuid);
-                            }
                             UserKernelCommand::Cancel {
                                 run_uuid,
                                 agent_uuid,
                             } => {
                                 let Some(runtime) = kernel.runtime.as_mut() else {
-                                    emit_status!(
+                                    emit_patch!(
                                         correlation_uuid,
-                                        StatusLevel::Warn,
-                                        None,
-                                        run_uuid,
-                                        agent_uuid,
-                                        None,
                                         "No active run to cancel.".to_string()
                                     );
                                     continue;
@@ -308,13 +195,8 @@ impl Kernel {
                                 let target_run_uuid = run_uuid
                                     .unwrap_or_else(|| runtime.current_run.run_metadata.uuid.clone());
                                 if target_run_uuid != runtime.current_run.run_metadata.uuid {
-                                    emit_status!(
+                                    emit_patch!(
                                         correlation_uuid,
-                                        StatusLevel::Warn,
-                                        None,
-                                        Some(target_run_uuid),
-                                        agent_uuid,
-                                        None,
                                         "Cannot cancel a task outside the active run.".to_string()
                                     );
                                     continue;
@@ -334,13 +216,8 @@ impl Kernel {
                                             )
                                     })
                                 else {
-                                    emit_status!(
+                                    emit_patch!(
                                         correlation_uuid,
-                                        StatusLevel::Info,
-                                        None,
-                                        Some(target_run_uuid),
-                                        Some(target_agent_uuid),
-                                        None,
                                         "No active request to cancel.".to_string()
                                     );
                                     continue;
@@ -350,57 +227,34 @@ impl Kernel {
                                     entry.handle.signal_tx.send(InstanceSignal::Terminate).await;
                                 if let Err(error) = signal_result {
                                     runtime.handles.remove(&instance_uuid);
-                                    emit_status!(
+                                    emit_patch!(
                                         correlation_uuid,
-                                        StatusLevel::Warn,
-                                        Some(RuntimeStatus::Failed),
-                                        Some(target_run_uuid),
-                                        Some(target_agent_uuid),
-                                        Some(instance_uuid),
                                         format!("Failed to cancel active request: {error}")
                                     );
                                     continue;
                                 }
-                                emit_status!(
+                                emit_patch!(
                                     correlation_uuid,
-                                    StatusLevel::Info,
-                                    Some(RuntimeStatus::Cancelled),
-                                    Some(target_run_uuid),
-                                    Some(target_agent_uuid),
-                                    Some(instance_uuid),
                                     "Cancel signal sent.".to_string()
                                 );
                             }
                             UserKernelCommand::Snapshot { .. } => {
-                                emit_status!(
+                                emit_patch!(
                                     correlation_uuid,
-                                    StatusLevel::Warn,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
                                     "Snapshot is not implemented yet.".to_string()
                                 );
                             }
                             UserKernelCommand::Shutdown => {
                                 match kernel.release_current_run_lock() {
                                     Ok(()) => {
-                                        emit_status!(
+                                        emit_patch!(
                                             correlation_uuid,
-                                            StatusLevel::Info,
-                                            Some(RuntimeStatus::Done),
-                                            None,
-                                            None,
-                                            None,
                                             "Kernel shutdown.".to_string()
                                         );
                                     }
                                     Err(error) => {
-                                        emit_stderr!(
+                                        emit_patch!(
                                             correlation_uuid,
-                                            None,
-                                            None,
-                                            None,
                                             format!("Failed to release run lock: {error}")
                                         );
                                     }
@@ -412,11 +266,8 @@ impl Kernel {
                             ShellToKernelEvent::Input(input) => {
                         // 阻塞校验输入的 run_uuid 和 agent_uuid 是否与当前 runtime 匹配
                         let Some(runtime) = kernel.runtime.as_mut() else {
-                            emit_stderr!(
+                            emit_patch!(
                                 Some(input.request_uuid),
-                                None,
-                                None,
-                                None,
                                 "No active run; use /new <title> or /resume <run-uuid> first."
                                     .to_string()
                             );
@@ -429,14 +280,11 @@ impl Kernel {
                             InputTarget::Instance {
                                 asyncioinstance_uuid,
                             } => {
-                                emit_status!(
+                                emit_patch!(
                                     Some(input.request_uuid),
-                                    StatusLevel::Warn,
-                                    Some(RuntimeStatus::WaitingInput),
-                                    Some(run_uuid),
-                                    None,
-                                    Some(asyncioinstance_uuid),
-                                    "Instance input routing is not implemented yet.".to_string()
+                                    format!(
+                                        "Instance input routing is not implemented yet: {asyncioinstance_uuid}"
+                                    )
                                 );
                                 continue;
                             }
@@ -444,11 +292,8 @@ impl Kernel {
 
                         // 目前仅支持发送给 root agent 的输入，后续会根据 agent_uuid 查找对应的 agent 和 unit 来路由输入
                         if agent_uuid != runtime.current_run.run_metadata.root_agent_uuid {
-                            emit_stderr!(
+                            emit_patch!(
                                 Some(input.request_uuid),
-                                Some(run_uuid),
-                                Some(agent_uuid),
-                                None,
                                 "Target agent is not available in current run.".to_string()
                             );
                             continue;
@@ -462,11 +307,8 @@ impl Kernel {
                         ) {
                             Ok(units) => units,
                             Err(error) => {
-                                emit_stderr!(
+                                emit_patch!(
                                     Some(input.request_uuid),
-                                    Some(run_uuid),
-                                    Some(agent_uuid),
-                                    None,
                                     format!("Input pipeline failed: {error}")
                                 );
                                 continue;
@@ -479,11 +321,8 @@ impl Kernel {
                         {
                             Ok(io_box) => io_box,
                             Err(error) => {
-                                emit_stderr!(
+                                emit_patch!(
                                     Some(input.request_uuid),
-                                    Some(run_uuid),
-                                    Some(agent_uuid),
-                                    None,
                                     format!("Failed to create AsyncIoInstance: {error}")
                                 );
                                 continue;
@@ -492,17 +331,14 @@ impl Kernel {
                         let (instance, handle) = io_box.split();
                         let instance_uuid = instance.uuid.clone();
                         if let Err(error) = handle.stdin.try_send(input_units) {
-                            emit_stderr!(
+                            emit_patch!(
                                 Some(input.request_uuid),
-                                Some(run_uuid),
-                                Some(agent_uuid),
-                                Some(instance_uuid),
                                 format!("Failed to send input to AsyncIoInstance: {error}")
                             );
                             continue;
                         }
                         runtime.handles.insert(
-                            instance_uuid.clone(),
+                            instance_uuid,
                             AsyncIoHandleEntry {
                                 run_uuid: run_uuid.clone(),
                                 owner: AsyncIoOwner::Agent {
@@ -512,16 +348,6 @@ impl Kernel {
                                 execution_mode: instance.execution_mode,
                                 handle,
                             },
-                        );
-
-                        emit_status!(
-                            Some(input.request_uuid.clone()),
-                            StatusLevel::Info,
-                            Some(RuntimeStatus::Running),
-                            Some(run_uuid.clone()),
-                            Some(agent_uuid.clone()),
-                            Some(instance_uuid.clone()),
-                            "running".to_string()
                         );
 
                         spawn_input_instance(
@@ -538,11 +364,8 @@ impl Kernel {
                             continue;
                         };
                         let Some(runtime) = kernel.runtime.as_mut() else {
-                            emit_stderr!(
+                            emit_patch!(
                                 instance_event.correlation_uuid,
-                                Some(instance_event.run_uuid),
-                                Some(instance_event.agent_uuid),
-                                Some(instance_event.asyncioinstance_uuid),
                                 "Instance returned output without active run.".to_string()
                             );
                             continue;
@@ -550,68 +373,33 @@ impl Kernel {
 
                         if runtime.current_run.run_metadata.uuid != instance_event.run_uuid {
                             runtime.handles.remove(&instance_event.asyncioinstance_uuid);
-                            emit_stderr!(
+                            emit_patch!(
                                 instance_event.correlation_uuid,
-                                Some(instance_event.run_uuid),
-                                Some(instance_event.agent_uuid),
-                                Some(instance_event.asyncioinstance_uuid),
                                 "Instance output does not belong to current run.".to_string()
                             );
                             continue;
                         }
 
-                        let (is_stderr, units) = match instance_event.stream {
-                            InstanceStream::Output(units) => (false, units),
-                            InstanceStream::Error(units) => (true, units),
+                        let units = match instance_event.stream {
+                            InstanceStream::Output(units) | InstanceStream::Error(units) => units,
                         };
 
-                        let committed_units = match output_pipeline(
+                        if let Err(error) = output_pipeline(
                             &kernel.app.workspace,
                             &mut runtime.current_run,
                             &instance_event.agent_uuid,
                             units,
                         ) {
-                            Ok(units) => units,
-                            Err(error) => {
-                                runtime.handles.remove(&instance_event.asyncioinstance_uuid);
-                                emit_stderr!(
-                                    instance_event.correlation_uuid,
-                                    Some(instance_event.run_uuid),
-                                    Some(instance_event.agent_uuid),
-                                    Some(instance_event.asyncioinstance_uuid),
-                                    format!("Output pipeline failed: {error}")
-                                );
-                                continue;
-                            }
-                        };
+                            runtime.handles.remove(&instance_event.asyncioinstance_uuid);
+                            emit_patch!(
+                                instance_event.correlation_uuid,
+                                format!("Output pipeline failed: {error}")
+                            );
+                            continue;
+                        }
                         runtime.handles.remove(&instance_event.asyncioinstance_uuid);
 
-                        let payload = KernelUnitStream {
-                            asyncioinstance_uuid: Some(instance_event.asyncioinstance_uuid.clone()),
-                            run_uuid: Some(instance_event.run_uuid.clone()),
-                            agent_uuid: Some(instance_event.agent_uuid.clone()),
-                            units: committed_units,
-                        };
-                        if is_stderr {
-                            emit!(
-                                instance_event.correlation_uuid.clone(),
-                                KernelToShellPayload::Stderr(payload)
-                            );
-                        } else {
-                            emit!(
-                                instance_event.correlation_uuid.clone(),
-                                KernelToShellPayload::Stdout(payload)
-                            );
-                        }
-                        emit_status!(
-                            instance_event.correlation_uuid,
-                            StatusLevel::Info,
-                            Some(RuntimeStatus::Done),
-                            Some(instance_event.run_uuid),
-                            Some(instance_event.agent_uuid),
-                            Some(instance_event.asyncioinstance_uuid),
-                            "idle".to_string()
-                        );
+                        emit_snapshot!(instance_event.correlation_uuid);
                     }
                 }
             }
@@ -619,6 +407,66 @@ impl Kernel {
 
         (shell_tx, kernel_rx)
     }
+}
+
+fn build_current_snapshot(kernel: &Kernel) -> Result<KernelSnapshot> {
+    let runtime = kernel
+        .runtime
+        .as_ref()
+        .ok_or_else(|| anyhow!("No active run"))?;
+    build_run_snapshot(&runtime.current_run)
+}
+
+fn build_run_snapshot(run: &Run) -> Result<KernelSnapshot> {
+    let metadata_path = run.root.join("metadata.json");
+    let run_metadata: RunMetadata = serde_json::from_slice(
+        &std::fs::read(&metadata_path)
+            .map_err(|e| anyhow!("Failed to read run metadata {:?}: {}", metadata_path, e))?,
+    )
+    .map_err(|e| anyhow!("Failed to parse run metadata {:?}: {}", metadata_path, e))?;
+
+    let agents_dir = run.root.join("agents");
+    let mut agents = Vec::new();
+    for entry in std::fs::read_dir(&agents_dir)
+        .map_err(|e| anyhow!("Failed to read agents dir {:?}: {}", agents_dir, e))?
+    {
+        let path = entry?.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let agent: Agent = serde_json::from_slice(
+            &std::fs::read(&path)
+                .map_err(|e| anyhow!("Failed to read agent store {:?}: {}", path, e))?,
+        )
+        .map_err(|e| anyhow!("Failed to parse agent store {:?}: {}", path, e))?;
+        let mut units = Vec::with_capacity(agent.unit_chain.len());
+        for unit_uuid in &agent.unit_chain {
+            let unit_path = run.root.join("units").join(format!("{unit_uuid}.json"));
+            units.push(Run::read_unit_store(&unit_path)?);
+        }
+        agents.push(AgentSnapshot { agent, units });
+    }
+    agents.sort_by(|left, right| left.agent.uuid.cmp(&right.agent.uuid));
+
+    Ok(KernelSnapshot {
+        run_metadata,
+        agents,
+    })
+}
+
+fn format_run_list(runs: &[RunSummary]) -> String {
+    if runs.is_empty() {
+        return "No runs.".to_string();
+    }
+    let lines = runs
+        .iter()
+        .map(|run| {
+            let lock = if run.locked { "locked" } else { "available" };
+            format!("{} [{lock}] {} {:?}", run.uuid, run.title, run.status)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Runs:\n{lines}")
 }
 
 fn spawn_input_instance(

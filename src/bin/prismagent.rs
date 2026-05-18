@@ -19,10 +19,11 @@ use uuid::Uuid;
 
 use prismagent::{
     model::event::{
-        InputTarget, KernelToShellEvent, KernelToShellPayload, KernelView, RuntimeStatus,
-        ShellToKernelEvent, StatusLevel, UserInput, UserKernelCommand, UserKernelCommandRequest,
+        AgentSnapshot, InputTarget, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent,
+        UserInput, UserKernelCommand, UserKernelCommandRequest,
     },
     model::kernel::Kernel,
+    model::unit::{Unit, UnitRole},
 };
 
 const DEFAULT_RUN_UUID: &str = "none";
@@ -95,6 +96,7 @@ struct TuiApp {
     agent_uuid: String,
     input: String,
     input_enabled: bool,
+    snapshot: Option<KernelSnapshot>,
     status: String,
     lines: Vec<LogLine>,
     should_quit: bool,
@@ -114,6 +116,7 @@ impl TuiApp {
             agent_uuid: agent_uuid.to_owned(),
             input: String::new(),
             input_enabled: true,
+            snapshot: None,
             status: "idle".to_owned(),
             lines: Vec::new(),
             should_quit: false,
@@ -246,15 +249,14 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
             if content.is_empty() {
                 return Ok(());
             }
-            app.push_user(content.clone());
             app.status = "request sent".to_owned();
             match content.chars().nth(0) {
                 // 以 '/' 开头的输入被视为UserKernelCommandRequest
                 Some('/') => {
+                    app.push_user(content.clone());
                     let command = content[1..].trim();
                     let event = match command {
                         "list" => command_event(UserKernelCommand::ListRuns),
-                        "context" => command_event(UserKernelCommand::FetchCurrentContext),
                         "cancel" => command_event(UserKernelCommand::Cancel {
                             run_uuid: if app.run_uuid == DEFAULT_RUN_UUID {
                                 None
@@ -332,6 +334,8 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                     {
                         app.push_error("kernel channel closed");
                         app.status = "kernel disconnected".to_owned();
+                    } else {
+                        app.input_enabled = false;
                     }
                 }
             }
@@ -349,123 +353,78 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
 
 fn drain_kernel_events(app: &mut TuiApp) {
     while let Ok(event) = app.kernel_rx.try_recv() {
-        match event.payload {
-            KernelToShellPayload::Stdout(stream) => {
-                let run_uuid = stream.run_uuid.unwrap_or_else(|| "N/A".to_string());
-                let agent_uuid = stream.agent_uuid.unwrap_or_else(|| "N/A".to_string());
-                app.status = format!("output from {run_uuid}/{agent_uuid}");
-                app.run_uuid = if run_uuid == "N/A" {
-                    app.run_uuid.clone()
-                } else {
-                    run_uuid
-                };
-                app.agent_uuid = if agent_uuid == "N/A" {
-                    app.agent_uuid.clone()
-                } else {
-                    agent_uuid
-                };
-                app.push_kernel(render_units(&stream.units));
+        match event {
+            KernelToShellEvent::Snapshot { snapshot, .. } => {
+                apply_snapshot(app, snapshot);
             }
-            KernelToShellPayload::Stderr(stream) => {
-                let run_uuid = stream.run_uuid.unwrap_or_else(|| "N/A".to_string());
-                let agent_uuid = stream.agent_uuid.unwrap_or_else(|| "N/A".to_string());
-                app.status = format!("error from {run_uuid}/{agent_uuid}");
-                app.push_error(render_units(&stream.units));
+            KernelToShellEvent::Patch { text, .. } => {
+                app.push_system(text.clone());
+                app.status = text;
+                app.input_enabled = true;
             }
-            KernelToShellPayload::Status(status) => {
-                let runtime_status = status.runtime_status;
-                if let Some(run_uuid) = status.run_uuid {
-                    app.run_uuid = run_uuid;
-                }
-                if let Some(agent_uuid) = status.agent_uuid {
-                    app.agent_uuid = agent_uuid;
-                }
-                match runtime_status {
-                    Some(RuntimeStatus::Accepted) | Some(RuntimeStatus::Running) => {
-                        app.input_enabled = false;
-                    }
-                    Some(RuntimeStatus::WaitingInput)
-                    | Some(RuntimeStatus::Done)
-                    | Some(RuntimeStatus::Failed)
-                    | Some(RuntimeStatus::Cancelled) => {
-                        app.input_enabled = true;
-                    }
-                    None => {}
-                }
-                app.status = status.message.clone();
-                match status.level {
-                    StatusLevel::Info => app.push_system(status.message),
-                    StatusLevel::Warn => app.push_system(format!("warn: {}", status.message)),
-                    StatusLevel::Error => app.push_error(status.message),
-                }
-            }
-            KernelToShellPayload::View(view) => match view {
-                KernelView::Runs { runs } => {
-                    if runs.is_empty() {
-                        app.push_system("No runs.");
-                    } else {
-                        let lines = runs
-                            .into_iter()
-                            .map(|run| {
-                                let lock = if run.locked { "locked" } else { "available" };
-                                format!("{} [{lock}] {} {:?}", run.uuid, run.title, run.status)
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        app.push_system(format!("Runs:\n{lines}"));
-                    }
-                    app.status = "runs listed".to_owned();
-                }
-                KernelView::CurrentContext {
-                    run_uuid,
-                    agent_uuid,
-                    title,
-                    unit_count,
-                    head_unit_uuid,
-                } => {
-                    app.run_uuid = run_uuid.unwrap_or_else(|| DEFAULT_RUN_UUID.to_string());
-                    app.agent_uuid = agent_uuid.unwrap_or_else(|| DEFAULT_AGENT_UUID.to_string());
-                    app.status = format!("active: {}", app.run_uuid);
-                    app.push_system(format!(
-                        "context run={} agent={} title={} units={} head={}",
-                        app.run_uuid,
-                        app.agent_uuid,
-                        title.unwrap_or_else(|| "none".to_string()),
-                        unit_count,
-                        head_unit_uuid.unwrap_or_else(|| "none".to_string())
-                    ));
-                }
-                KernelView::SnapshotCreated {
-                    run_uuid,
-                    snapshot_uid,
-                    name,
-                } => {
-                    app.status = format!("snapshot created: {snapshot_uid}");
-                    app.push_system(format!(
-                        "snapshot created: run={run_uuid} uid={snapshot_uid} name={}",
-                        name.unwrap_or_else(|| "none".to_string())
-                    ));
-                }
-                KernelView::RunDeleted { run_uuid } => {
-                    app.status = format!("run deleted: {run_uuid}");
-                    app.push_system(format!("run deleted: {run_uuid}"));
-                }
-            },
         }
     }
 }
 
-fn render_units(units: &[prismagent::model::unit::Unit]) -> String {
-    units
+fn apply_snapshot(app: &mut TuiApp, snapshot: KernelSnapshot) {
+    let run_uuid = snapshot.run_metadata.uuid.clone();
+    app.run_uuid = run_uuid.clone();
+    if app.agent_uuid == DEFAULT_AGENT_UUID
+        || snapshot
+            .agents
+            .iter()
+            .all(|agent| agent.agent.uuid != app.agent_uuid)
+    {
+        app.agent_uuid = snapshot.run_metadata.root_agent_uuid.clone();
+    }
+
+    let old_count = app
+        .snapshot
+        .as_ref()
+        .and_then(|old_snapshot| find_agent(old_snapshot, &app.agent_uuid))
+        .map(|agent| agent.units.len())
+        .unwrap_or(0);
+    if let Some(agent) = find_agent(&snapshot, &app.agent_uuid) {
+        let new_units = agent.units.iter().skip(old_count).collect::<Vec<_>>();
+        push_units(app, &new_units);
+        app.status = format!(
+            "active: {} agent={} units={}",
+            run_uuid,
+            app.agent_uuid,
+            agent.units.len()
+        );
+    } else {
+        app.status = format!("active: {run_uuid}");
+    }
+    app.input_enabled = true;
+    app.snapshot = Some(snapshot);
+}
+
+fn find_agent<'a>(snapshot: &'a KernelSnapshot, agent_uuid: &str) -> Option<&'a AgentSnapshot> {
+    snapshot
+        .agents
         .iter()
-        .filter_map(|unit| {
-            unit.metadata
-                .get("content")
-                .or_else(|| unit.metadata.get("preview"))
-                .cloned()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .find(|agent| agent.agent.uuid == agent_uuid)
+}
+
+fn push_units(app: &mut TuiApp, units: &[&Unit]) {
+    for unit in units {
+        let content = unit
+            .metadata
+            .get("content")
+            .or_else(|| unit.metadata.get("preview"))
+            .cloned()
+            .unwrap_or_default();
+        if content.is_empty() {
+            continue;
+        }
+        match unit.role {
+            UnitRole::User => app.push_user(content),
+            UnitRole::Assistant => app.push_kernel(content),
+            UnitRole::System => app.push_system(content),
+            UnitRole::Tool | UnitRole::Other => app.push_kernel(content),
+        }
+    }
 }
 
 fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
