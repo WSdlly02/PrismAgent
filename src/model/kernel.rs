@@ -39,10 +39,8 @@ pub struct InstanceToKernelEvent {
     pub run_uuid: String,
     pub agent_uuid: String,
     pub asyncioinstance_uuid: String,
-    pub stream: InstanceStream,
-}
-
-pub enum InstanceStream {
-    Output(Vec<Unit>),
-    Error(Vec<Unit>),
+    pub units: Vec<Unit>,
+    /// 是否为 LLM 产生的工具调用请求。工具调用请求仍会先 commit 到
+    /// unit_chain，但随后由 kernel 拉起 tool instance 等待审批。
+    pub is_tool_calls: bool,
 }

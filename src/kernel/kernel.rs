@@ -8,7 +8,7 @@ use crate::model::event::{
     AgentSnapshot, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent, UserKernelCommand,
 };
 use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner};
-use crate::model::kernel::{InstanceStream, InstanceToKernelEvent, Kernel, KernelRuntime};
+use crate::model::kernel::{InstanceToKernelEvent, Kernel, KernelRuntime};
 use crate::model::run::{Run, RunMetadata, RunSummary};
 use crate::model::unit::{UnitRole, UnitVisibility};
 use anyhow::{Result, anyhow};
@@ -377,15 +377,11 @@ impl Kernel {
                             continue;
                         }
 
-                        let units = match instance_event.stream {
-                            InstanceStream::Output(units) | InstanceStream::Error(units) => units,
-                        };
-
                         if let Err(error) = output_pipeline(
                             &kernel.app.workspace,
                             &mut runtime.current_run,
                             &instance_event.agent_uuid,
-                            units,
+                            instance_event.units,
                         ) {
                             runtime.handles.remove(&instance_event.asyncioinstance_uuid);
                             emit_patch!(
@@ -532,7 +528,8 @@ fn spawn_input_instance(
                 run_uuid,
                 agent_uuid,
                 asyncioinstance_uuid: instance_uuid,
-                stream: InstanceStream::Output(units),
+                units,
+                is_tool_calls: false,
             })
             .await;
     });
@@ -552,13 +549,14 @@ async fn send_instance_error(
             run_uuid,
             agent_uuid,
             asyncioinstance_uuid: instance_uuid,
-            stream: InstanceStream::Error(vec![unit_with_content(
+            units: vec![unit_with_content(
                 UnitRole::System,
                 UnitVisibility::Public,
                 None,
                 message,
                 HashMap::new(),
-            )]),
+            )],
+            is_tool_calls: false,
         })
         .await;
 }
