@@ -1,6 +1,6 @@
 use crate::model::agent::Agent;
 use crate::model::run::Run;
-use crate::model::unit::{Unit, UnitKind, UnitRole, UnitScope, UnitVisibility};
+use crate::model::unit::{Unit, UnitRole, UnitScope, UnitVisibility};
 use crate::model::workspace::WorkSpace;
 use crate::store::workspacestore::atomic_replace_file;
 use anyhow::{Result, anyhow};
@@ -23,7 +23,6 @@ pub fn input_pipeline(
     let mut units: Vec<Unit> = read_agent_units(run, &agent)?;
     // 追加一个 pending 的用户输入 Unit，等待 output_pipeline 真正提交时被 materialize
     units.push(unit_with_content(
-        UnitKind::UserInput,
         UnitRole::User,
         UnitVisibility::Public,
         Some(agent_uuid),
@@ -71,7 +70,6 @@ pub fn output_pipeline(
 }
 
 pub fn unit_with_content(
-    kind: UnitKind,
     role: UnitRole,
     visibility: UnitVisibility,
     agent_uuid: Option<&str>,
@@ -85,7 +83,6 @@ pub fn unit_with_content(
     Unit {
         uuid: Uuid::now_v7().to_string(),
         atom_hash: PENDING_ATOM_HASH.to_string(),
-        kind,
         role,
         scope: UnitScope::Agent,
         visibility,
@@ -219,7 +216,6 @@ mod tests {
         .expect("input pipeline");
 
         assert_eq!(units.len(), 1);
-        assert_eq!(units[0].kind, UnitKind::UserInput);
         assert_eq!(units[0].atom_hash, PENDING_ATOM_HASH);
         assert_eq!(units[0].metadata.get("content"), Some(&"hello".to_string()));
     }
@@ -235,7 +231,6 @@ mod tests {
         )
         .expect("input pipeline");
         units.push(unit_with_content(
-            UnitKind::GenericResult,
             UnitRole::Assistant,
             UnitVisibility::Public,
             Some(&run.run_metadata.root_agent_uuid),

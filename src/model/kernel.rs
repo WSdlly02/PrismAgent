@@ -7,8 +7,9 @@ use crate::model::unit::Unit;
 use std::collections::HashMap;
 
 pub struct Kernel {
-    pub app: App,
-    pub runtime: Option<KernelRuntime>,
+    pub app: App,                       // 不可变配置文件状态，初始化时读取
+    pub llm_client: genai::Client,      // 不可变 LLM 客户端，初始化时创建
+    pub runtime: Option<KernelRuntime>, // 可变状态，执行过程中更新
 }
 
 pub struct KernelRuntime {

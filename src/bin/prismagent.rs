@@ -421,7 +421,7 @@ fn push_units(app: &mut TuiApp, units: &[&Unit]) {
             UnitRole::User => app.push_user(content),
             UnitRole::Assistant => app.push_kernel(content),
             UnitRole::System => app.push_system(content),
-            UnitRole::Tool | UnitRole::Other => app.push_kernel(content),
+            UnitRole::Tool => app.push_kernel(content),
         }
     }
 }

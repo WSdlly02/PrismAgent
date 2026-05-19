@@ -10,7 +10,7 @@ use crate::model::event::{
 use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner};
 use crate::model::kernel::{InstanceStream, InstanceToKernelEvent, Kernel, KernelRuntime};
 use crate::model::run::{Run, RunMetadata, RunSummary};
-use crate::model::unit::{UnitKind, UnitRole, UnitVisibility};
+use crate::model::unit::{UnitRole, UnitVisibility};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -20,6 +20,7 @@ impl Kernel {
     pub fn new() -> Result<Self> {
         Ok(Self {
             app: App::new().map_err(|e| anyhow!("Failed to initialize App: {e}"))?,
+            llm_client: genai::Client::default(), // 从配置文件读取配置,todo!!!
             runtime: None,
         })
     }
@@ -519,7 +520,6 @@ fn spawn_input_instance(
             .cloned()
             .unwrap_or_default();
         units.push(unit_with_content(
-            UnitKind::GenericResult,
             UnitRole::Assistant,
             UnitVisibility::Public,
             Some(&agent_uuid),
@@ -553,7 +553,6 @@ async fn send_instance_error(
             agent_uuid,
             asyncioinstance_uuid: instance_uuid,
             stream: InstanceStream::Error(vec![unit_with_content(
-                UnitKind::GenericResult,
                 UnitRole::System,
                 UnitVisibility::Public,
                 None,

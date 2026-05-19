@@ -28,7 +28,7 @@ mod tests {
     use super::*;
     use crate::model::{
         run::{RunLock, RunMetadata, RunStatus},
-        unit::{UnitKind, UnitRole, UnitScope, UnitVisibility},
+        unit::{UnitRole, UnitScope, UnitVisibility},
     };
     use std::{collections::HashMap, path::PathBuf};
     use uuid::Uuid;
@@ -64,7 +64,6 @@ mod tests {
         Unit {
             uuid: "unit-1".to_string(),
             atom_hash: "a".repeat(64),
-            kind: UnitKind::UserInput,
             role: UnitRole::User,
             scope: UnitScope::Agent,
             visibility: UnitVisibility::Public,
@@ -87,7 +86,6 @@ mod tests {
 
         assert_eq!(actual.uuid, expected.uuid);
         assert_eq!(actual.atom_hash, expected.atom_hash);
-        assert_eq!(actual.kind, expected.kind);
         assert_eq!(actual.role, expected.role);
         assert_eq!(actual.scope, expected.scope);
         assert_eq!(actual.visibility, expected.visibility);
