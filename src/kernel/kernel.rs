@@ -12,15 +12,26 @@ use crate::model::event::{
 use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner, Kernel, KernelRuntime};
 use crate::model::run::{Run, RunMetadata, RunSummary};
 use anyhow::{Result, anyhow};
+use genai::Client as GenAIClient;
+use genai::resolver::{AuthData, AuthResolver, Error as ResolverError};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 impl Kernel {
     /// 新建 Kernel，不具有运行时。
     pub fn new() -> Result<Self> {
+        let app = App::new().map_err(|e| anyhow!("Failed to initialize App: {e}"))?;
+        let api_key = app.model_config.final_api_key.clone();
+        let auth_resolver =
+            AuthResolver::from_resolver_fn(|_| -> Result<Option<AuthData>, ResolverError> {
+                Ok(Some(AuthData::from_single(api_key)))
+            });
+        let llm_client = GenAIClient::builder()
+            .with_auth_resolver(auth_resolver)
+            .build();
         Ok(Self {
-            app: App::new().map_err(|e| anyhow!("Failed to initialize App: {e}"))?,
-            llm_client: genai::Client::default(), // 从配置文件读取配置,todo!!!
+            app,
+            llm_client,
             runtime: None,
         })
     }
@@ -426,7 +437,7 @@ impl Kernel {
 
                         spawn_llm_instance(
                             kernel.llm_client.clone(),
-                            kernel.app.global_config.env.model.clone(),
+                            kernel.app.model_config.final_model.clone(),
                             runtime.current_run.root.clone(),
                             input.request_uuid,
                             run_uuid,
@@ -580,7 +591,7 @@ impl Kernel {
                             );
                             spawn_llm_instance(
                                 kernel.llm_client.clone(),
-                                kernel.app.global_config.env.model.clone(),
+                                kernel.app.model_config.final_model.clone(),
                                 runtime.current_run.root.clone(),
                                 instance_event
                                     .correlation_uuid

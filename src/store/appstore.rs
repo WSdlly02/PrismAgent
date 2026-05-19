@@ -1,4 +1,4 @@
-use crate::model::app::{App, GlobalConfig};
+use crate::model::app::{App, GlobalConfig, ModelConfig};
 use crate::model::workspace::WorkSpace;
 use anyhow::{Context, Result, anyhow};
 use directories::BaseDirs;
@@ -20,9 +20,25 @@ impl App {
     pub fn new() -> Result<Self> {
         let global_config = GlobalConfig::read_global_config()?;
         let workspace = WorkSpace::resume_or_init_workspace()?;
+        let model_config = {
+            let provider = global_config
+                .providers
+                .get(&global_config.current_provider)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Current provider '{}' not found in global config providers",
+                        global_config.current_provider
+                    )
+                })?;
+            ModelConfig {
+                final_api_key: provider.api_key.clone(),
+                final_model: provider.model.clone(),
+            }
+        };
         Ok(Self {
             global_config,
             workspace,
+            model_config,
         })
     }
 }
