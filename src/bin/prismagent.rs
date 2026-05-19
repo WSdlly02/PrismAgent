@@ -163,6 +163,8 @@ struct LogLine {
 }
 
 impl LogLine {
+    const PREFIX_WIDTH: usize = 8;
+
     fn new(source: &'static str, color: Color, content: impl Into<String>) -> Self {
         Self {
             source,
@@ -171,16 +173,47 @@ impl LogLine {
         }
     }
 
-    fn item(&self) -> ListItem<'_> {
-        ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{:<7}", self.source),
-                Style::default().fg(self.color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::raw(self.content.as_str()),
-        ]))
+    fn items(&self, content_width: usize) -> Vec<ListItem<'static>> {
+        wrap_text(&self.content, content_width)
+            .into_iter()
+            .enumerate()
+            .map(|(index, content)| {
+                let prefix = if index == 0 {
+                    format!("{:<7}", self.source)
+                } else {
+                    "       ".to_string()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        prefix,
+                        Style::default().fg(self.color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::raw(content),
+                ]))
+            })
+            .collect()
     }
+}
+
+fn wrap_text(content: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for raw_line in content.replace('\t', "    ").split('\n') {
+        if raw_line.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let chars = raw_line.chars().collect::<Vec<_>>();
+        for chunk in chars.chunks(width) {
+            lines.push(chunk.iter().collect());
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 fn request_uuid() -> String {
@@ -500,17 +533,18 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
     .block(Block::default().borders(Borders::ALL).title("Session"));
     frame.render_widget(title, chunks[0]);
 
-    let visible_items = app
+    let transcript_height = chunks[1].height.saturating_sub(2) as usize;
+    let transcript_inner_width = chunks[1].width.saturating_sub(2) as usize;
+    let content_width = transcript_inner_width
+        .saturating_sub(LogLine::PREFIX_WIDTH)
+        .max(1);
+    let all_items = app
         .lines
         .iter()
-        .rev()
-        .take(chunks[1].height.saturating_sub(2) as usize)
+        .flat_map(|line| line.items(content_width))
         .collect::<Vec<_>>();
-    let items = visible_items
-        .into_iter()
-        .rev()
-        .map(LogLine::item)
-        .collect::<Vec<_>>();
+    let skip_count = all_items.len().saturating_sub(transcript_height);
+    let items = all_items.into_iter().skip(skip_count).collect::<Vec<_>>();
     let transcript =
         List::new(items).block(Block::default().borders(Borders::ALL).title("Transcript"));
     frame.render_widget(transcript, chunks[1]);
