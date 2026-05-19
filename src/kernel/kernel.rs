@@ -1,16 +1,14 @@
-use crate::kernel::pipeline::{input_pipeline, output_pipeline, unit_with_content};
+use crate::kernel::pipeline::{input_pipeline, output_pipeline};
+use crate::kernel::processor::spawn_llm_instance;
 use crate::model::agent::Agent;
 use crate::model::app::App;
-use crate::model::asyncioinstance::{
-    AsyncIoBox, AsyncIoInstance, AsyncIoInstanceRole, InstanceSignal,
-};
+use crate::model::asyncioinstance::{AsyncIoBox, AsyncIoInstanceRole, InstanceSignal};
 use crate::model::event::{
-    AgentSnapshot, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent, UserKernelCommand,
+    AgentSnapshot, InstanceToKernelEvent, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent,
+    UserKernelCommand,
 };
-use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner};
-use crate::model::kernel::{InstanceToKernelEvent, Kernel, KernelRuntime};
+use crate::model::kernel::{AsyncIoHandleEntry, AsyncIoOwner, Kernel, KernelRuntime};
 use crate::model::run::{Run, RunMetadata, RunSummary};
-use crate::model::unit::{UnitRole, UnitVisibility};
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -347,7 +345,10 @@ impl Kernel {
                             },
                         );
 
-                        spawn_input_instance(
+                        spawn_llm_instance(
+                            kernel.llm_client.clone(),
+                            kernel.app.global_config.env.model.clone(),
+                            runtime.current_run.root.clone(),
                             input.request_uuid,
                             run_uuid,
                             agent_uuid,
@@ -460,103 +461,4 @@ fn format_run_list(runs: &[RunSummary]) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("Runs:\n{lines}")
-}
-
-fn spawn_input_instance(
-    request_uuid: String,
-    run_uuid: String,
-    agent_uuid: String,
-    instance: AsyncIoInstance,
-) {
-    tokio::spawn(async move {
-        let AsyncIoInstance {
-            uuid: instance_uuid,
-            mut stdin,
-            mut signal_rx,
-            kernel_tx,
-            ..
-        } = instance;
-
-        let mut units = tokio::select! {
-            units = stdin.recv() => {
-                let Some(units) = units else {
-                    send_instance_error(
-                        &kernel_tx,
-                        request_uuid,
-                        run_uuid,
-                        agent_uuid,
-                        instance_uuid,
-                        "AsyncIoInstance closed before receiving input.".to_string(),
-                    ).await;
-                    return;
-                };
-                units
-            }
-            signal = signal_rx.recv() => {
-                let message = match signal {
-                    Some(InstanceSignal::Terminate) => "AsyncIoInstance terminated before receiving input.",
-                    Some(InstanceSignal::Interrupt) => "AsyncIoInstance interrupted before receiving input.",
-                    None => "AsyncIoInstance signal channel closed before receiving input.",
-                };
-                send_instance_error(
-                    &kernel_tx,
-                    request_uuid,
-                    run_uuid,
-                    agent_uuid,
-                    instance_uuid,
-                    message.to_string(),
-                ).await;
-                return;
-            }
-        };
-
-        let input_preview = units
-            .last()
-            .and_then(|unit| unit.metadata.get("content"))
-            .cloned()
-            .unwrap_or_default();
-        units.push(unit_with_content(
-            UnitRole::Assistant,
-            UnitVisibility::Public,
-            Some(&agent_uuid),
-            format!("kernel received: {input_preview}"),
-            HashMap::new(),
-        ));
-        let _ = kernel_tx
-            .send(InstanceToKernelEvent {
-                correlation_uuid: Some(request_uuid),
-                run_uuid,
-                agent_uuid,
-                asyncioinstance_uuid: instance_uuid,
-                units,
-                is_tool_calls: false,
-            })
-            .await;
-    });
-}
-
-async fn send_instance_error(
-    kernel_tx: &mpsc::Sender<InstanceToKernelEvent>,
-    request_uuid: String,
-    run_uuid: String,
-    agent_uuid: String,
-    instance_uuid: String,
-    message: String,
-) {
-    let _ = kernel_tx
-        .send(InstanceToKernelEvent {
-            correlation_uuid: Some(request_uuid),
-            run_uuid,
-            agent_uuid,
-            asyncioinstance_uuid: instance_uuid,
-            units: vec![unit_with_content(
-                UnitRole::System,
-                UnitVisibility::Public,
-                None,
-                message,
-                HashMap::new(),
-            )],
-            is_tool_calls: false,
-        })
-        .await;
 }

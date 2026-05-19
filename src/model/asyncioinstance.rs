@@ -1,4 +1,4 @@
-use crate::model::kernel::InstanceToKernelEvent;
+use crate::model::event::InstanceToKernelEvent;
 use crate::model::unit::Unit;
 use anyhow::Result;
 use async_trait::async_trait;

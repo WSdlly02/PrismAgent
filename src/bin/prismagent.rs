@@ -410,8 +410,8 @@ fn push_units(app: &mut TuiApp, units: &[&Unit]) {
     for unit in units {
         let content = unit
             .metadata
-            .get("content")
-            .or_else(|| unit.metadata.get("preview"))
+            .get("preview")
+            .or_else(|| unit.metadata.get("content"))
             .cloned()
             .unwrap_or_default();
         if content.is_empty() {

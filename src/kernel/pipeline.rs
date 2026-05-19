@@ -5,6 +5,7 @@ use crate::model::workspace::WorkSpace;
 use crate::store::workspacestore::atomic_replace_file;
 use anyhow::{Result, anyhow};
 use chrono::Utc;
+use genai::chat::ChatMessage;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -22,12 +23,22 @@ pub fn input_pipeline(
     let agent = Run::read_agent_store(&agent_path(run, agent_uuid))?;
     let mut units: Vec<Unit> = read_agent_units(run, &agent)?;
     // 追加一个 pending 的用户输入 Unit，等待 output_pipeline 真正提交时被 materialize
+    let message = ChatMessage::user(content.to_string());
+    let message_json = serde_json::to_string(&message)
+        .map_err(|e| anyhow!("Failed to serialize user ChatMessage: {}", e))?;
     units.push(unit_with_content(
         UnitRole::User,
         UnitVisibility::Public,
         Some(agent_uuid),
-        content.to_string(),
-        HashMap::from([("request_uuid".to_string(), request_uuid.to_string())]),
+        message_json,
+        HashMap::from([
+            ("request_uuid".to_string(), request_uuid.to_string()),
+            (
+                "message_format".to_string(),
+                "genai.chat_message".to_string(),
+            ),
+            ("preview".to_string(), content.to_string()),
+        ]),
     ));
     Ok(units)
 }
@@ -217,7 +228,11 @@ mod tests {
 
         assert_eq!(units.len(), 1);
         assert_eq!(units[0].atom_hash, PENDING_ATOM_HASH);
-        assert_eq!(units[0].metadata.get("content"), Some(&"hello".to_string()));
+        assert_eq!(units[0].metadata.get("preview"), Some(&"hello".to_string()));
+        assert_eq!(
+            units[0].metadata.get("message_format"),
+            Some(&"genai.chat_message".to_string())
+        );
     }
 
     #[test]
