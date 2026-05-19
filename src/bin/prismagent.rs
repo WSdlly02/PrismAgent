@@ -69,6 +69,9 @@ async fn run_loop(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => handle_key(terminal, app, key).await?,
+                Event::Paste(text) => {
+                    insert_input(app, &text);
+                }
                 Event::Resize(_, _) => {
                     terminal.autoresize()?;
                 }
@@ -236,13 +239,17 @@ async fn handle_key(
         KeyCode::Home => app.input_cursor = 0,
         KeyCode::End => app.input_cursor = app.input.len(),
         KeyCode::Char(ch) => {
-            app.input.insert(app.input_cursor, ch);
-            app.input_cursor += ch.len_utf8();
+            insert_input(app, &ch.to_string());
         }
         _ => {}
     }
 
     Ok(())
+}
+
+fn insert_input(app: &mut TuiApp, content: &str) {
+    app.input.insert_str(app.input_cursor, content);
+    app.input_cursor += content.len();
 }
 
 async fn request_cancel(
@@ -549,13 +556,16 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
     let input = Paragraph::new(app.input.as_str())
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false });
+    let input_width = chunks[1].width.saturating_sub(2).max(1) as usize;
+    let input_height = chunks[1].height.saturating_sub(2).max(1);
+    let (cursor_x, cursor_y) = cursor_position(&app.input, app.input_cursor, input_width);
+    let scroll_y = input_scroll(cursor_y, input_height);
+    let input = input.scroll((scroll_y, 0));
     frame.render_widget(input, chunks[1]);
 
-    let input_width = chunks[1].width.saturating_sub(2).max(1) as usize;
-    let (cursor_x, cursor_y) = cursor_position(&app.input, app.input_cursor, input_width);
     frame.set_cursor_position(Position {
         x: chunks[1].x + 1 + cursor_x,
-        y: chunks[1].y + 1 + cursor_y,
+        y: chunks[1].y + 1 + cursor_y.saturating_sub(scroll_y),
     });
 
     frame.render_widget(
@@ -602,12 +612,20 @@ fn cursor_position(content: &str, cursor: usize, width: usize) -> (u16, u16) {
     if lines.is_empty() {
         lines.push(String::new());
     }
-    let y = lines.len().saturating_sub(1);
-    let x = lines
+    let mut y = lines.len().saturating_sub(1);
+    let mut x = lines
         .last()
         .map(|line| UnicodeWidthStr::width(line.as_str()))
         .unwrap_or(0);
+    if x >= width {
+        y += 1;
+        x = 0;
+    }
     (x as u16, y as u16)
+}
+
+fn input_scroll(cursor_y: u16, input_height: u16) -> u16 {
+    cursor_y.saturating_sub(input_height.saturating_sub(1))
 }
 
 fn previous_char_boundary(content: &str, cursor: usize) -> usize {
