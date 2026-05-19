@@ -181,7 +181,7 @@ pub fn spawn_tool_instance(
             }
         };
 
-        match run_tools(&run_root, units, &args) {
+        match run_tools(&run_root, units, &args).await {
             Ok(units) => {
                 let _ = kernel_tx
                     .send(InstanceToKernelEvent {
@@ -268,7 +268,7 @@ fn unit_from_chat_message(role: UnitRole, message: &ChatMessage, preview: String
     ))
 }
 
-fn run_tools(run_root: &Path, mut units: Vec<Unit>, approve_args: &str) -> Result<Vec<Unit>> {
+async fn run_tools(run_root: &Path, mut units: Vec<Unit>, approve_args: &str) -> Result<Vec<Unit>> {
     let messages = convert_units_to_chat_messages(run_root, &units)?;
     let Some(last_message) = messages.last() else {
         return Err(anyhow!("Tool instance received an empty unit chain"));
@@ -288,7 +288,7 @@ fn run_tools(run_root: &Path, mut units: Vec<Unit>, approve_args: &str) -> Resul
     let approved_indices = approved_tool_indices(approve_args, tool_calls.len())?;
     for (index, tool_call) in tool_calls.iter().enumerate() {
         let content = if approved_indices.contains(&index) {
-            dispatch_tool(run_root, tool_call)
+            dispatch_tool(run_root, tool_call).await
         } else {
             json!({
                 "status": "denied",

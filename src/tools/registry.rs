@@ -14,38 +14,37 @@ pub fn tool_template(name: &str, description: &str, schema: Value) -> Tool {
     }
 }
 
-pub fn tools_registry() -> Vec<Tool> {
-    vec![
-        tools::fs::ls_tree(),
-        tools::fs::read(),
-        tools::fs::list(),
-        tools::fs::stat(),
-        tools::fs::write(),
-        tools::fs::replace(),
-        tools::fs::mkdir(),
-        tools::fs::remove(),
-        tools::fs::rename(),
-        tools::fs::copy(),
-        tools::shell::exec(),
-    ]
+macro_rules! register_tools {
+    ($($name:expr => $module:ident::$def_fn:ident / $exec_fn:ident),* $(,)?) => {
+        pub fn tools_registry() -> Vec<Tool> {
+            vec![
+                $(tools::$module::$def_fn(),)*
+            ]
+        }
+
+        pub async fn dispatch_tool(run_root: &Path, tool_call: &ToolCall) -> String {
+            match tool_call.fn_name.as_str() {
+                $($name => tools::$module::$exec_fn(run_root, &tool_call.fn_arguments).await,)*
+                name => json!({
+                    "status": "error",
+                    "error": format!("unknown tool: {name}"),
+                })
+                .to_string(),
+            }
+        }
+    };
 }
-pub fn dispatch_tool(run_root: &Path, tool_call: &ToolCall) -> String {
-    match tool_call.fn_name.as_str() {
-        "fs_read" => tools::fs::execute_read(run_root, &tool_call.fn_arguments),
-        "fs_ls_tree" => tools::fs::execute_ls_tree(run_root, &tool_call.fn_arguments),
-        "fs_list" => tools::fs::execute_list(run_root, &tool_call.fn_arguments),
-        "fs_stat" => tools::fs::execute_stat(run_root, &tool_call.fn_arguments),
-        "fs_write" => tools::fs::execute_write(run_root, &tool_call.fn_arguments),
-        "fs_replace" => tools::fs::execute_replace(run_root, &tool_call.fn_arguments),
-        "fs_mkdir" => tools::fs::execute_mkdir(run_root, &tool_call.fn_arguments),
-        "fs_remove" => tools::fs::execute_remove(run_root, &tool_call.fn_arguments),
-        "fs_rename" => tools::fs::execute_rename(run_root, &tool_call.fn_arguments),
-        "fs_copy" => tools::fs::execute_copy(run_root, &tool_call.fn_arguments),
-        "shell_exec" => tools::shell::execute(run_root, &tool_call.fn_arguments),
-        name => json!({
-            "status": "error",
-            "error": format!("unknown tool: {name}"),
-        })
-        .to_string(),
-    }
+
+register_tools! {
+    "fs_ls_tree"  => fs::ls_tree  / execute_ls_tree,
+    "fs_read"     => fs::read     / execute_read,
+    "fs_list"     => fs::list     / execute_list,
+    "fs_stat"     => fs::stat     / execute_stat,
+    "fs_write"    => fs::write    / execute_write,
+    "fs_replace"  => fs::replace  / execute_replace,
+    "fs_mkdir"    => fs::mkdir    / execute_mkdir,
+    "fs_remove"   => fs::remove   / execute_remove,
+    "fs_rename"   => fs::rename   / execute_rename,
+    "fs_copy"     => fs::copy     / execute_copy,
+    "shell_exec"  => shell::exec  / execute,
 }

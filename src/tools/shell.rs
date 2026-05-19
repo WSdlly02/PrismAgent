@@ -2,9 +2,8 @@ use crate::tools::fs::resolve_tool_path;
 use crate::tools::registry::tool_template;
 use genai::chat::Tool;
 use serde_json::{Value, json};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use tokio::process::Command;
+use tokio::time::{Duration, Instant};
 
 pub fn exec() -> Tool {
     tool_template(
@@ -22,7 +21,7 @@ pub fn exec() -> Tool {
     )
 }
 
-pub fn execute(run_root: &std::path::Path, args: &Value) -> String {
+pub async fn execute(run_root: &std::path::Path, args: &Value) -> String {
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
     let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let timeout_secs = args
@@ -44,8 +43,8 @@ pub fn execute(run_root: &std::path::Path, args: &Value) -> String {
         .arg("-lc")
         .arg(command)
         .current_dir(&cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
     {
         Ok(child) => child,
@@ -61,61 +60,51 @@ pub fn execute(run_root: &std::path::Path, args: &Value) -> String {
     };
 
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => break,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let output = child.wait_with_output();
-                    return match output {
-                        Ok(output) => json!({
-                            "status": "timeout",
-                            "command": command,
-                            "cwd": cwd.display().to_string(),
-                            "timeout_secs": timeout_secs,
-                            "stdout": String::from_utf8_lossy(&output.stdout),
-                            "stderr": String::from_utf8_lossy(&output.stderr),
-                        })
-                        .to_string(),
-                        Err(error) => json!({
-                            "status": "timeout",
-                            "command": command,
-                            "cwd": cwd.display().to_string(),
-                            "timeout_secs": timeout_secs,
-                            "error": error.to_string(),
-                        })
-                        .to_string(),
-                    };
+    let timed_out = tokio::select! {
+        result = child.wait() => {
+            match result {
+                Ok(_) => false,
+                Err(error) => {
+                    return json!({
+                        "status": "error",
+                        "command": command,
+                        "cwd": cwd.display().to_string(),
+                        "error": error.to_string(),
+                    })
+                    .to_string();
                 }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                return json!({
-                    "status": "error",
-                    "command": command,
-                    "cwd": cwd.display().to_string(),
-                    "error": error.to_string(),
-                })
-                .to_string();
             }
         }
-    }
+        _ = tokio::time::sleep_until(deadline) => {
+            let _ = child.kill().await;
+            true
+        }
+    };
 
-    match child.wait_with_output() {
-        Ok(output) => json!({
-            "status": "ok",
-            "command": command,
-            "cwd": cwd.display().to_string(),
-            "exit_code": output.status.code(),
-            "success": output.status.success(),
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
-        })
+    match child.wait_with_output().await {
+        Ok(output) => if timed_out {
+            json!({
+                "status": "timeout",
+                "command": command,
+                "cwd": cwd.display().to_string(),
+                "timeout_secs": timeout_secs,
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            })
+        } else {
+            json!({
+                "status": "ok",
+                "command": command,
+                "cwd": cwd.display().to_string(),
+                "exit_code": output.status.code(),
+                "success": output.status.success(),
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            })
+        }
         .to_string(),
         Err(error) => json!({
-            "status": "error",
+            "status": if timed_out { "timeout" } else { "error" },
             "command": command,
             "cwd": cwd.display().to_string(),
             "error": error.to_string(),

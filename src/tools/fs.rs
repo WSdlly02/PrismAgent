@@ -152,7 +152,7 @@ pub fn copy() -> Tool {
     )
 }
 
-pub fn execute_read(run_root: &Path, args: &Value) -> String {
+pub async fn execute_read(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::read_to_string(&path) {
@@ -171,7 +171,7 @@ pub fn execute_read(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_ls_tree(run_root: &Path, args: &Value) -> String {
+pub async fn execute_ls_tree(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2) as usize;
     let path = resolve_tool_path(run_root, path);
@@ -192,13 +192,14 @@ pub fn execute_ls_tree(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_list(run_root: &Path, args: &Value) -> String {
+pub async fn execute_list(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::read_dir(&path) {
         Ok(entries) => {
             let entries = entries
                 .filter_map(Result::ok)
+                .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
                 .map(|entry| {
                     let entry_path = entry.path();
                     json!({
@@ -224,7 +225,7 @@ pub fn execute_list(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_stat(run_root: &Path, args: &Value) -> String {
+pub async fn execute_stat(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::metadata(&path) {
@@ -245,7 +246,7 @@ pub fn execute_stat(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_write(run_root: &Path, args: &Value) -> String {
+pub async fn execute_write(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let content = args.get("content").and_then(Value::as_str).unwrap_or("");
     let create_parent_dirs = args
@@ -280,7 +281,7 @@ pub fn execute_write(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_replace(run_root: &Path, args: &Value) -> String {
+pub async fn execute_replace(run_root: &Path, args: &Value) -> String {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let old = args.get("old").and_then(Value::as_str).unwrap_or("");
     let new = args.get("new").and_then(Value::as_str).unwrap_or("");
@@ -331,7 +332,7 @@ pub fn execute_replace(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_mkdir(run_root: &Path, args: &Value) -> String {
+pub async fn execute_mkdir(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::create_dir_all(&path) {
@@ -349,7 +350,7 @@ pub fn execute_mkdir(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_remove(run_root: &Path, args: &Value) -> String {
+pub async fn execute_remove(run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let recursive = args
         .get("recursive")
@@ -380,7 +381,7 @@ pub fn execute_remove(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_rename(run_root: &Path, args: &Value) -> String {
+pub async fn execute_rename(run_root: &Path, args: &Value) -> String {
     let from = args.get("from").and_then(Value::as_str).unwrap_or(".");
     let to = args.get("to").and_then(Value::as_str).unwrap_or(".");
     let from = resolve_tool_path(run_root, from);
@@ -402,7 +403,7 @@ pub fn execute_rename(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub fn execute_copy(run_root: &Path, args: &Value) -> String {
+pub async fn execute_copy(run_root: &Path, args: &Value) -> String {
     let from = args.get("from").and_then(Value::as_str).unwrap_or(".");
     let to = args.get("to").and_then(Value::as_str).unwrap_or(".");
     let from = resolve_tool_path(run_root, from);
@@ -436,13 +437,14 @@ fn collect_tree_entries(
     }
     for entry in fs::read_dir(path)? {
         let entry = entry?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
         let entry_path = entry.path();
         let kind = if entry_path.is_dir() { "dir" } else { "file" };
         let indent = "  ".repeat(current_depth);
-        entries.push(format!(
-            "{indent}[{kind}] {}",
-            entry.file_name().to_string_lossy()
-        ));
+        entries.push(format!("{indent}[{kind}] {}", name.to_string_lossy()));
         if entry_path.is_dir() && current_depth < max_depth {
             collect_tree_entries(&entry_path, max_depth, current_depth + 1, entries)?;
         }
