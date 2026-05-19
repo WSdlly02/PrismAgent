@@ -2,10 +2,11 @@ use crate::kernel::pipeline::unit_with_content;
 use crate::model::asyncioinstance::{AsyncIoInstance, InstanceSignal};
 use crate::model::event::InstanceToKernelEvent;
 use crate::model::unit::{Unit, UnitRole, UnitVisibility};
-use crate::tools::registry::tools_registry;
+use crate::tools::registry::{dispatch_tool, tools_registry};
 use anyhow::{Result, anyhow};
 use genai::Client;
-use genai::chat::{ChatMessage, ChatRequest};
+use genai::chat::{ChatMessage, ChatRequest, ToolResponse};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -47,6 +48,7 @@ pub fn spawn_llm_instance(
                 let message = match signal {
                     Some(InstanceSignal::Terminate) => "AsyncIoInstance terminated before receiving input.",
                     Some(InstanceSignal::Interrupt) => "AsyncIoInstance interrupted before receiving input.",
+                    Some(InstanceSignal::Approve { .. }) => "AsyncIoInstance received approval before receiving input.",
                     None => "AsyncIoInstance signal channel closed before receiving input.",
                 };
                 send_instance_error(
@@ -82,6 +84,124 @@ pub fn spawn_llm_instance(
                     agent_uuid,
                     instance_uuid,
                     format!("LLM instance failed: {error}"),
+                )
+                .await;
+            }
+        }
+    });
+}
+
+pub fn spawn_tool_instance(
+    run_root: PathBuf,
+    request_uuid: String,
+    run_uuid: String,
+    agent_uuid: String,
+    instance: AsyncIoInstance,
+) {
+    tokio::spawn(async move {
+        let AsyncIoInstance {
+            uuid: instance_uuid,
+            mut stdin,
+            mut signal_rx,
+            kernel_tx,
+            ..
+        } = instance;
+
+        let units = tokio::select! {
+            units = stdin.recv() => {
+                let Some(units) = units else {
+                    send_instance_error(
+                        &kernel_tx,
+                        request_uuid,
+                        run_uuid,
+                        agent_uuid,
+                        instance_uuid,
+                        "Tool instance closed before receiving input.".to_string(),
+                    ).await;
+                    return;
+                };
+                units
+            }
+            signal = signal_rx.recv() => {
+                let message = match signal {
+                    Some(InstanceSignal::Terminate) => "Tool instance terminated before receiving input.",
+                    Some(InstanceSignal::Interrupt) => "Tool instance interrupted before receiving input.",
+                    Some(InstanceSignal::Approve { .. }) => "Tool instance received approval before receiving input.",
+                    None => "Tool instance signal channel closed before receiving input.",
+                };
+                send_instance_error(
+                    &kernel_tx,
+                    request_uuid,
+                    run_uuid,
+                    agent_uuid,
+                    instance_uuid,
+                    message.to_string(),
+                ).await;
+                return;
+            }
+        };
+
+        let args = match signal_rx.recv().await {
+            Some(InstanceSignal::Approve { args }) => args,
+            Some(InstanceSignal::Terminate) => {
+                send_instance_error(
+                    &kernel_tx,
+                    request_uuid,
+                    run_uuid,
+                    agent_uuid,
+                    instance_uuid,
+                    "Tool instance terminated before approval.".to_string(),
+                )
+                .await;
+                return;
+            }
+            Some(InstanceSignal::Interrupt) => {
+                send_instance_error(
+                    &kernel_tx,
+                    request_uuid,
+                    run_uuid,
+                    agent_uuid,
+                    instance_uuid,
+                    "Tool instance interrupted before approval.".to_string(),
+                )
+                .await;
+                return;
+            }
+            None => {
+                send_instance_error(
+                    &kernel_tx,
+                    request_uuid,
+                    run_uuid,
+                    agent_uuid,
+                    instance_uuid,
+                    "Tool instance signal channel closed before approval.".to_string(),
+                )
+                .await;
+                return;
+            }
+        };
+
+        match run_tools(&run_root, units, &args) {
+            Ok(units) => {
+                let _ = kernel_tx
+                    .send(InstanceToKernelEvent {
+                        correlation_uuid: Some(request_uuid),
+                        run_uuid,
+                        agent_uuid,
+                        asyncioinstance_uuid: instance_uuid,
+                        units,
+                        is_tool_calls: false,
+                    })
+                    .await;
+            }
+            Err(error) => {
+                send_instance_error(
+                    &kernel_tx,
+                    request_uuid,
+                    run_uuid,
+                    agent_uuid,
+                    instance_uuid,
+                    format!("Tool instance failed: {error}"),
                 )
                 .await;
             }
@@ -146,6 +266,71 @@ fn unit_from_chat_message(role: UnitRole, message: &ChatMessage, preview: String
         content,
         metadata,
     ))
+}
+
+fn run_tools(run_root: &Path, mut units: Vec<Unit>, approve_args: &str) -> Result<Vec<Unit>> {
+    let messages = convert_units_to_chat_messages(run_root, &units)?;
+    let Some(last_message) = messages.last() else {
+        return Err(anyhow!("Tool instance received an empty unit chain"));
+    };
+    let tool_calls = last_message
+        .content
+        .tool_calls()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if tool_calls.is_empty() {
+        return Err(anyhow!(
+            "Tool instance expected the last message to contain tool calls"
+        ));
+    }
+
+    let approved_indices = approved_tool_indices(approve_args, tool_calls.len())?;
+    for (index, tool_call) in tool_calls.iter().enumerate() {
+        let content = if approved_indices.contains(&index) {
+            dispatch_tool(run_root, tool_call)
+        } else {
+            json!({
+                "status": "denied",
+                "tool": tool_call.fn_name,
+                "reason": "not approved",
+            })
+            .to_string()
+        };
+        let response = ToolResponse::from_tool_call(tool_call, content.clone());
+        let message = ChatMessage::from(response);
+        units.push(unit_from_chat_message(
+            UnitRole::Tool,
+            &message,
+            format!("tool {} -> {content}", tool_call.fn_name),
+        )?);
+    }
+
+    Ok(units)
+}
+
+fn approved_tool_indices(args: &str, total: usize) -> Result<Vec<usize>> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("all") {
+        return Ok((0..total).collect());
+    }
+
+    let mut indices = Vec::new();
+    for part in trimmed.split_whitespace() {
+        let value = part
+            .parse::<usize>()
+            .map_err(|_| anyhow!("Invalid approve argument: {part}"))?;
+        if value == 0 || value > total {
+            return Err(anyhow!(
+                "Approve argument {value} is outside the range 1..={total}"
+            ));
+        }
+        let index = value - 1;
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    Ok(indices)
 }
 
 fn convert_units_to_chat_messages(run_root: &Path, units: &[Unit]) -> Result<Vec<ChatMessage>> {

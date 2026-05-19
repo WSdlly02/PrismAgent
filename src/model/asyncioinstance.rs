@@ -1,7 +1,6 @@
 use crate::model::event::InstanceToKernelEvent;
 use crate::model::unit::Unit;
 use anyhow::Result;
-use async_trait::async_trait;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -39,10 +38,11 @@ pub enum AsyncIoInstanceExecutionMode {
     Blocking, // 阻塞模式
     Detached, // 分离模式，异步执行，内核不会等待它完成，适合长时间运行的任务，例如工具调用、外部事件监听等
 }
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone)]
 pub enum InstanceSignal {
     Terminate,
     Interrupt,
+    Approve { args: String },
 }
 
 impl AsyncIoBox {
@@ -85,10 +85,4 @@ impl AsyncIoBox {
     pub fn split(self) -> (AsyncIoInstance, AsyncIoHandle) {
         (self.instance, self.handle)
     }
-}
-
-// 定义一个异步IO实例的驱动器接口，不同的实现可以驱动不同类型的实例，例如LLM实例、工具实例等。
-#[async_trait]
-pub trait AsyncIoInstanceProcessor: Send + Sync {
-    async fn process(&mut self, instance: AsyncIoInstance) -> Result<()>;
 }

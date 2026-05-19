@@ -67,9 +67,6 @@ pub struct UserKernelCommandRequest {
 /// Shell/TUI 发给 Kernel 的控制命令。
 ///
 /// 这里只放真正属于 Kernel 生命周期、Run 管理、视图查询的动作。
-///
-/// 不要把“用户批准工具调用”放在这里；
-/// 那应该由 HumanInputInstance 通过实例输出表达。
 pub enum UserKernelCommand {
     /// 创建一个新的 run。
     NewRun { title: Option<String> },
@@ -90,6 +87,16 @@ pub enum UserKernelCommand {
     Cancel {
         run_uuid: Option<String>,
         agent_uuid: Option<String>,
+    },
+
+    /// 批准某个 agent 当前挂起的工具调用。
+    ///
+    /// Kernel 只负责把这条控制信号转发给该 agent 的 blocking tool instance；
+    /// 具体参数解析由 tool instance 完成。
+    Approve {
+        run_uuid: Option<String>,
+        agent_uuid: Option<String>,
+        args: String,
     },
 
     /// 关闭 Kernel，释放锁并退出。

@@ -1,8 +1,10 @@
 use crate::kernel::pipeline::{input_pipeline, output_pipeline};
-use crate::kernel::processor::spawn_llm_instance;
+use crate::kernel::processor::{spawn_llm_instance, spawn_tool_instance};
 use crate::model::agent::Agent;
 use crate::model::app::App;
-use crate::model::asyncioinstance::{AsyncIoBox, AsyncIoInstanceRole, InstanceSignal};
+use crate::model::asyncioinstance::{
+    AsyncIoBox, AsyncIoInstanceExecutionMode, AsyncIoInstanceRole, InstanceSignal,
+};
 use crate::model::event::{
     AgentSnapshot, InstanceToKernelEvent, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent,
     UserKernelCommand,
@@ -236,6 +238,68 @@ impl Kernel {
                                     "Cancel signal sent.".to_string()
                                 );
                             }
+                            UserKernelCommand::Approve {
+                                run_uuid,
+                                agent_uuid,
+                                args,
+                            } => {
+                                let Some(runtime) = kernel.runtime.as_mut() else {
+                                    emit_patch!(
+                                        correlation_uuid,
+                                        "No active run to approve.".to_string()
+                                    );
+                                    continue;
+                                };
+                                let target_run_uuid = run_uuid
+                                    .unwrap_or_else(|| runtime.current_run.run_metadata.uuid.clone());
+                                if target_run_uuid != runtime.current_run.run_metadata.uuid {
+                                    emit_patch!(
+                                        correlation_uuid,
+                                        "Cannot approve a task outside the active run.".to_string()
+                                    );
+                                    continue;
+                                }
+                                let target_agent_uuid = agent_uuid.unwrap_or_else(|| {
+                                    runtime.current_run.run_metadata.root_agent_uuid.clone()
+                                });
+                                let Some((instance_uuid, entry)) =
+                                    runtime.handles.iter().find(|(_, entry)| {
+                                        entry.run_uuid == target_run_uuid
+                                            && entry.role == AsyncIoInstanceRole::Tool
+                                            && entry.execution_mode
+                                                == AsyncIoInstanceExecutionMode::Blocking
+                                            && matches!(
+                                                &entry.owner,
+                                                AsyncIoOwner::Agent { agent_uuid }
+                                                    if agent_uuid == &target_agent_uuid
+                                            )
+                                    })
+                                else {
+                                    emit_patch!(
+                                        correlation_uuid,
+                                        "No pending tool request to approve.".to_string()
+                                    );
+                                    continue;
+                                };
+                                let instance_uuid = instance_uuid.clone();
+                                let signal_result = entry
+                                    .handle
+                                    .signal_tx
+                                    .send(InstanceSignal::Approve { args })
+                                    .await;
+                                if let Err(error) = signal_result {
+                                    runtime.handles.remove(&instance_uuid);
+                                    emit_patch!(
+                                        correlation_uuid,
+                                        format!("Failed to approve pending tool request: {error}")
+                                    );
+                                    continue;
+                                }
+                                emit_patch!(
+                                    correlation_uuid,
+                                    "Approve signal sent.".to_string()
+                                );
+                            }
                             UserKernelCommand::Snapshot { .. } => {
                                 emit_patch!(
                                     correlation_uuid,
@@ -290,6 +354,21 @@ impl Kernel {
                             emit_patch!(
                                 Some(input.request_uuid),
                                 "Target agent does not exist in active run.".to_string()
+                            );
+                            continue;
+                        }
+                        if runtime.handles.iter().any(|(_, entry)| {
+                            entry.run_uuid == run_uuid
+                                && entry.execution_mode == AsyncIoInstanceExecutionMode::Blocking
+                                && matches!(
+                                    &entry.owner,
+                                    AsyncIoOwner::Agent { agent_uuid: owner_agent_uuid }
+                                        if owner_agent_uuid == &agent_uuid
+                                )
+                        }) {
+                            emit_patch!(
+                                Some(input.request_uuid),
+                                "Target agent already has an active blocking request.".to_string()
                             );
                             continue;
                         }
@@ -378,22 +457,165 @@ impl Kernel {
                             continue;
                         }
 
-                        if let Err(error) = output_pipeline(
+                        let instance_role = runtime
+                            .handles
+                            .get(&instance_event.asyncioinstance_uuid)
+                            .map(|entry| entry.role)
+                            .unwrap_or(AsyncIoInstanceRole::Unknown);
+
+                        let committed_units = match output_pipeline(
                             &kernel.app.workspace,
                             &mut runtime.current_run,
                             &instance_event.agent_uuid,
                             instance_event.units,
                         ) {
-                            runtime.handles.remove(&instance_event.asyncioinstance_uuid);
-                            emit_patch!(
-                                instance_event.correlation_uuid,
-                                format!("Output pipeline failed: {error}")
-                            );
-                            continue;
-                        }
+                            Ok(units) => units,
+                            Err(error) => {
+                                runtime.handles.remove(&instance_event.asyncioinstance_uuid);
+                                emit_patch!(
+                                    instance_event.correlation_uuid,
+                                    format!("Output pipeline failed: {error}")
+                                );
+                                continue;
+                            }
+                        };
                         runtime.handles.remove(&instance_event.asyncioinstance_uuid);
 
-                        emit_snapshot!(instance_event.correlation_uuid);
+                        if instance_event.is_tool_calls {
+                            let io_box = match AsyncIoBox::new(instance_tx.clone())
+                                .with_role(AsyncIoInstanceRole::Tool)
+                                .done()
+                            {
+                                Ok(io_box) => io_box,
+                                Err(error) => {
+                                    emit_patch!(
+                                        instance_event.correlation_uuid,
+                                        format!("Failed to create tool AsyncIoInstance: {error}")
+                                    );
+                                    continue;
+                                }
+                            };
+                            let (instance, handle) = io_box.split();
+                            let instance_uuid = instance.uuid.clone();
+                            if let Err(error) = handle.stdin.try_send(committed_units) {
+                                emit_patch!(
+                                    instance_event.correlation_uuid,
+                                    format!("Failed to send tool input to AsyncIoInstance: {error}")
+                                );
+                                continue;
+                            }
+                            runtime.handles.insert(
+                                instance_uuid,
+                                AsyncIoHandleEntry {
+                                    run_uuid: instance_event.run_uuid.clone(),
+                                    owner: AsyncIoOwner::Agent {
+                                        agent_uuid: instance_event.agent_uuid.clone(),
+                                    },
+                                    role: instance.role,
+                                    execution_mode: instance.execution_mode,
+                                    handle,
+                                },
+                            );
+                            spawn_tool_instance(
+                                runtime.current_run.root.clone(),
+                                instance_event
+                                    .correlation_uuid
+                                    .clone()
+                                    .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+                                instance_event.run_uuid,
+                                instance_event.agent_uuid,
+                                instance,
+                            );
+                            match build_run_snapshot(&runtime.current_run) {
+                                Ok(snapshot) => emit!(KernelToShellEvent::Snapshot {
+                                    correlation_uuid: instance_event.correlation_uuid.clone(),
+                                    snapshot,
+                                }),
+                                Err(error) => {
+                                    emit_patch!(
+                                        instance_event.correlation_uuid.clone(),
+                                        format!("Failed to build kernel snapshot: {error}")
+                                    );
+                                }
+                            }
+                            emit_patch!(
+                                instance_event.correlation_uuid.clone(),
+                                "Tool calls are pending approval. Use /approve all, /approve 1 2, or Ctrl-Y."
+                                    .to_string()
+                            );
+                        } else if instance_role == AsyncIoInstanceRole::Tool {
+                            let io_box = match AsyncIoBox::new(instance_tx.clone())
+                                .with_role(AsyncIoInstanceRole::LLM)
+                                .done()
+                            {
+                                Ok(io_box) => io_box,
+                                Err(error) => {
+                                    emit_patch!(
+                                        instance_event.correlation_uuid,
+                                        format!("Failed to create LLM AsyncIoInstance: {error}")
+                                    );
+                                    continue;
+                                }
+                            };
+                            let (instance, handle) = io_box.split();
+                            let instance_uuid = instance.uuid.clone();
+                            if let Err(error) = handle.stdin.try_send(committed_units) {
+                                emit_patch!(
+                                    instance_event.correlation_uuid,
+                                    format!("Failed to send LLM input to AsyncIoInstance: {error}")
+                                );
+                                continue;
+                            }
+                            runtime.handles.insert(
+                                instance_uuid,
+                                AsyncIoHandleEntry {
+                                    run_uuid: instance_event.run_uuid.clone(),
+                                    owner: AsyncIoOwner::Agent {
+                                        agent_uuid: instance_event.agent_uuid.clone(),
+                                    },
+                                    role: instance.role,
+                                    execution_mode: instance.execution_mode,
+                                    handle,
+                                },
+                            );
+                            spawn_llm_instance(
+                                kernel.llm_client.clone(),
+                                kernel.app.global_config.env.model.clone(),
+                                runtime.current_run.root.clone(),
+                                instance_event
+                                    .correlation_uuid
+                                    .clone()
+                                    .unwrap_or_else(|| uuid::Uuid::now_v7().to_string()),
+                                instance_event.run_uuid,
+                                instance_event.agent_uuid,
+                                instance,
+                            );
+                            match build_run_snapshot(&runtime.current_run) {
+                                Ok(snapshot) => emit!(KernelToShellEvent::Snapshot {
+                                    correlation_uuid: instance_event.correlation_uuid.clone(),
+                                    snapshot,
+                                }),
+                                Err(error) => {
+                                    emit_patch!(
+                                        instance_event.correlation_uuid.clone(),
+                                        format!("Failed to build kernel snapshot: {error}")
+                                    );
+                                }
+                            }
+                        } else {
+                            match build_run_snapshot(&runtime.current_run) {
+                                Ok(snapshot) => emit!(KernelToShellEvent::Snapshot {
+                                    correlation_uuid: instance_event.correlation_uuid.clone(),
+                                    snapshot,
+                                }),
+                                Err(error) => {
+                                    emit_patch!(
+                                        instance_event.correlation_uuid.clone(),
+                                        format!("Failed to build kernel snapshot: {error}")
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

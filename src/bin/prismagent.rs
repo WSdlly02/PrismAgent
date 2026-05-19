@@ -212,6 +212,25 @@ fn cancel_event(app: &TuiApp) -> ShellToKernelEvent {
     })
 }
 
+fn approve_event(app: &TuiApp, args: String) -> ShellToKernelEvent {
+    ShellToKernelEvent::KernelCommand(UserKernelCommandRequest {
+        request_uuid: request_uuid(),
+        command: UserKernelCommand::Approve {
+            run_uuid: if app.run_uuid == DEFAULT_RUN_UUID {
+                None
+            } else {
+                Some(app.run_uuid.clone())
+            },
+            agent_uuid: if app.agent_uuid == DEFAULT_AGENT_UUID {
+                None
+            } else {
+                Some(app.agent_uuid.clone())
+            },
+            args,
+        },
+    })
+}
+
 async fn request_cancel(app: &mut TuiApp) {
     if app.input_enabled {
         app.push_system("no active request to cancel");
@@ -228,6 +247,16 @@ async fn request_cancel(app: &mut TuiApp) {
     app.status = "cancel requested".to_owned();
 }
 
+async fn request_approve(app: &mut TuiApp, args: String) {
+    if app.shell_tx.send(approve_event(app, args)).await.is_err() {
+        app.push_error("kernel channel closed");
+        app.status = "kernel disconnected".to_owned();
+        return;
+    }
+
+    app.status = "approval sent".to_owned();
+}
+
 async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
     if key.kind != KeyEventKind::Press {
         return Ok(());
@@ -242,6 +271,9 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
+        }
+        KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            request_approve(app, "all".to_string()).await;
         }
         KeyCode::Enter => {
             let content = app.input.trim().to_owned();
@@ -269,6 +301,18 @@ async fn handle_key(app: &mut TuiApp, key: KeyEvent) -> Result<()> {
                                 Some(app.agent_uuid.clone())
                             },
                         }),
+                        "approve" => approve_event(app, "all".to_string()),
+                        cmd if cmd.starts_with("approve ") => {
+                            let args = cmd[8..].trim();
+                            approve_event(
+                                app,
+                                if args.is_empty() {
+                                    "all".to_string()
+                                } else {
+                                    args.to_string()
+                                },
+                            )
+                        }
                         "new" => command_event(UserKernelCommand::NewRun { title: None }),
                         cmd if cmd.starts_with("new ") => {
                             let title = cmd[4..].trim();
@@ -476,6 +520,6 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[2]);
 
-    let help = Paragraph::new("Enter send  Esc/Ctrl-C cancel  Ctrl-D quit");
+    let help = Paragraph::new("Enter send  Ctrl-Y approve all  Esc/Ctrl-C cancel  Ctrl-D quit");
     frame.render_widget(help, chunks[3]);
 }
