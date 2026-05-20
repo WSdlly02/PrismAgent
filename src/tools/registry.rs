@@ -47,4 +47,6 @@ register_tools! {
     "fs_rename"   => fs::rename   / execute_rename,
     "fs_copy"     => fs::copy     / execute_copy,
     "shell_exec"  => shell::exec  / execute,
+    "web_search"  => web::search  / execute_search,
+    "web_fetch"   => web::fetch   / execute_fetch,
 }

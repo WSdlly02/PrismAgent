@@ -22,6 +22,8 @@ chrono = "0.4.44"
 whoami = "2.1.2"
 directories = "6.0.0"
 genai = "0.6.0-beta.20"
+reqwest = { version = "0.13", features = ["json"] }
+urlencoding = "2"
 unicode-width = "0.2.2"
 
 [profile.release]
