@@ -1,3 +1,4 @@
+use crate::bus::Bus;
 use crate::tools;
 use genai::chat::Tool;
 use genai::chat::ToolCall;
@@ -22,9 +23,9 @@ macro_rules! register_tools {
             ]
         }
 
-        pub async fn dispatch_tool(run_root: &Path, tool_call: &ToolCall) -> String {
+        pub async fn dispatch_tool(bus: &Bus, run_root: &Path, tool_call: &ToolCall) -> String {
             match tool_call.fn_name.as_str() {
-                $($name => tools::$module::$exec_fn(run_root, &tool_call.fn_arguments).await,)*
+                $($name => tools::$module::$exec_fn(bus, run_root, &tool_call.fn_arguments).await,)*
                 name => json!({
                     "status": "error",
                     "error": format!("unknown tool: {name}"),

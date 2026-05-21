@@ -1,3 +1,4 @@
+use crate::bus::Bus;
 use crate::tools::fs::resolve_tool_path;
 use crate::tools::registry::tool_template;
 use genai::chat::Tool;
@@ -21,7 +22,7 @@ pub fn exec() -> Tool {
     )
 }
 
-pub async fn execute(run_root: &std::path::Path, args: &Value) -> String {
+pub async fn execute(_bus: &Bus, run_root: &std::path::Path, args: &Value) -> String {
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
     let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let timeout_secs = args

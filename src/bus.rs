@@ -293,7 +293,9 @@ impl Bus {
 
 pub trait Subsystem: Send + 'static {
     fn name(&self) -> SubsystemName;
-    fn start(self: Box<Self>, bus: Bus) -> mpsc::Sender<Request>;
+    fn start(self, bus: Bus) -> mpsc::Sender<Request>
+    where
+        Self: Sized;
 }
 
 #[cfg(test)]

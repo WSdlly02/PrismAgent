@@ -1,3 +1,4 @@
+use crate::bus::Bus;
 use crate::tools::registry::tool_template;
 use genai::chat::Tool;
 use serde_json::{Value, json};
@@ -152,7 +153,7 @@ pub fn copy() -> Tool {
     )
 }
 
-pub async fn execute_read(run_root: &Path, args: &Value) -> String {
+pub async fn execute_read(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::read_to_string(&path) {
@@ -171,7 +172,7 @@ pub async fn execute_read(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_ls_tree(run_root: &Path, args: &Value) -> String {
+pub async fn execute_ls_tree(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2) as usize;
     let path = resolve_tool_path(run_root, path);
@@ -192,7 +193,7 @@ pub async fn execute_ls_tree(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_list(run_root: &Path, args: &Value) -> String {
+pub async fn execute_list(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::read_dir(&path) {
@@ -225,7 +226,7 @@ pub async fn execute_list(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_stat(run_root: &Path, args: &Value) -> String {
+pub async fn execute_stat(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::metadata(&path) {
@@ -246,7 +247,7 @@ pub async fn execute_stat(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_write(run_root: &Path, args: &Value) -> String {
+pub async fn execute_write(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let content = args.get("content").and_then(Value::as_str).unwrap_or("");
     let create_parent_dirs = args
@@ -281,7 +282,7 @@ pub async fn execute_write(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_replace(run_root: &Path, args: &Value) -> String {
+pub async fn execute_replace(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let old = args.get("old").and_then(Value::as_str).unwrap_or("");
     let new = args.get("new").and_then(Value::as_str).unwrap_or("");
@@ -332,7 +333,7 @@ pub async fn execute_replace(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_mkdir(run_root: &Path, args: &Value) -> String {
+pub async fn execute_mkdir(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(run_root, path);
     match fs::create_dir_all(&path) {
@@ -350,7 +351,7 @@ pub async fn execute_mkdir(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_remove(run_root: &Path, args: &Value) -> String {
+pub async fn execute_remove(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let recursive = args
         .get("recursive")
@@ -381,7 +382,7 @@ pub async fn execute_remove(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_rename(run_root: &Path, args: &Value) -> String {
+pub async fn execute_rename(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let from = args.get("from").and_then(Value::as_str).unwrap_or(".");
     let to = args.get("to").and_then(Value::as_str).unwrap_or(".");
     let from = resolve_tool_path(run_root, from);
@@ -403,7 +404,7 @@ pub async fn execute_rename(run_root: &Path, args: &Value) -> String {
     }
 }
 
-pub async fn execute_copy(run_root: &Path, args: &Value) -> String {
+pub async fn execute_copy(_bus: &Bus, run_root: &Path, args: &Value) -> String {
     let from = args.get("from").and_then(Value::as_str).unwrap_or(".");
     let to = args.get("to").and_then(Value::as_str).unwrap_or(".");
     let from = resolve_tool_path(run_root, from);

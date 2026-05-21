@@ -1,3 +1,4 @@
+use crate::bus::{Bus, SubsystemName};
 use crate::tools::registry::tool_template;
 use genai::chat::Tool;
 use reqwest::Client;
@@ -6,8 +7,26 @@ use std::path::Path;
 
 static CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(Client::new);
 
-fn api_key() -> String {
-    std::env::var("TINYFISH_API_KEY").unwrap_or_default()
+async fn api_key(bus: &Bus) -> Result<String, String> {
+    let response = bus
+        .post(
+            SubsystemName::Config,
+            SubsystemName::Tool,
+            "tool_config",
+            json!({ "name": "tinyfish" }),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.is_ok() {
+        return Err(response.body.to_string());
+    }
+    response
+        .body
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "tools.tinyfish.api_key is missing".to_string())
 }
 
 // ─── web_search ───────────────────────────────────────────────────────────────
@@ -27,10 +46,14 @@ pub fn search() -> Tool {
     )
 }
 
-pub async fn execute_search(_run_root: &Path, args: &Value) -> String {
+pub async fn execute_search(bus: &Bus, _run_root: &Path, args: &Value) -> String {
     let query = match args["query"].as_str() {
         Some(q) => q,
         None => return json!({"status":"error","error":"missing query"}).to_string(),
+    };
+    let api_key = match api_key(bus).await {
+        Ok(api_key) => api_key,
+        Err(error) => return json!({"status":"error","error":error}).to_string(),
     };
 
     let mut url = format!(
@@ -41,7 +64,7 @@ pub async fn execute_search(_run_root: &Path, args: &Value) -> String {
         url.push_str(&format!("&language={}", lang));
     }
 
-    match CLIENT.get(&url).header("X-API-Key", api_key()).send().await {
+    match CLIENT.get(&url).header("X-API-Key", api_key).send().await {
         Ok(resp) => resp
             .text()
             .await
@@ -70,17 +93,21 @@ pub fn fetch() -> Tool {
     )
 }
 
-pub async fn execute_fetch(_run_root: &Path, args: &Value) -> String {
+pub async fn execute_fetch(bus: &Bus, _run_root: &Path, args: &Value) -> String {
     let urls = match args["urls"].as_array() {
         Some(u) => u.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
         None => return json!({"status":"error","error":"missing urls"}).to_string(),
+    };
+    let api_key = match api_key(bus).await {
+        Ok(api_key) => api_key,
+        Err(error) => return json!({"status":"error","error":error}).to_string(),
     };
 
     let body = json!({ "urls": urls, "format": "markdown" });
 
     match CLIENT
         .post("https://api.fetch.tinyfish.ai")
-        .header("X-API-Key", api_key())
+        .header("X-API-Key", api_key)
         .json(&body)
         .send()
         .await
