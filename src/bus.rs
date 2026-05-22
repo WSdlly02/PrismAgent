@@ -21,6 +21,7 @@ pub enum Method {
 pub enum SubsystemName {
     Shell,
     Config,
+    Storage,
     RunManager,
     Llm,
     Tool,
@@ -31,6 +32,7 @@ impl Display for SubsystemName {
         match self {
             Self::Shell => write!(f, "shell"),
             Self::Config => write!(f, "config"),
+            Self::Storage => write!(f, "storage"),
             Self::RunManager => write!(f, "run_manager"),
             Self::Llm => write!(f, "llm"),
             Self::Tool => write!(f, "tool"),

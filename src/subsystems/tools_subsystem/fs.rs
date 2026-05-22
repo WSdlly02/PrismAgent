@@ -1,5 +1,5 @@
 use crate::bus::Bus;
-use crate::tools::registry::tool_template;
+use crate::subsystems::tools_subsystem::runtime::tool_template;
 use genai::chat::Tool;
 use serde_json::{Value, json};
 use std::fs;
@@ -465,7 +465,7 @@ fn path_kind(path: &Path) -> &'static str {
     }
 }
 
-pub(crate) fn resolve_tool_path(run_root: &Path, path: &str) -> PathBuf {
+pub(super) fn resolve_tool_path(run_root: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
         return path.to_path_buf();

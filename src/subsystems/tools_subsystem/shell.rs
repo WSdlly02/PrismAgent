@@ -1,6 +1,6 @@
 use crate::bus::Bus;
-use crate::tools::fs::resolve_tool_path;
-use crate::tools::registry::tool_template;
+use crate::subsystems::tools_subsystem::fs::resolve_tool_path;
+use crate::subsystems::tools_subsystem::runtime::tool_template;
 use genai::chat::Tool;
 use serde_json::{Value, json};
 use tokio::process::Command;

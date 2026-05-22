@@ -1,5 +1,5 @@
 use crate::bus::{Bus, SubsystemName};
-use crate::tools::registry::tool_template;
+use crate::subsystems::tools_subsystem::runtime::tool_template;
 use genai::chat::Tool;
 use reqwest::Client;
 use serde_json::{Value, json};
