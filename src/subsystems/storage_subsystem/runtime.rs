@@ -6,6 +6,9 @@ use crate::subsystems::storage_subsystem::model::StorageSubsystem;
 use crate::subsystems::storage_subsystem::model::agent::{
     Agent, AgentReadRequest, AgentReplaceRequest, AgentWriteRequest,
 };
+use crate::subsystems::storage_subsystem::model::context::{
+    Context, ContextReadRequest, ContextWriteRequest,
+};
 use crate::subsystems::storage_subsystem::model::unit::{Unit, UnitReadRequest, UnitWriteRequest};
 use anyhow::{Result, anyhow};
 use serde_json::json;
@@ -19,7 +22,6 @@ impl StorageSubsystem {
     }
 
     pub fn from_root(root: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(root.join("atoms"))?;
         std::fs::create_dir_all(root.join("agents"))?;
         std::fs::create_dir_all(root.join("units"))?;
         std::fs::create_dir_all(root.join("contexts"))?;
@@ -30,13 +32,16 @@ impl StorageSubsystem {
         read_json(&self.agent_path(uuid))
     }
 
+    pub fn list_agents(&self) -> Result<Vec<String>> {
+        list_json_object_ids(&self.root.join("agents"))
+    }
+
     pub fn write_agent(&self, agent: &Agent) -> Result<()> {
         write_json_create_only(&self.agent_path(&agent.uuid), agent)
     }
 
     pub fn replace_agent(&self, uuid: &str, old_data: &[u8], agent: &Agent) -> Result<()> {
-        let new_data = serde_json::to_vec(agent)
-            .map_err(|e| anyhow!("Failed to serialize agent to JSON: {e}"))?;
+        let new_data = to_pretty_json_vec(agent)?;
         atomic_replace_file(&self.agent_path(uuid), old_data, &new_data)
     }
 
@@ -44,8 +49,24 @@ impl StorageSubsystem {
         read_json(&self.unit_path(uuid))
     }
 
+    pub fn list_units(&self) -> Result<Vec<String>> {
+        list_json_object_ids(&self.root.join("units"))
+    }
+
     pub fn write_unit(&self, unit: &Unit) -> Result<()> {
         write_json_create_only(&self.unit_path(&unit.uuid), unit)
+    }
+
+    pub fn read_context(&self, uuid: &str) -> Result<Context> {
+        read_json(&self.context_path(uuid))
+    }
+
+    pub fn list_contexts(&self) -> Result<Vec<String>> {
+        list_json_object_ids(&self.root.join("contexts"))
+    }
+
+    pub fn write_context(&self, context: &Context) -> Result<()> {
+        write_json_create_only(&self.context_path(&context.uuid), context)
     }
 
     fn agent_path(&self, uuid: &str) -> PathBuf {
@@ -56,11 +77,19 @@ impl StorageSubsystem {
         self.root.join("units").join(format!("{uuid}.json"))
     }
 
+    fn context_path(&self, uuid: &str) -> PathBuf {
+        self.root.join("contexts").join(format!("{uuid}.json"))
+    }
+
     fn handle_request(&self, req: &Request) -> Response {
         match (req.method, req.path.as_str()) {
             (Method::Get, "root") => {
                 Response::ok(json!({ "root": self.root.display().to_string() }))
             }
+            (Method::Get, "agent/list") => match self.list_agents() {
+                Ok(agents) => Response::ok(json!({ "agents": agents })),
+                Err(error) => Response::internal_error(error),
+            },
             (Method::Post, "agent/read") => {
                 let request = match response_body_as::<AgentReadRequest>(req.body.clone()) {
                     Ok(request) => request,
@@ -91,6 +120,10 @@ impl StorageSubsystem {
                     Err(error) => Response::internal_error(error),
                 }
             }
+            (Method::Get, "unit/list") => match self.list_units() {
+                Ok(units) => Response::ok(json!({ "units": units })),
+                Err(error) => Response::internal_error(error),
+            },
             (Method::Post, "unit/read") => {
                 let request = match response_body_as::<UnitReadRequest>(req.body.clone()) {
                     Ok(request) => request,
@@ -107,6 +140,30 @@ impl StorageSubsystem {
                     Err(error) => return Response::bad_request(error),
                 };
                 match self.write_unit(&request.unit) {
+                    Ok(()) => Response::ok(json!({ "status": "ok" })),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Get, "context/list") => match self.list_contexts() {
+                Ok(contexts) => Response::ok(json!({ "contexts": contexts })),
+                Err(error) => Response::internal_error(error),
+            },
+            (Method::Post, "context/read") => {
+                let request = match response_body_as::<ContextReadRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.read_context(&request.uuid) {
+                    Ok(context) => Response::ok(json!(context)),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Post, "context/write") => {
+                let request = match response_body_as::<ContextWriteRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.write_context(&request.context) {
                     Ok(()) => Response::ok(json!({ "status": "ok" })),
                     Err(error) => Response::internal_error(error),
                 }
@@ -181,7 +238,33 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 fn write_json_create_only<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    let data = serde_json::to_vec(value)
-        .map_err(|e| anyhow!("Failed to serialize JSON {:?}: {}", path, e))?;
+    let data = to_pretty_json_vec(value)?;
     atomic_create_file(path, &data)
+}
+
+fn to_pretty_json_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+    let mut data = Vec::new();
+    serde_json::to_writer_pretty(&mut data, value)
+        .map_err(|e| anyhow!("Failed to serialize pretty JSON: {e}"))?;
+    data.push(b'\n');
+    Ok(data)
+}
+
+fn list_json_object_ids(dir: &Path) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    if !dir.exists() {
+        return Ok(ids);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        ids.push(stem.to_string());
+    }
+    ids.sort();
+    Ok(ids)
 }

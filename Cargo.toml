@@ -14,14 +14,14 @@ hex = "0.4.3"
 sha2 = "0.11.0"
 tokio = { version = "1.52.3", features = ["full"] }
 uuid = { version = "1.23.1", features = ["v7", "fast-rng"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 ratatui = { version = "0.30.0", features = ["scrolling-regions"] }
 crossterm = "0.29.0"
 toml = "1.1.2"
 chrono = "0.4.44"
 whoami = "2.1.2"
 directories = "6.0.0"
-genai = "0.6.0-beta.20"
+genai = "0.6.0-beta.21"
 reqwest = { version = "0.13", features = ["json"] }
 urlencoding = "2"
 unicode-width = "0.2.2"
