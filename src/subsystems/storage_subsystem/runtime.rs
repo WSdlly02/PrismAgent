@@ -9,7 +9,13 @@ use crate::subsystems::storage_subsystem::model::agent::{
 use crate::subsystems::storage_subsystem::model::context::{
     Context, ContextReadRequest, ContextWriteRequest,
 };
+use crate::subsystems::storage_subsystem::model::misc::{
+    Misc, MiscReadRequest, MiscReplaceRequest, MiscWriteRequest,
+};
 use crate::subsystems::storage_subsystem::model::unit::{Unit, UnitReadRequest, UnitWriteRequest};
+use crate::subsystems::storage_subsystem::model::workflow::{
+    Workflow, WorkflowReadRequest, WorkflowReplaceRequest, WorkflowWriteRequest,
+};
 use anyhow::{Result, anyhow};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -25,6 +31,8 @@ impl StorageSubsystem {
         std::fs::create_dir_all(root.join("agents"))?;
         std::fs::create_dir_all(root.join("units"))?;
         std::fs::create_dir_all(root.join("contexts"))?;
+        std::fs::create_dir_all(root.join("workflows"))?;
+        std::fs::create_dir_all(root.join("misc"))?;
         Ok(Self { root })
     }
 
@@ -69,6 +77,40 @@ impl StorageSubsystem {
         write_json_create_only(&self.context_path(&context.uuid), context)
     }
 
+    pub fn read_workflow(&self, uuid: &str) -> Result<Workflow> {
+        read_json(&self.workflow_path(uuid))
+    }
+
+    pub fn list_workflows(&self) -> Result<Vec<String>> {
+        list_json_object_ids(&self.root.join("workflows"))
+    }
+
+    pub fn write_workflow(&self, workflow: &Workflow) -> Result<()> {
+        write_json_create_only(&self.workflow_path(&workflow.uuid), workflow)
+    }
+
+    pub fn replace_workflow(&self, uuid: &str, old_data: &[u8], workflow: &Workflow) -> Result<()> {
+        let new_data = to_pretty_json_vec(workflow)?;
+        atomic_replace_file(&self.workflow_path(uuid), old_data, &new_data)
+    }
+
+    pub fn read_misc(&self, name: &str) -> Result<Misc> {
+        read_json(&self.misc_path(name)?)
+    }
+
+    pub fn list_misc(&self) -> Result<Vec<String>> {
+        list_json_object_ids(&self.root.join("misc"))
+    }
+
+    pub fn write_misc(&self, name: &str, misc: &Misc) -> Result<()> {
+        write_json_create_only(&self.misc_path(name)?, misc)
+    }
+
+    pub fn replace_misc(&self, name: &str, old_data: &[u8], misc: &Misc) -> Result<()> {
+        let new_data = to_pretty_json_vec(misc)?;
+        atomic_replace_file(&self.misc_path(name)?, old_data, &new_data)
+    }
+
     fn agent_path(&self, uuid: &str) -> PathBuf {
         self.root.join("agents").join(format!("{uuid}.json"))
     }
@@ -79,6 +121,17 @@ impl StorageSubsystem {
 
     fn context_path(&self, uuid: &str) -> PathBuf {
         self.root.join("contexts").join(format!("{uuid}.json"))
+    }
+
+    fn workflow_path(&self, uuid: &str) -> PathBuf {
+        self.root.join("workflows").join(format!("{uuid}.json"))
+    }
+
+    fn misc_path(&self, name: &str) -> Result<PathBuf> {
+        if !is_safe_object_name(name) {
+            return Err(anyhow!("Invalid misc name: {name}"));
+        }
+        Ok(self.root.join("misc").join(format!("{name}.json")))
     }
 
     fn handle_request(&self, req: &Request) -> Response {
@@ -164,6 +217,74 @@ impl StorageSubsystem {
                     Err(error) => return Response::bad_request(error),
                 };
                 match self.write_context(&request.context) {
+                    Ok(()) => Response::ok(json!({ "status": "ok" })),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Get, "workflow/list") => match self.list_workflows() {
+                Ok(workflows) => Response::ok(json!({ "workflows": workflows })),
+                Err(error) => Response::internal_error(error),
+            },
+            (Method::Post, "workflow/read") => {
+                let request = match response_body_as::<WorkflowReadRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.read_workflow(&request.uuid) {
+                    Ok(workflow) => Response::ok(json!(workflow)),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Post, "workflow/write") => {
+                let request = match response_body_as::<WorkflowWriteRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.write_workflow(&request.workflow) {
+                    Ok(()) => Response::ok(json!({ "status": "ok" })),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Post, "workflow/replace") => {
+                let request = match response_body_as::<WorkflowReplaceRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.replace_workflow(&request.uuid, &request.old_data, &request.workflow) {
+                    Ok(()) => Response::ok(json!({ "status": "ok" })),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Get, "misc/list") => match self.list_misc() {
+                Ok(misc) => Response::ok(json!({ "misc": misc })),
+                Err(error) => Response::internal_error(error),
+            },
+            (Method::Post, "misc/read") => {
+                let request = match response_body_as::<MiscReadRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.read_misc(&request.name) {
+                    Ok(misc) => Response::ok(json!(misc)),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Post, "misc/write") => {
+                let request = match response_body_as::<MiscWriteRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.write_misc(&request.name, &request.misc) {
+                    Ok(()) => Response::ok(json!({ "status": "ok" })),
+                    Err(error) => Response::internal_error(error),
+                }
+            }
+            (Method::Post, "misc/replace") => {
+                let request = match response_body_as::<MiscReplaceRequest>(req.body.clone()) {
+                    Ok(request) => request,
+                    Err(error) => return Response::bad_request(error),
+                };
+                match self.replace_misc(&request.name, &request.old_data, &request.misc) {
                     Ok(()) => Response::ok(json!({ "status": "ok" })),
                     Err(error) => Response::internal_error(error),
                 }
@@ -267,4 +388,13 @@ fn list_json_object_ids(dir: &Path) -> Result<Vec<String>> {
     }
     ids.sort();
     Ok(ids)
+}
+
+fn is_safe_object_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && name != "."
+        && name != ".."
+        && !name.ends_with(".json")
 }

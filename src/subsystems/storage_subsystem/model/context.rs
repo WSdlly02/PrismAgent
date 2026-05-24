@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct Context {
     pub uuid: String,    // Context的唯一标识符
     pub title: String,   // Context的标题或名称，便于识别和管理
-    pub content: String, // Context的内容，遵循Model Context Exchange Protocol规范
+    pub content: String, // Context的内容，遵循Model Context Exchange Standard规范
     pub created_at: i64, // 创建时间戳
 }
 
