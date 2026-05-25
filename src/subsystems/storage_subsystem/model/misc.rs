@@ -18,18 +18,28 @@ pub struct Misc {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MiscReadRequest {
+    pub names: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct MiscWriteEntry {
     pub name: String,
+    pub misc: Misc,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MiscWriteRequest {
+    pub entries: Vec<MiscWriteEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct MiscReplaceEntry {
     pub name: String,
+    pub old_data: Vec<u8>,
     pub misc: Misc,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MiscReplaceRequest {
-    pub name: String,
-    pub old_data: Vec<u8>,
-    pub misc: Misc,
+    pub entries: Vec<MiscReplaceEntry>,
 }

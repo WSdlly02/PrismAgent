@@ -16,12 +16,12 @@ pub struct Unit {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UnitReadRequest {
-    pub uuid: String,
+    pub uuids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct UnitWriteRequest {
-    pub unit: Unit,
+    pub units: Vec<Unit>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]

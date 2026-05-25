@@ -148,30 +148,55 @@ impl StorageSubsystem {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.read_agent(&request.uuid) {
-                    Ok(agent) => Response::ok(json!(agent)),
-                    Err(error) => Response::internal_error(error),
+                let mut agents = Vec::new();
+                let mut failed = Vec::new();
+                for uuid in request.uuids {
+                    match self.read_agent(&uuid) {
+                        Ok(agent) => agents.push(agent),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "agents": agents, "failed": failed }))
             }
             (Method::Post, "agent/write") => {
                 let request = match response_body_as::<AgentWriteRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.write_agent(&request.agent) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut written = Vec::new();
+                let mut failed = Vec::new();
+                for agent in request.agents {
+                    let uuid = agent.uuid.clone();
+                    match self.write_agent(&agent) {
+                        Ok(()) => written.push(uuid),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "written": written, "failed": failed }))
             }
             (Method::Post, "agent/replace") => {
                 let request = match response_body_as::<AgentReplaceRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.replace_agent(&request.uuid, &request.old_data, &request.agent) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut replaced = Vec::new();
+                let mut failed = Vec::new();
+                for entry in request.entries {
+                    match self.replace_agent(&entry.uuid, &entry.old_data, &entry.agent) {
+                        Ok(()) => replaced.push(entry.uuid),
+                        Err(error) => failed.push(json!({
+                            "uuid": entry.uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "replaced": replaced, "failed": failed }))
             }
             (Method::Get, "unit/list") => match self.list_units() {
                 Ok(units) => Response::ok(json!({ "units": units })),
@@ -182,20 +207,37 @@ impl StorageSubsystem {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.read_unit(&request.uuid) {
-                    Ok(unit) => Response::ok(json!(unit)),
-                    Err(error) => Response::internal_error(error),
+                let mut units = Vec::new();
+                let mut failed = Vec::new();
+                for uuid in request.uuids {
+                    match self.read_unit(&uuid) {
+                        Ok(unit) => units.push(unit),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "units": units, "failed": failed }))
             }
             (Method::Post, "unit/write") => {
                 let request = match response_body_as::<UnitWriteRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.write_unit(&request.unit) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut written = Vec::new();
+                let mut failed = Vec::new();
+                for unit in request.units {
+                    let uuid = unit.uuid.clone();
+                    match self.write_unit(&unit) {
+                        Ok(()) => written.push(uuid),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "written": written, "failed": failed }))
             }
             (Method::Get, "context/list") => match self.list_contexts() {
                 Ok(contexts) => Response::ok(json!({ "contexts": contexts })),
@@ -206,20 +248,37 @@ impl StorageSubsystem {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.read_context(&request.uuid) {
-                    Ok(context) => Response::ok(json!(context)),
-                    Err(error) => Response::internal_error(error),
+                let mut contexts = Vec::new();
+                let mut failed = Vec::new();
+                for uuid in request.uuids {
+                    match self.read_context(&uuid) {
+                        Ok(context) => contexts.push(context),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "contexts": contexts, "failed": failed }))
             }
             (Method::Post, "context/write") => {
                 let request = match response_body_as::<ContextWriteRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.write_context(&request.context) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut written = Vec::new();
+                let mut failed = Vec::new();
+                for context in request.contexts {
+                    let uuid = context.uuid.clone();
+                    match self.write_context(&context) {
+                        Ok(()) => written.push(uuid),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "written": written, "failed": failed }))
             }
             (Method::Get, "workflow/list") => match self.list_workflows() {
                 Ok(workflows) => Response::ok(json!({ "workflows": workflows })),
@@ -230,30 +289,55 @@ impl StorageSubsystem {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.read_workflow(&request.uuid) {
-                    Ok(workflow) => Response::ok(json!(workflow)),
-                    Err(error) => Response::internal_error(error),
+                let mut workflows = Vec::new();
+                let mut failed = Vec::new();
+                for uuid in request.uuids {
+                    match self.read_workflow(&uuid) {
+                        Ok(workflow) => workflows.push(workflow),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "workflows": workflows, "failed": failed }))
             }
             (Method::Post, "workflow/write") => {
                 let request = match response_body_as::<WorkflowWriteRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.write_workflow(&request.workflow) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut written = Vec::new();
+                let mut failed = Vec::new();
+                for workflow in request.workflows {
+                    let uuid = workflow.uuid.clone();
+                    match self.write_workflow(&workflow) {
+                        Ok(()) => written.push(uuid),
+                        Err(error) => failed.push(json!({
+                            "uuid": uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "written": written, "failed": failed }))
             }
             (Method::Post, "workflow/replace") => {
                 let request = match response_body_as::<WorkflowReplaceRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.replace_workflow(&request.uuid, &request.old_data, &request.workflow) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut replaced = Vec::new();
+                let mut failed = Vec::new();
+                for entry in request.entries {
+                    match self.replace_workflow(&entry.uuid, &entry.old_data, &entry.workflow) {
+                        Ok(()) => replaced.push(entry.uuid),
+                        Err(error) => failed.push(json!({
+                            "uuid": entry.uuid,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "replaced": replaced, "failed": failed }))
             }
             (Method::Get, "misc/list") => match self.list_misc() {
                 Ok(misc) => Response::ok(json!({ "misc": misc })),
@@ -264,30 +348,57 @@ impl StorageSubsystem {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.read_misc(&request.name) {
-                    Ok(misc) => Response::ok(json!(misc)),
-                    Err(error) => Response::internal_error(error),
+                let mut misc = Vec::new();
+                let mut failed = Vec::new();
+                for name in request.names {
+                    match self.read_misc(&name) {
+                        Ok(value) => misc.push(json!({
+                            "name": name,
+                            "misc": value,
+                        })),
+                        Err(error) => failed.push(json!({
+                            "name": name,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "misc": misc, "failed": failed }))
             }
             (Method::Post, "misc/write") => {
                 let request = match response_body_as::<MiscWriteRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.write_misc(&request.name, &request.misc) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut written = Vec::new();
+                let mut failed = Vec::new();
+                for entry in request.entries {
+                    match self.write_misc(&entry.name, &entry.misc) {
+                        Ok(()) => written.push(entry.name),
+                        Err(error) => failed.push(json!({
+                            "name": entry.name,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "written": written, "failed": failed }))
             }
             (Method::Post, "misc/replace") => {
                 let request = match response_body_as::<MiscReplaceRequest>(req.body.clone()) {
                     Ok(request) => request,
                     Err(error) => return Response::bad_request(error),
                 };
-                match self.replace_misc(&request.name, &request.old_data, &request.misc) {
-                    Ok(()) => Response::ok(json!({ "status": "ok" })),
-                    Err(error) => Response::internal_error(error),
+                let mut replaced = Vec::new();
+                let mut failed = Vec::new();
+                for entry in request.entries {
+                    match self.replace_misc(&entry.name, &entry.old_data, &entry.misc) {
+                        Ok(()) => replaced.push(entry.name),
+                        Err(error) => failed.push(json!({
+                            "name": entry.name,
+                            "error": error.to_string(),
+                        })),
+                    }
                 }
+                Response::ok(json!({ "replaced": replaced, "failed": failed }))
             }
             _ => Response::not_found(req.path.as_str()),
         }

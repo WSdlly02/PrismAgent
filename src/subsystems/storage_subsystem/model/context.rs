@@ -11,10 +11,10 @@ pub struct Context {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ContextReadRequest {
-    pub uuid: String,
+    pub uuids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ContextWriteRequest {
-    pub context: Context,
+    pub contexts: Vec<Context>,
 }

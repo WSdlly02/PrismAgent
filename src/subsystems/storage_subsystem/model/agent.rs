@@ -26,19 +26,24 @@ pub struct Agent {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AgentReadRequest {
-    pub uuid: String,
+    pub uuids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AgentWriteRequest {
+    pub agents: Vec<Agent>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AgentReplaceEntry {
+    pub uuid: String,
+    pub old_data: Vec<u8>,
     pub agent: Agent,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AgentReplaceRequest {
-    pub uuid: String,
-    pub old_data: Vec<u8>,
-    pub agent: Agent,
+    pub entries: Vec<AgentReplaceEntry>,
 }
 
 /// $PWD/.prismagent/agents/{uuid}.lock
