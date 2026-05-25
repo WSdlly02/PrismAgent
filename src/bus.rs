@@ -19,23 +19,27 @@ pub enum Method {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SubsystemName {
-    Shell,
+    Agent,
     Config,
-    Storage,
-    RunManager,
+    Context,
     Llm,
-    Tool,
+    Storage,
+    Shell,
+    Tools,
+    Workflow,
 }
 
 impl Display for SubsystemName {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Shell => write!(f, "shell"),
+            Self::Agent => write!(f, "agent"),
             Self::Config => write!(f, "config"),
-            Self::Storage => write!(f, "storage"),
-            Self::RunManager => write!(f, "run_manager"),
+            Self::Context => write!(f, "context"),
             Self::Llm => write!(f, "llm"),
-            Self::Tool => write!(f, "tool"),
+            Self::Storage => write!(f, "storage"),
+            Self::Shell => write!(f, "shell"),
+            Self::Tools => write!(f, "tools"),
+            Self::Workflow => write!(f, "workflow"),
         }
     }
 }
@@ -331,7 +335,7 @@ mod tests {
     async fn routes_stream_request_to_registered_subsystem() {
         let bus = Bus::new();
         let (tx, mut rx) = mpsc::channel(8);
-        bus.register(SubsystemName::Tool, tx).await;
+        bus.register(SubsystemName::Tools, tx).await;
 
         tokio::spawn(async move {
             let req = rx.recv().await.unwrap();
@@ -349,7 +353,7 @@ mod tests {
 
         let mut stream = bus
             .post_stream(
-                SubsystemName::Tool,
+                SubsystemName::Tools,
                 SubsystemName::Shell,
                 "tokens",
                 json!({ "prompt": "hello" }),
@@ -368,10 +372,10 @@ mod tests {
     async fn sends_notify_without_reply_channel() {
         let bus = Bus::new();
         let (tx, mut rx) = mpsc::channel(8);
-        bus.register(SubsystemName::RunManager, tx).await;
+        bus.register(SubsystemName::Agent, tx).await;
 
         bus.notify(
-            SubsystemName::RunManager,
+            SubsystemName::Agent,
             SubsystemName::Shell,
             "changed",
             json!({ "ok": true }),
@@ -382,7 +386,7 @@ mod tests {
         let req = rx.recv().await.unwrap();
         assert_eq!(req.method, Method::Post);
         assert_eq!(req.from, SubsystemName::Shell);
-        assert_eq!(req.to, SubsystemName::RunManager);
+        assert_eq!(req.to, SubsystemName::Agent);
         assert_eq!(req.path, "changed");
         assert!(matches!(req.reply, ReplyChannel::None));
     }

@@ -11,7 +11,7 @@ async fn api_key(bus: &Bus) -> Result<String, String> {
     let response = bus
         .post(
             SubsystemName::Config,
-            SubsystemName::Tool,
+            SubsystemName::Tools,
             "tool_config",
             json!({ "name": "tinyfish" }),
         )

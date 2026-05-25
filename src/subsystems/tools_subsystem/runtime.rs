@@ -159,7 +159,7 @@ pub async fn dispatch_tool(bus: &Bus, run_root: &std::path::Path, tool_call: &To
 
 impl Subsystem for ToolsSubsystem {
     fn name(&self) -> SubsystemName {
-        SubsystemName::Tool
+        SubsystemName::Tools
     }
 
     fn start(self, bus: Bus) -> mpsc::Sender<Request> {
