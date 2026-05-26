@@ -1,9 +1,20 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::{io, time::Duration};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
+};
+use prismagent::{
+    bus::{Bus, Subsystem, SubsystemName},
+    subsystems::{
+        agent_subsystem::model::AgentSubsystem,
+        shell_subsystem::model::ShellSubsystem,
+        shell_subsystem::model::{ShellAgentSnapshot, ShellMessage},
+        shell_subsystem::model::{
+            ShellApproveRequest, ShellEvent, ShellSnapshot, ShellSubmitRequest,
+        },
+    },
 };
 use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
@@ -14,28 +25,15 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
-use tokio::sync::mpsc;
+use serde_json::json;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use uuid::Uuid;
 
-use prismagent::{
-    model::event::{
-        AgentSnapshot, KernelSnapshot, KernelToShellEvent, ShellToKernelEvent, UserInput,
-        UserKernelCommand, UserKernelCommandRequest,
-    },
-    model::kernel::Kernel,
-    model::unit::{Unit, UnitRole},
-};
-
-const DEFAULT_RUN_UUID: &str = "none";
-const DEFAULT_AGENT_UUID: &str = "none";
 const INLINE_HEIGHT: u16 = 7;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let kernel = Kernel::new()?;
-    let (shell_tx, kernel_rx) = kernel.run();
-    let mut app = TuiApp::new(DEFAULT_RUN_UUID, DEFAULT_AGENT_UUID, shell_tx, kernel_rx);
+    let bus = start_mock_runtime().await;
+    let mut app = TuiApp::new(bus);
 
     let mut terminal = setup_terminal()?;
     let _guard = TerminalGuard;
@@ -43,15 +41,29 @@ async fn main() -> Result<()> {
         &mut terminal,
         "system",
         Color::Yellow,
-        "PrismAgent started. Use /list, /new <title>, or /resume <run-uuid>.",
+        "PrismAgent mock runtime started. Type text to echo, /approve [args], Ctrl-D to quit.",
     )?;
 
-    let result = run_loop(&mut terminal, &mut app).await;
-    let _ = app
-        .shell_tx
-        .send(command_event(UserKernelCommand::Shutdown))
-        .await;
-    result
+    match request_snapshot(&app.bus).await {
+        Ok(event) => apply_shell_event(&mut terminal, &mut app, event)?,
+        Err(error) => insert_log(&mut terminal, "error", Color::Red, &error.to_string())?,
+    }
+
+    run_loop(&mut terminal, &mut app).await
+}
+
+async fn start_mock_runtime() -> Bus {
+    let bus = Bus::new();
+
+    let agent = AgentSubsystem::mock();
+    let agent_tx = agent.start(bus.clone());
+    bus.register(SubsystemName::Agent, agent_tx).await;
+
+    let shell = ShellSubsystem::new();
+    let shell_tx = shell.start(bus.clone());
+    bus.register(SubsystemName::Shell, shell_tx).await;
+
+    bus
 }
 
 async fn run_loop(
@@ -59,7 +71,6 @@ async fn run_loop(
     app: &mut TuiApp,
 ) -> Result<()> {
     loop {
-        drain_kernel_events(terminal, app)?;
         terminal.draw(|frame| draw(frame, app))?;
 
         if app.should_quit {
@@ -69,12 +80,8 @@ async fn run_loop(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) => handle_key(terminal, app, key).await?,
-                Event::Paste(text) => {
-                    insert_input(app, &text);
-                }
-                Event::Resize(_, _) => {
-                    terminal.autoresize()?;
-                }
+                Event::Paste(text) => insert_input(app, &text),
+                Event::Resize(_, _) => terminal.autoresize()?,
                 _ => {}
             }
         }
@@ -104,80 +111,29 @@ impl Drop for TerminalGuard {
 }
 
 struct TuiApp {
-    run_uuid: String,
+    bus: Bus,
     agent_uuid: String,
     input: String,
     input_cursor: usize,
     input_enabled: bool,
-    snapshot: Option<KernelSnapshot>,
+    snapshot: Option<ShellSnapshot>,
     status: String,
     should_quit: bool,
-    shell_tx: mpsc::Sender<ShellToKernelEvent>,
-    kernel_rx: mpsc::Receiver<KernelToShellEvent>,
 }
 
 impl TuiApp {
-    fn new(
-        run_uuid: &str,
-        agent_uuid: &str,
-        shell_tx: mpsc::Sender<ShellToKernelEvent>,
-        kernel_rx: mpsc::Receiver<KernelToShellEvent>,
-    ) -> Self {
+    fn new(bus: Bus) -> Self {
         Self {
-            run_uuid: run_uuid.to_owned(),
-            agent_uuid: agent_uuid.to_owned(),
+            bus,
+            agent_uuid: String::new(),
             input: String::new(),
             input_cursor: 0,
             input_enabled: true,
             snapshot: None,
             status: "idle".to_string(),
             should_quit: false,
-            shell_tx,
-            kernel_rx,
         }
     }
-}
-
-fn request_uuid() -> String {
-    Uuid::now_v7().to_string()
-}
-
-fn command_event(command: UserKernelCommand) -> ShellToKernelEvent {
-    ShellToKernelEvent::KernelCommand(UserKernelCommandRequest {
-        request_uuid: request_uuid(),
-        command,
-    })
-}
-
-fn active_run_uuid(app: &TuiApp) -> Option<String> {
-    if app.run_uuid == DEFAULT_RUN_UUID {
-        None
-    } else {
-        Some(app.run_uuid.clone())
-    }
-}
-
-fn active_agent_uuid(app: &TuiApp) -> Option<String> {
-    if app.agent_uuid == DEFAULT_AGENT_UUID {
-        None
-    } else {
-        Some(app.agent_uuid.clone())
-    }
-}
-
-fn cancel_event(app: &TuiApp) -> ShellToKernelEvent {
-    command_event(UserKernelCommand::Cancel {
-        run_uuid: active_run_uuid(app),
-        agent_uuid: active_agent_uuid(app),
-    })
-}
-
-fn approve_event(app: &TuiApp, args: String) -> ShellToKernelEvent {
-    command_event(UserKernelCommand::Approve {
-        run_uuid: active_run_uuid(app),
-        agent_uuid: active_agent_uuid(app),
-        args,
-    })
 }
 
 async fn handle_key(
@@ -190,27 +146,29 @@ async fn handle_key(
     }
 
     match key.code {
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            request_cancel(terminal, app).await?;
-        }
         KeyCode::Esc => {
-            request_cancel(terminal, app).await?;
+            insert_log(
+                terminal,
+                "system",
+                Color::Yellow,
+                "cancel is not wired in mock runtime",
+            )?;
+            app.status = "cancel unavailable".to_string();
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            insert_log(
+                terminal,
+                "system",
+                Color::Yellow,
+                "cancel is not wired in mock runtime",
+            )?;
+            app.status = "cancel unavailable".to_string();
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
         KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if app
-                .shell_tx
-                .send(approve_event(app, "all".to_string()))
-                .await
-                .is_err()
-            {
-                insert_log(terminal, "error", Color::Red, "kernel channel closed")?;
-                app.status = "kernel disconnected".to_string();
-            } else {
-                app.status = "approval sent".to_string();
-            }
+            approve(terminal, app, "all").await?;
         }
         KeyCode::Enter => submit_input(terminal, app).await?,
         KeyCode::Backspace => {
@@ -238,9 +196,7 @@ async fn handle_key(
         }
         KeyCode::Home => app.input_cursor = 0,
         KeyCode::End => app.input_cursor = app.input.len(),
-        KeyCode::Char(ch) => {
-            insert_input(app, &ch.to_string());
-        }
+        KeyCode::Char(ch) => insert_input(app, &ch.to_string()),
         _ => {}
     }
 
@@ -250,19 +206,6 @@ async fn handle_key(
 fn insert_input(app: &mut TuiApp, content: &str) {
     app.input.insert_str(app.input_cursor, content);
     app.input_cursor += content.len();
-}
-
-async fn request_cancel(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut TuiApp,
-) -> Result<()> {
-    if app.shell_tx.send(cancel_event(app)).await.is_err() {
-        insert_log(terminal, "error", Color::Red, "kernel channel closed")?;
-        app.status = "kernel disconnected".to_string();
-    } else {
-        app.status = "cancel requested".to_string();
-    }
-    Ok(())
 }
 
 async fn submit_input(
@@ -276,139 +219,102 @@ async fn submit_input(
 
     app.input.clear();
     app.input_cursor = 0;
+    app.input_enabled = false;
     app.status = "request sent".to_string();
-    insert_log(terminal, "user", Color::Cyan, &content)?;
 
-    if let Some(command) = content.strip_prefix('/') {
-        submit_command(terminal, app, command.trim()).await?;
-        return Ok(());
+    let event = request_submit(app, content).await;
+    match event {
+        Ok(event) => apply_shell_event(terminal, app, event)?,
+        Err(error) => {
+            insert_log(terminal, "error", Color::Red, &error.to_string())?;
+            app.status = "request failed".to_string();
+            app.input_enabled = true;
+        }
     }
 
-    if !app.input_enabled {
-        insert_log(
-            terminal,
-            "error",
-            Color::Red,
-            "input is disabled while the selected target is running",
-        )?;
-        app.status = "input disabled".to_string();
-        return Ok(());
-    }
-    if app.run_uuid == DEFAULT_RUN_UUID || app.agent_uuid == DEFAULT_AGENT_UUID {
-        insert_log(
-            terminal,
-            "error",
-            Color::Red,
-            "no active run; use /new <title> or /resume <run-uuid>",
-        )?;
-        app.status = "no active run".to_string();
-        return Ok(());
-    }
+    Ok(())
+}
 
-    if app
-        .shell_tx
-        .send(ShellToKernelEvent::Input(UserInput {
-            request_uuid: request_uuid(),
-            run_uuid: app.run_uuid.clone(),
-            agent_uuid: app.agent_uuid.clone(),
-            content,
-        }))
+async fn approve(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut TuiApp,
+    args: &str,
+) -> Result<()> {
+    let response = app
+        .bus
+        .post(
+            SubsystemName::Shell,
+            SubsystemName::Shell,
+            "approve",
+            json!(ShellApproveRequest {
+                args: args.to_string(),
+                agent_uuid: active_agent_uuid(app),
+            }),
+        )
         .await
-        .is_err()
-    {
-        insert_log(terminal, "error", Color::Red, "kernel channel closed")?;
-        app.status = "kernel disconnected".to_string();
+        .map_err(|error| anyhow!("shell approve failed: {error}"))?;
+    let event = shell_event_from_response(response)?;
+    apply_shell_event(terminal, app, event)
+}
+
+async fn request_snapshot(bus: &Bus) -> Result<ShellEvent> {
+    let response = bus
+        .get(SubsystemName::Shell, SubsystemName::Shell, "snapshot")
+        .await
+        .map_err(|error| anyhow!("shell snapshot failed: {error}"))?;
+    shell_event_from_response(response)
+}
+
+async fn request_submit(app: &TuiApp, content: String) -> Result<ShellEvent> {
+    let response = app
+        .bus
+        .post(
+            SubsystemName::Shell,
+            SubsystemName::Shell,
+            "submit",
+            json!(ShellSubmitRequest {
+                content,
+                agent_uuid: active_agent_uuid(app),
+            }),
+        )
+        .await
+        .map_err(|error| anyhow!("shell submit failed: {error}"))?;
+    shell_event_from_response(response)
+}
+
+fn shell_event_from_response(response: prismagent::bus::Response) -> Result<ShellEvent> {
+    if !response.is_ok() {
+        return Err(anyhow!("shell request failed: {:?}", response.body));
+    }
+    serde_json::from_value(response.body).map_err(Into::into)
+}
+
+fn active_agent_uuid(app: &TuiApp) -> Option<String> {
+    if app.agent_uuid.is_empty() {
+        None
     } else {
-        app.input_enabled = false;
+        Some(app.agent_uuid.clone())
     }
-
-    Ok(())
 }
 
-async fn submit_command(
+fn apply_shell_event(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,
-    command: &str,
+    event: ShellEvent,
 ) -> Result<()> {
-    let event = match command {
-        "list" => command_event(UserKernelCommand::ListRuns),
-        "cancel" => cancel_event(app),
-        "approve" => approve_event(app, "all".to_string()),
-        cmd if cmd.starts_with("approve ") => {
-            let args = cmd[8..].trim();
-            approve_event(
-                app,
-                if args.is_empty() {
-                    "all".to_string()
-                } else {
-                    args.to_string()
-                },
-            )
-        }
-        "new" => command_event(UserKernelCommand::NewRun { title: None }),
-        cmd if cmd.starts_with("new ") => {
-            let title = cmd[4..].trim();
-            command_event(UserKernelCommand::NewRun {
-                title: if title.is_empty() {
-                    None
-                } else {
-                    Some(title.to_string())
-                },
-            })
-        }
-        cmd if cmd.starts_with("resume ") => {
-            let run_uuid = cmd[7..].trim().to_string();
-            command_event(UserKernelCommand::ResumeRun { run_uuid })
-        }
-        cmd if cmd.starts_with("delete ") => {
-            let run_uuid = cmd[7..].trim().to_string();
-            command_event(UserKernelCommand::DeleteRun { run_uuid })
-        }
-        cmd if cmd.starts_with("snapshot") => {
-            let snapshot_uid = cmd
-                .strip_prefix("snapshot")
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-            command_event(UserKernelCommand::Snapshot {
-                run_uuid: None,
-                snapshot_uid,
-            })
-        }
-        _ => {
-            insert_log(
-                terminal,
-                "error",
-                Color::Red,
-                &format!("unknown command: {command}"),
-            )?;
-            app.status = "unknown command".to_string();
-            return Ok(());
-        }
-    };
-
-    if app.shell_tx.send(event).await.is_err() {
-        insert_log(terminal, "error", Color::Red, "kernel channel closed")?;
-        app.status = "kernel disconnected".to_string();
-    }
-    Ok(())
-}
-
-fn drain_kernel_events(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut TuiApp,
-) -> Result<()> {
-    while let Ok(event) = app.kernel_rx.try_recv() {
-        match event {
-            KernelToShellEvent::Snapshot { snapshot, .. } => {
-                apply_snapshot(terminal, app, snapshot)?
-            }
-            KernelToShellEvent::Patch { text, .. } => {
+    match event {
+        ShellEvent::Patch { text, .. } => {
+            if !text.is_empty() {
                 insert_log(terminal, "system", Color::Yellow, &text)?;
-                app.status = text;
-                app.input_enabled = true;
             }
+            app.status = if text.is_empty() {
+                "idle".to_string()
+            } else {
+                text
+            };
+            app.input_enabled = true;
         }
+        ShellEvent::Snapshot { snapshot, .. } => apply_snapshot(terminal, app, snapshot)?,
     }
     Ok(())
 }
@@ -416,69 +322,55 @@ fn drain_kernel_events(
 fn apply_snapshot(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut TuiApp,
-    snapshot: KernelSnapshot,
+    snapshot: ShellSnapshot,
 ) -> Result<()> {
-    let run_uuid = snapshot.run_metadata.uuid.clone();
-    app.run_uuid = run_uuid.clone();
-    if app.agent_uuid == DEFAULT_AGENT_UUID
-        || snapshot
-            .agents
-            .iter()
-            .all(|agent| agent.agent.uuid != app.agent_uuid)
-    {
-        app.agent_uuid = snapshot.run_metadata.root_agent_uuid.clone();
-    }
+    let active_agent_uuid = snapshot.active_agent_uuid.clone();
+    app.agent_uuid = active_agent_uuid.clone();
 
     let old_count = app
         .snapshot
         .as_ref()
-        .and_then(|old_snapshot| find_agent(old_snapshot, &app.agent_uuid))
-        .map(|agent| agent.units.len())
+        .and_then(|old_snapshot| find_agent(old_snapshot, &active_agent_uuid))
+        .map(|agent| agent.messages.len())
         .unwrap_or(0);
-    if let Some(agent) = find_agent(&snapshot, &app.agent_uuid) {
-        let new_units = agent.units.iter().skip(old_count).collect::<Vec<_>>();
-        insert_units(terminal, &new_units)?;
+
+    if let Some(agent) = find_agent(&snapshot, &active_agent_uuid) {
+        let new_messages = agent.messages.iter().skip(old_count).collect::<Vec<_>>();
+        insert_messages(terminal, &new_messages)?;
         app.status = format!(
-            "active: {} agent={} units={}",
-            run_uuid,
-            app.agent_uuid,
-            agent.units.len()
+            "agent={} messages={}",
+            active_agent_uuid,
+            agent.messages.len()
         );
     } else {
-        app.status = format!("active: {run_uuid}");
+        app.status = "no active agent".to_string();
     }
+
     app.input_enabled = true;
     app.snapshot = Some(snapshot);
     Ok(())
 }
 
-fn find_agent<'a>(snapshot: &'a KernelSnapshot, agent_uuid: &str) -> Option<&'a AgentSnapshot> {
+fn find_agent<'a>(snapshot: &'a ShellSnapshot, agent_uuid: &str) -> Option<&'a ShellAgentSnapshot> {
     snapshot
         .agents
         .iter()
-        .find(|agent| agent.agent.uuid == agent_uuid)
+        .find(|agent| agent.agent_uuid == agent_uuid)
 }
 
-fn insert_units(
+fn insert_messages(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    units: &[&Unit],
+    messages: &[&ShellMessage],
 ) -> Result<()> {
-    for unit in units {
-        let content = unit
-            .metadata
-            .get("preview")
-            .or_else(|| unit.metadata.get("content"))
-            .cloned()
-            .unwrap_or_default();
-        if content.is_empty() {
-            continue;
-        }
-        match unit.role {
-            UnitRole::User => insert_log(terminal, "user", Color::Cyan, &content)?,
-            UnitRole::Assistant => insert_log(terminal, "agent", Color::Green, &content)?,
-            UnitRole::System => insert_log(terminal, "system", Color::Yellow, &content)?,
-            UnitRole::Tool => insert_log(terminal, "tool", Color::Green, &content)?,
-        }
+    for message in messages {
+        let (source, color) = match message.role.as_str() {
+            "user" => ("user", Color::Cyan),
+            "assistant" => ("agent", Color::Green),
+            "tool" => ("tool", Color::Green),
+            "system" => ("system", Color::Yellow),
+            _ => ("other", Color::Magenta),
+        };
+        insert_log(terminal, source, color, &message.content)?;
     }
     Ok(())
 }
@@ -544,9 +436,12 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            " run={} agent={} input={} status={}",
-            app.run_uuid,
-            app.agent_uuid,
+            " agent={} input={} status={}",
+            if app.agent_uuid.is_empty() {
+                "none"
+            } else {
+                &app.agent_uuid
+            },
             if app.input_enabled { "on" } else { "off" },
             app.status
         )),
@@ -569,7 +464,7 @@ fn draw(frame: &mut Frame<'_>, app: &TuiApp) {
     });
 
     frame.render_widget(
-        Paragraph::new("Enter send  Ctrl-Y approve all  Esc/Ctrl-C cancel  Ctrl-D quit"),
+        Paragraph::new("Enter send  /approve approve all  Ctrl-Y approve all  Ctrl-D quit"),
         chunks[2],
     );
 }
