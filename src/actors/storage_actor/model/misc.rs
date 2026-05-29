@@ -16,9 +16,10 @@ pub struct Misc {
     pub updated_at: i64,                   // 更新时间戳
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct MiscReadRequest {
-    pub names: Vec<String>,
+#[derive(Debug)]
+pub struct MiscReadEntry {
+    pub name: String,
+    pub misc: Misc,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

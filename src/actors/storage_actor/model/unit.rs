@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 /// $PWD/.prismagent/units/{uuid}.json
 #[derive(Serialize, Deserialize, Debug)]
@@ -12,6 +13,41 @@ pub struct Unit {
 
     pub metadata: HashMap<String, String>,
     pub created_at: i64,
+}
+
+impl Unit {
+    pub fn from_user_text(content: String) -> Self {
+        let message = genai::chat::ChatMessage::user(content);
+        let unit = Self::from_chat_message(message);
+        unit
+    }
+
+    pub fn from_chat_message(message: genai::chat::ChatMessage) -> Self {
+        Self {
+            uuid: Uuid::now_v7().to_string(),
+            visibility: UnitVisibility::Public,
+            estimated_tokens: message.size() as u32,
+            content: message,
+            metadata: HashMap::new(),
+            created_at: chrono::Utc::now().timestamp(),
+        }
+    }
+
+    pub fn to_chat_message(&self) -> genai::chat::ChatMessage {
+        self.content.clone()
+    }
+}
+
+impl From<String> for Unit {
+    fn from(content: String) -> Self {
+        Self::from_user_text(content)
+    }
+}
+
+impl From<genai::chat::ChatMessage> for Unit {
+    fn from(message: genai::chat::ChatMessage) -> Self {
+        Self::from_chat_message(message)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]

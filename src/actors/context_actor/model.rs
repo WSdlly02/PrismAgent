@@ -1,19 +1,47 @@
-use crate::subsystems::storage_subsystem::model::context::Context;
-use crate::subsystems::storage_subsystem::model::unit::Unit;
+use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::unit::Unit;
+use crate::error::SubsystemResult;
+use crate::handles::AppHandles;
+use genai::chat::ChatMessage;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 
-pub struct SystemPrompt {
-    pub role: String,
-    pub skills: String,
-    pub content: String,
+pub const CONTEXT_ACTOR: &str = "context";
+
+#[derive(Clone)]
+pub struct ContextHandle {
+    pub tx: mpsc::Sender<ContextMsg>,
 }
 
-pub struct ContextSubsystem;
+pub struct ContextActor {
+    pub(super) rx: mpsc::Receiver<ContextMsg>,
+    pub(super) handles: AppHandles,
+}
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct ContextReadRequest {
-    #[serde(default)]
-    pub uuids: Vec<String>,
+pub enum ContextMsg {
+    ListContexts {
+        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
+    },
+    ReadContexts {
+        uuids: Vec<String>,
+        reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
+    },
+    WriteContexts {
+        contexts: Vec<Context>,
+        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
+    },
+    Resolve {
+        request: ContextResolveRequest,
+        reply: oneshot::Sender<SubsystemResult<ContextResolveResponse>>,
+    },
+    Render {
+        request: ContextRenderRequest,
+        reply: oneshot::Sender<SubsystemResult<String>>,
+    },
+    BuildMessages {
+        request: BuildMessagesRequest,
+        reply: oneshot::Sender<SubsystemResult<Vec<ChatMessage>>>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -32,27 +60,15 @@ pub struct ContextRenderRequest {
     pub context_uuids: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ContextWriteRequest {
-    pub contexts: Vec<Context>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ContextReadResponse {
-    pub contexts: Vec<Context>,
-    pub failed: Vec<ContextResolveFailure>,
+#[derive(Debug, Default)]
+pub struct BuildMessagesRequest {
+    pub unit_uuids: Vec<String>,
+    pub context_uuids: Vec<String>,
+    pub user_input: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ContextResolveResponse {
     pub units: Vec<Unit>,
     pub contexts: Vec<Context>,
-    pub failed: Vec<ContextResolveFailure>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ContextResolveFailure {
-    pub target: String,
-    pub uuid: String,
-    pub error: String,
 }

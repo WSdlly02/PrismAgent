@@ -1,114 +1,231 @@
-use crate::bus::{
-    Bus, Method, ReplyChannel, Request, Response, StreamChunk, Subsystem, SubsystemName,
-};
-use crate::subsystems::response_body_as;
-use crate::subsystems::storage_subsystem::model::StorageSubsystem;
-use crate::subsystems::storage_subsystem::model::agent::{
-    Agent, AgentReadRequest, AgentReplaceRequest, AgentWriteRequest,
-};
-use crate::subsystems::storage_subsystem::model::context::{
-    Context, ContextReadRequest, ContextWriteRequest,
-};
-use crate::subsystems::storage_subsystem::model::misc::{
-    Misc, MiscReadRequest, MiscReplaceRequest, MiscWriteRequest,
-};
-use crate::subsystems::storage_subsystem::model::unit::{Unit, UnitReadRequest, UnitWriteRequest};
-use crate::subsystems::storage_subsystem::model::workflow::{
-    Workflow, WorkflowReadRequest, WorkflowReplaceRequest, WorkflowWriteRequest,
-};
-use anyhow::{Result, anyhow};
-use serde_json::json;
+use crate::actors::storage_actor::model::agent::{Agent, AgentReplaceEntry};
+use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
+use crate::actors::storage_actor::model::unit::Unit;
+use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowReplaceEntry};
+use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
+use crate::error::{SubsystemError, SubsystemResult};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
-impl StorageSubsystem {
-    pub fn load() -> Result<Self> {
+impl StorageActor {
+    pub fn load(rx: mpsc::Receiver<StorageMsg>) -> SubsystemResult<Self> {
         let root = std::env::current_dir()?.join(".prismagent");
-        Self::from_root(root)
+        Self::from_root(rx, root)
     }
 
-    pub fn from_root(root: PathBuf) -> Result<Self> {
+    pub fn from_root(rx: mpsc::Receiver<StorageMsg>, root: PathBuf) -> SubsystemResult<Self> {
         std::fs::create_dir_all(root.join("agents"))?;
         std::fs::create_dir_all(root.join("units"))?;
         std::fs::create_dir_all(root.join("contexts"))?;
         std::fs::create_dir_all(root.join("workflows"))?;
         std::fs::create_dir_all(root.join("misc"))?;
-        Ok(Self { root })
+        Ok(Self { rx, root })
     }
 
-    pub fn read_agent(&self, uuid: &str) -> Result<Agent> {
-        read_json(&self.agent_path(uuid))
+    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(self.run())
     }
 
-    pub fn list_agents(&self) -> Result<Vec<String>> {
+    pub async fn run(mut self) {
+        while let Some(msg) = self.rx.recv().await {
+            match msg {
+                StorageMsg::Root { reply } => {
+                    let _ = reply.send(Ok(self.root.clone()));
+                }
+                StorageMsg::ListAgents { reply } => {
+                    let _ = reply.send(self.list_agents());
+                }
+                StorageMsg::ReadAgents { uuids, reply } => {
+                    let _ = reply.send(self.read_agents(uuids));
+                }
+                StorageMsg::WriteAgents { agents, reply } => {
+                    let _ = reply.send(self.write_agents(&agents));
+                }
+                StorageMsg::ReplaceAgents { entries, reply } => {
+                    let _ = reply.send(self.replace_agents(entries));
+                }
+                StorageMsg::ListUnits { reply } => {
+                    let _ = reply.send(self.list_units());
+                }
+                StorageMsg::ReadUnits { uuids, reply } => {
+                    let _ = reply.send(self.read_units(uuids));
+                }
+                StorageMsg::WriteUnits { units, reply } => {
+                    let _ = reply.send(self.write_units(&units));
+                }
+                StorageMsg::ListContexts { reply } => {
+                    let _ = reply.send(self.list_contexts());
+                }
+                StorageMsg::ReadContexts { uuids, reply } => {
+                    let _ = reply.send(self.read_contexts(uuids));
+                }
+                StorageMsg::WriteContexts { contexts, reply } => {
+                    let _ = reply.send(self.write_contexts(&contexts));
+                }
+                StorageMsg::ListWorkflows { reply } => {
+                    let _ = reply.send(self.list_workflows());
+                }
+                StorageMsg::ReadWorkflows { uuids, reply } => {
+                    let _ = reply.send(self.read_workflows(uuids));
+                }
+                StorageMsg::WriteWorkflows { workflows, reply } => {
+                    let _ = reply.send(self.write_workflows(&workflows));
+                }
+                StorageMsg::ReplaceWorkflows { entries, reply } => {
+                    let _ = reply.send(self.replace_workflows(entries));
+                }
+                StorageMsg::ListMisc { reply } => {
+                    let _ = reply.send(self.list_misc());
+                }
+                StorageMsg::ReadMisc { names, reply } => {
+                    let _ = reply.send(self.read_misc_entries(names));
+                }
+                StorageMsg::WriteMisc { entries, reply } => {
+                    let _ = reply.send(self.write_misc_entries(&entries));
+                }
+                StorageMsg::ReplaceMisc { entries, reply } => {
+                    let _ = reply.send(self.replace_misc_entries(entries));
+                }
+            }
+        }
+    }
+
+    fn list_agents(&self) -> SubsystemResult<Vec<String>> {
         list_json_object_ids(&self.root.join("agents"))
     }
 
-    pub fn write_agent(&self, agent: &Agent) -> Result<()> {
-        write_json_create_only(&self.agent_path(&agent.uuid), agent)
+    fn read_agents(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Agent>> {
+        uuids
+            .iter()
+            .map(|uuid| read_json(&self.agent_path(uuid)))
+            .collect()
     }
 
-    pub fn replace_agent(&self, uuid: &str, old_data: &[u8], agent: &Agent) -> Result<()> {
-        let new_data = to_pretty_json_vec(agent)?;
-        atomic_replace_file(&self.agent_path(uuid), old_data, &new_data)
+    fn write_agents(&self, agents: &[Agent]) -> SubsystemResult<Vec<String>> {
+        let mut written = Vec::with_capacity(agents.len());
+        for agent in agents {
+            write_json_create_only(&self.agent_path(&agent.uuid), agent)?;
+            written.push(agent.uuid.clone());
+        }
+        Ok(written)
     }
 
-    pub fn read_unit(&self, uuid: &str) -> Result<Unit> {
-        read_json(&self.unit_path(uuid))
+    fn replace_agents(&self, entries: Vec<AgentReplaceEntry>) -> SubsystemResult<Vec<String>> {
+        let mut replaced = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let new_data = to_pretty_json_vec(&entry.agent)?;
+            atomic_replace_file(&self.agent_path(&entry.uuid), &entry.old_data, &new_data)?;
+            replaced.push(entry.uuid);
+        }
+        Ok(replaced)
     }
 
-    pub fn list_units(&self) -> Result<Vec<String>> {
+    fn list_units(&self) -> SubsystemResult<Vec<String>> {
         list_json_object_ids(&self.root.join("units"))
     }
 
-    pub fn write_unit(&self, unit: &Unit) -> Result<()> {
-        write_json_create_only(&self.unit_path(&unit.uuid), unit)
+    fn read_units(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Unit>> {
+        uuids
+            .iter()
+            .map(|uuid| read_json(&self.unit_path(uuid)))
+            .collect()
     }
 
-    pub fn read_context(&self, uuid: &str) -> Result<Context> {
-        read_json(&self.context_path(uuid))
+    fn write_units(&self, units: &[Unit]) -> SubsystemResult<Vec<String>> {
+        let mut written = Vec::with_capacity(units.len());
+        for unit in units {
+            write_json_create_only(&self.unit_path(&unit.uuid), unit)?;
+            written.push(unit.uuid.clone());
+        }
+        Ok(written)
     }
 
-    pub fn list_contexts(&self) -> Result<Vec<String>> {
+    fn list_contexts(&self) -> SubsystemResult<Vec<String>> {
         list_json_object_ids(&self.root.join("contexts"))
     }
 
-    pub fn write_context(&self, context: &Context) -> Result<()> {
-        write_json_create_only(&self.context_path(&context.uuid), context)
+    fn read_contexts(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Context>> {
+        uuids
+            .iter()
+            .map(|uuid| read_json(&self.context_path(uuid)))
+            .collect()
     }
 
-    pub fn read_workflow(&self, uuid: &str) -> Result<Workflow> {
-        read_json(&self.workflow_path(uuid))
+    fn write_contexts(&self, contexts: &[Context]) -> SubsystemResult<Vec<String>> {
+        let mut written = Vec::with_capacity(contexts.len());
+        for context in contexts {
+            write_json_create_only(&self.context_path(&context.uuid), context)?;
+            written.push(context.uuid.clone());
+        }
+        Ok(written)
     }
 
-    pub fn list_workflows(&self) -> Result<Vec<String>> {
+    fn list_workflows(&self) -> SubsystemResult<Vec<String>> {
         list_json_object_ids(&self.root.join("workflows"))
     }
 
-    pub fn write_workflow(&self, workflow: &Workflow) -> Result<()> {
-        write_json_create_only(&self.workflow_path(&workflow.uuid), workflow)
+    fn read_workflows(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Workflow>> {
+        uuids
+            .iter()
+            .map(|uuid| read_json(&self.workflow_path(uuid)))
+            .collect()
     }
 
-    pub fn replace_workflow(&self, uuid: &str, old_data: &[u8], workflow: &Workflow) -> Result<()> {
-        let new_data = to_pretty_json_vec(workflow)?;
-        atomic_replace_file(&self.workflow_path(uuid), old_data, &new_data)
+    fn write_workflows(&self, workflows: &[Workflow]) -> SubsystemResult<Vec<String>> {
+        let mut written = Vec::with_capacity(workflows.len());
+        for workflow in workflows {
+            write_json_create_only(&self.workflow_path(&workflow.uuid), workflow)?;
+            written.push(workflow.uuid.clone());
+        }
+        Ok(written)
     }
 
-    pub fn read_misc(&self, name: &str) -> Result<Misc> {
-        read_json(&self.misc_path(name)?)
+    fn replace_workflows(
+        &self,
+        entries: Vec<WorkflowReplaceEntry>,
+    ) -> SubsystemResult<Vec<String>> {
+        let mut replaced = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let new_data = to_pretty_json_vec(&entry.workflow)?;
+            atomic_replace_file(&self.workflow_path(&entry.uuid), &entry.old_data, &new_data)?;
+            replaced.push(entry.uuid);
+        }
+        Ok(replaced)
     }
 
-    pub fn list_misc(&self) -> Result<Vec<String>> {
+    fn list_misc(&self) -> SubsystemResult<Vec<String>> {
         list_json_object_ids(&self.root.join("misc"))
     }
 
-    pub fn write_misc(&self, name: &str, misc: &Misc) -> Result<()> {
-        write_json_create_only(&self.misc_path(name)?, misc)
+    fn read_misc_entries(&self, names: Vec<String>) -> SubsystemResult<Vec<MiscReadEntry>> {
+        let mut entries = Vec::with_capacity(names.len());
+        for name in names {
+            entries.push(MiscReadEntry {
+                misc: read_json(&self.misc_path(&name)?)?,
+                name,
+            });
+        }
+        Ok(entries)
     }
 
-    pub fn replace_misc(&self, name: &str, old_data: &[u8], misc: &Misc) -> Result<()> {
-        let new_data = to_pretty_json_vec(misc)?;
-        atomic_replace_file(&self.misc_path(name)?, old_data, &new_data)
+    fn write_misc_entries(&self, entries: &[MiscWriteEntry]) -> SubsystemResult<Vec<String>> {
+        let mut written = Vec::with_capacity(entries.len());
+        for entry in entries {
+            write_json_create_only(&self.misc_path(&entry.name)?, &entry.misc)?;
+            written.push(entry.name.clone());
+        }
+        Ok(written)
+    }
+
+    fn replace_misc_entries(&self, entries: Vec<MiscReplaceEntry>) -> SubsystemResult<Vec<String>> {
+        let mut replaced = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let new_data = to_pretty_json_vec(&entry.misc)?;
+            atomic_replace_file(&self.misc_path(&entry.name)?, &entry.old_data, &new_data)?;
+            replaced.push(entry.name);
+        }
+        Ok(replaced)
     }
 
     fn agent_path(&self, uuid: &str) -> PathBuf {
@@ -127,322 +244,285 @@ impl StorageSubsystem {
         self.root.join("workflows").join(format!("{uuid}.json"))
     }
 
-    fn misc_path(&self, name: &str) -> Result<PathBuf> {
+    fn misc_path(&self, name: &str) -> SubsystemResult<PathBuf> {
         if !is_safe_object_name(name) {
-            return Err(anyhow!("Invalid misc name: {name}"));
+            return Err(SubsystemError::invalid_input(format!(
+                "invalid misc name: {name}"
+            )));
         }
         Ok(self.root.join("misc").join(format!("{name}.json")))
     }
+}
 
-    fn handle_request(&self, req: &Request) -> Response {
-        match (req.method, req.path.as_str()) {
-            (Method::Get, "root") => {
-                Response::ok(json!({ "root": self.root.display().to_string() }))
-            }
-            (Method::Get, "agent/list") => match self.list_agents() {
-                Ok(agents) => Response::ok(json!({ "agents": agents })),
-                Err(error) => Response::internal_error(error),
-            },
-            (Method::Post, "agent/read") => {
-                let request = match response_body_as::<AgentReadRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut agents = Vec::new();
-                let mut failed = Vec::new();
-                for uuid in request.uuids {
-                    match self.read_agent(&uuid) {
-                        Ok(agent) => agents.push(agent),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "agents": agents, "failed": failed }))
-            }
-            (Method::Post, "agent/write") => {
-                let request = match response_body_as::<AgentWriteRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut written = Vec::new();
-                let mut failed = Vec::new();
-                for agent in request.agents {
-                    let uuid = agent.uuid.clone();
-                    match self.write_agent(&agent) {
-                        Ok(()) => written.push(uuid),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "written": written, "failed": failed }))
-            }
-            (Method::Post, "agent/replace") => {
-                let request = match response_body_as::<AgentReplaceRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut replaced = Vec::new();
-                let mut failed = Vec::new();
-                for entry in request.entries {
-                    match self.replace_agent(&entry.uuid, &entry.old_data, &entry.agent) {
-                        Ok(()) => replaced.push(entry.uuid),
-                        Err(error) => failed.push(json!({
-                            "uuid": entry.uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "replaced": replaced, "failed": failed }))
-            }
-            (Method::Get, "unit/list") => match self.list_units() {
-                Ok(units) => Response::ok(json!({ "units": units })),
-                Err(error) => Response::internal_error(error),
-            },
-            (Method::Post, "unit/read") => {
-                let request = match response_body_as::<UnitReadRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut units = Vec::new();
-                let mut failed = Vec::new();
-                for uuid in request.uuids {
-                    match self.read_unit(&uuid) {
-                        Ok(unit) => units.push(unit),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "units": units, "failed": failed }))
-            }
-            (Method::Post, "unit/write") => {
-                let request = match response_body_as::<UnitWriteRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut written = Vec::new();
-                let mut failed = Vec::new();
-                for unit in request.units {
-                    let uuid = unit.uuid.clone();
-                    match self.write_unit(&unit) {
-                        Ok(()) => written.push(uuid),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "written": written, "failed": failed }))
-            }
-            (Method::Get, "context/list") => match self.list_contexts() {
-                Ok(contexts) => Response::ok(json!({ "contexts": contexts })),
-                Err(error) => Response::internal_error(error),
-            },
-            (Method::Post, "context/read") => {
-                let request = match response_body_as::<ContextReadRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut contexts = Vec::new();
-                let mut failed = Vec::new();
-                for uuid in request.uuids {
-                    match self.read_context(&uuid) {
-                        Ok(context) => contexts.push(context),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "contexts": contexts, "failed": failed }))
-            }
-            (Method::Post, "context/write") => {
-                let request = match response_body_as::<ContextWriteRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut written = Vec::new();
-                let mut failed = Vec::new();
-                for context in request.contexts {
-                    let uuid = context.uuid.clone();
-                    match self.write_context(&context) {
-                        Ok(()) => written.push(uuid),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "written": written, "failed": failed }))
-            }
-            (Method::Get, "workflow/list") => match self.list_workflows() {
-                Ok(workflows) => Response::ok(json!({ "workflows": workflows })),
-                Err(error) => Response::internal_error(error),
-            },
-            (Method::Post, "workflow/read") => {
-                let request = match response_body_as::<WorkflowReadRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut workflows = Vec::new();
-                let mut failed = Vec::new();
-                for uuid in request.uuids {
-                    match self.read_workflow(&uuid) {
-                        Ok(workflow) => workflows.push(workflow),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "workflows": workflows, "failed": failed }))
-            }
-            (Method::Post, "workflow/write") => {
-                let request = match response_body_as::<WorkflowWriteRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut written = Vec::new();
-                let mut failed = Vec::new();
-                for workflow in request.workflows {
-                    let uuid = workflow.uuid.clone();
-                    match self.write_workflow(&workflow) {
-                        Ok(()) => written.push(uuid),
-                        Err(error) => failed.push(json!({
-                            "uuid": uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "written": written, "failed": failed }))
-            }
-            (Method::Post, "workflow/replace") => {
-                let request = match response_body_as::<WorkflowReplaceRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut replaced = Vec::new();
-                let mut failed = Vec::new();
-                for entry in request.entries {
-                    match self.replace_workflow(&entry.uuid, &entry.old_data, &entry.workflow) {
-                        Ok(()) => replaced.push(entry.uuid),
-                        Err(error) => failed.push(json!({
-                            "uuid": entry.uuid,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "replaced": replaced, "failed": failed }))
-            }
-            (Method::Get, "misc/list") => match self.list_misc() {
-                Ok(misc) => Response::ok(json!({ "misc": misc })),
-                Err(error) => Response::internal_error(error),
-            },
-            (Method::Post, "misc/read") => {
-                let request = match response_body_as::<MiscReadRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut misc = Vec::new();
-                let mut failed = Vec::new();
-                for name in request.names {
-                    match self.read_misc(&name) {
-                        Ok(value) => misc.push(json!({
-                            "name": name,
-                            "misc": value,
-                        })),
-                        Err(error) => failed.push(json!({
-                            "name": name,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "misc": misc, "failed": failed }))
-            }
-            (Method::Post, "misc/write") => {
-                let request = match response_body_as::<MiscWriteRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut written = Vec::new();
-                let mut failed = Vec::new();
-                for entry in request.entries {
-                    match self.write_misc(&entry.name, &entry.misc) {
-                        Ok(()) => written.push(entry.name),
-                        Err(error) => failed.push(json!({
-                            "name": entry.name,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "written": written, "failed": failed }))
-            }
-            (Method::Post, "misc/replace") => {
-                let request = match response_body_as::<MiscReplaceRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                let mut replaced = Vec::new();
-                let mut failed = Vec::new();
-                for entry in request.entries {
-                    match self.replace_misc(&entry.name, &entry.old_data, &entry.misc) {
-                        Ok(()) => replaced.push(entry.name),
-                        Err(error) => failed.push(json!({
-                            "name": entry.name,
-                            "error": error.to_string(),
-                        })),
-                    }
-                }
-                Response::ok(json!({ "replaced": replaced, "failed": failed }))
-            }
-            _ => Response::not_found(req.path.as_str()),
-        }
+impl StorageHandle {
+    pub async fn root(&self) -> SubsystemResult<PathBuf> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::Root { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn list_agents(&self) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ListAgents { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn read_agents(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Agent>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReadAgents {
+                uuids,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn write_agents(&self, agents: Vec<Agent>) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::WriteAgents {
+                agents,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn replace_agents(
+        &self,
+        entries: Vec<AgentReplaceEntry>,
+    ) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReplaceAgents {
+                entries,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn list_units(&self) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ListUnits { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn read_units(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Unit>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReadUnits {
+                uuids,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn write_units(&self, units: Vec<Unit>) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::WriteUnits {
+                units,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn list_contexts(&self) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ListContexts { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn read_contexts(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Context>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReadContexts {
+                uuids,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn write_contexts(&self, contexts: Vec<Context>) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::WriteContexts {
+                contexts,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn list_workflows(&self) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ListWorkflows { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn read_workflows(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Workflow>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReadWorkflows {
+                uuids,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn write_workflows(&self, workflows: Vec<Workflow>) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::WriteWorkflows {
+                workflows,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn replace_workflows(
+        &self,
+        entries: Vec<WorkflowReplaceEntry>,
+    ) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReplaceWorkflows {
+                entries,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn list_misc(&self) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ListMisc { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn read_misc(&self, names: Vec<String>) -> SubsystemResult<Vec<MiscReadEntry>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReadMisc {
+                names,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn write_misc(&self, entries: Vec<MiscWriteEntry>) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::WriteMisc {
+                entries,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn replace_misc(
+        &self,
+        entries: Vec<MiscReplaceEntry>,
+    ) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::ReplaceMisc {
+                entries,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 }
 
-impl Subsystem for StorageSubsystem {
-    fn name(&self) -> SubsystemName {
-        SubsystemName::Storage
-    }
-
-    fn start(self, _bus: Bus) -> mpsc::Sender<Request> {
-        let (tx, mut rx) = mpsc::channel::<Request>(64);
-        let subsystem = self;
-
-        tokio::spawn(async move {
-            while let Some(req) = rx.recv().await {
-                let response = subsystem.handle_request(&req);
-                match req.reply {
-                    ReplyChannel::Once(tx) => {
-                        let _ = tx.send(response);
-                    }
-                    ReplyChannel::Stream(tx) => {
-                        let _ = tx.send(StreamChunk::Delta(response.body)).await;
-                        let _ = tx.send(StreamChunk::Done).await;
-                    }
-                    ReplyChannel::None => {
-                        let _ = response;
-                    }
-                }
-            }
-        });
-
-        tx
-    }
-}
-
-pub(crate) fn atomic_create_file(dst: &Path, data: &[u8]) -> Result<()> {
+fn atomic_create_file(dst: &Path, data: &[u8]) -> SubsystemResult<()> {
     if dst.exists() {
-        return Err(anyhow!("File already exists: {}", dst.display()));
+        return Err(SubsystemError::Conflict {
+            resource: "file",
+            id: dst.display().to_string(),
+        });
     }
     std::fs::create_dir_all(
         dst.parent()
-            .ok_or_else(|| anyhow!("Invalid path: no parent directory"))?,
+            .ok_or_else(|| SubsystemError::internal("invalid path: no parent directory"))?,
     )?;
     let tmp_dst = dst.with_extension("tmp");
     std::fs::write(&tmp_dst, data)?;
@@ -450,13 +530,16 @@ pub(crate) fn atomic_create_file(dst: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn atomic_replace_file(dst: &Path, old: &[u8], new: &[u8]) -> Result<()> {
+fn atomic_replace_file(dst: &Path, old: &[u8], new: &[u8]) -> SubsystemResult<()> {
     if !dst.exists() {
-        return Err(anyhow!("File does not exist: {}", dst.display()));
+        return Err(SubsystemError::not_found("file", dst.display().to_string()));
     }
     let current_data = std::fs::read(dst)?;
     if current_data != old {
-        return Err(anyhow!("File content does not match expected old content"));
+        return Err(SubsystemError::Conflict {
+            resource: "file",
+            id: dst.display().to_string(),
+        });
     }
     let tmp_dst = dst.with_extension("tmp");
     std::fs::write(&tmp_dst, new)?;
@@ -464,25 +547,32 @@ pub(crate) fn atomic_replace_file(dst: &Path, old: &[u8], new: &[u8]) -> Result<
     Ok(())
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let data = std::fs::read(path).map_err(|e| anyhow!("Failed to read {:?}: {}", path, e))?;
-    serde_json::from_slice(&data).map_err(|e| anyhow!("Failed to parse JSON {:?}: {}", path, e))
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> SubsystemResult<T> {
+    if !path.is_file() {
+        return Err(SubsystemError::not_found(
+            "file",
+            path.display().to_string(),
+        ));
+    }
+    let data = std::fs::read(path)?;
+    serde_json::from_slice(&data)
+        .map_err(|error| SubsystemError::invalid_input(format!("{}: {error}", path.display())))
 }
 
-fn write_json_create_only<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+fn write_json_create_only<T: serde::Serialize>(path: &Path, value: &T) -> SubsystemResult<()> {
     let data = to_pretty_json_vec(value)?;
     atomic_create_file(path, &data)
 }
 
-fn to_pretty_json_vec<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+fn to_pretty_json_vec<T: serde::Serialize>(value: &T) -> SubsystemResult<Vec<u8>> {
     let mut data = Vec::new();
     serde_json::to_writer_pretty(&mut data, value)
-        .map_err(|e| anyhow!("Failed to serialize pretty JSON: {e}"))?;
+        .map_err(|error| SubsystemError::invalid_input(error.to_string()))?;
     data.push(b'\n');
     Ok(data)
 }
 
-fn list_json_object_ids(dir: &Path) -> Result<Vec<String>> {
+fn list_json_object_ids(dir: &Path) -> SubsystemResult<Vec<String>> {
     let mut ids = Vec::new();
     if !dir.exists() {
         return Ok(ids);

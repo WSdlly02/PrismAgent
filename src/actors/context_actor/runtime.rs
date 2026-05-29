@@ -1,299 +1,197 @@
-use std::path::PathBuf;
-
-use crate::bus::{
-    Bus, Method, ReplyChannel, Request, Response, StreamChunk, Subsystem, SubsystemName,
+use crate::actors::context_actor::model::{
+    BuildMessagesRequest, CONTEXT_ACTOR, ContextActor, ContextHandle, ContextMsg,
+    ContextRenderRequest, ContextResolveRequest, ContextResolveResponse,
 };
-use crate::subsystems::context_subsystem::model::{
-    ContextReadRequest, ContextReadResponse, ContextRenderRequest, ContextResolveFailure,
-    ContextResolveRequest, ContextResolveResponse, ContextSubsystem, ContextWriteRequest,
-};
-use crate::subsystems::response_body_as;
-use crate::subsystems::storage_subsystem::model::context::Context;
-use crate::subsystems::storage_subsystem::model::unit::Unit;
-use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use crate::error::{SubsystemError, SubsystemResult};
+use crate::handles::AppHandles;
+use genai::chat::ChatMessage;
 use tokio::sync::mpsc;
 
-impl ContextSubsystem {
-    pub fn new() -> Self {
-        Self
+impl ContextActor {
+    pub fn load(rx: mpsc::Receiver<ContextMsg>, handles: AppHandles) -> Self {
+        Self { rx, handles }
     }
 
-    async fn handle_request(&self, bus: Bus, req: &Request) -> Response {
-        match (req.method, req.path.as_str()) {
-            (Method::Get, "list") => match list_contexts(&bus).await {
-                Ok(body) => Response::ok(body),
-                Err(error) => Response::internal_error(error),
-            },
-            (Method::Post, "read") => {
-                let request = match response_body_as::<ContextReadRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                match read_contexts(&bus, request.uuids).await {
-                    Ok(response) => Response::ok(json!(response)),
-                    Err(error) => Response::internal_error(error),
+    pub fn spawn(self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(self.run())
+    }
+
+    pub async fn run(mut self) {
+        while let Some(msg) = self.rx.recv().await {
+            match msg {
+                ContextMsg::ListContexts { reply } => {
+                    let _ = reply.send(self.handles.storage.list_contexts().await);
+                }
+                ContextMsg::ReadContexts { uuids, reply } => {
+                    let _ = reply.send(self.handles.storage.read_contexts(uuids).await);
+                }
+                ContextMsg::WriteContexts { contexts, reply } => {
+                    let _ = reply.send(self.handles.storage.write_contexts(contexts).await);
+                }
+                ContextMsg::Resolve { request, reply } => {
+                    let _ = reply.send(self.resolve(request).await);
+                }
+                ContextMsg::Render { request, reply } => {
+                    let _ = reply.send(self.render(request).await);
+                }
+                ContextMsg::BuildMessages { request, reply } => {
+                    let _ = reply.send(self.build_messages(request).await);
                 }
             }
-            (Method::Post, "resolve") => {
-                let request = match response_body_as::<ContextResolveRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                match resolve_context_inputs(&bus, request).await {
-                    Ok(response) => Response::ok(json!(response)),
-                    Err(error) => Response::internal_error(error),
-                }
-            }
-            (Method::Post, "render") => {
-                let request = match response_body_as::<ContextRenderRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                match resolve_context_inputs(
-                    &bus,
-                    ContextResolveRequest {
-                        unit_uuids: request.unit_uuids,
-                        context_uuids: request.context_uuids,
-                    },
-                )
-                .await
-                {
-                    Ok(resolved) => Response::ok(json!({
-                        "content": render_context_inputs(&resolved),
-                        "failed": resolved.failed,
-                    })),
-                    Err(error) => Response::internal_error(error),
-                }
-            }
-            (Method::Post, "write") => {
-                let request = match response_body_as::<ContextWriteRequest>(req.body.clone()) {
-                    Ok(request) => request,
-                    Err(error) => return Response::bad_request(error),
-                };
-                match write_contexts(&bus, request.contexts).await {
-                    Ok(body) => Response::ok(body),
-                    Err(error) => Response::internal_error(error),
-                }
-            }
-            _ => Response::not_found(req.path.as_str()),
         }
     }
+
+    async fn resolve(
+        &self,
+        request: ContextResolveRequest,
+    ) -> SubsystemResult<ContextResolveResponse> {
+        let units = if request.unit_uuids.is_empty() {
+            Vec::new()
+        } else {
+            self.handles.storage.read_units(request.unit_uuids).await?
+        };
+
+        let contexts = if request.context_uuids.is_empty() {
+            Vec::new()
+        } else {
+            self.handles
+                .storage
+                .read_contexts(request.context_uuids)
+                .await?
+        };
+
+        Ok(ContextResolveResponse { units, contexts })
+    }
+
+    async fn render(&self, request: ContextRenderRequest) -> SubsystemResult<String> {
+        let resolved = self
+            .resolve(ContextResolveRequest {
+                unit_uuids: request.unit_uuids,
+                context_uuids: request.context_uuids,
+            })
+            .await?;
+        Ok(render_context_inputs(&resolved))
+    }
+
+    async fn build_messages(
+        &self,
+        request: BuildMessagesRequest,
+    ) -> SubsystemResult<Vec<ChatMessage>> {
+        let resolved = self
+            .resolve(ContextResolveRequest {
+                unit_uuids: request.unit_uuids,
+                context_uuids: request.context_uuids,
+            })
+            .await?;
+
+        let mut messages = Vec::new();
+        let rendered_context = render_context_inputs(&resolved);
+        if !rendered_context.trim().is_empty() {
+            messages.push(ChatMessage::system(rendered_context));
+        }
+        messages.extend(resolved.units.iter().map(|unit| unit.to_chat_message()));
+        if let Some(user_input) = request.user_input
+            && !user_input.trim().is_empty()
+        {
+            messages.push(ChatMessage::user(user_input));
+        }
+        Ok(messages)
+    }
 }
 
-impl Subsystem for ContextSubsystem {
-    fn name(&self) -> SubsystemName {
-        SubsystemName::Context
-    }
-
-    fn start(self, bus: Bus) -> mpsc::Sender<Request> {
-        let (tx, mut rx) = mpsc::channel::<Request>(64);
-        let subsystem = std::sync::Arc::new(self);
-
-        tokio::spawn(async move {
-            while let Some(req) = rx.recv().await {
-                let subsystem = subsystem.clone();
-                let bus = bus.clone();
-                tokio::spawn(async move {
-                    let response = subsystem.handle_request(bus, &req).await;
-                    match req.reply {
-                        ReplyChannel::Once(tx) => {
-                            let _ = tx.send(response);
-                        }
-                        ReplyChannel::Stream(tx) => {
-                            let _ = tx.send(StreamChunk::Delta(response.body)).await;
-                            let _ = tx.send(StreamChunk::Done).await;
-                        }
-                        ReplyChannel::None => {
-                            let _ = response;
-                        }
-                    }
-                });
-            }
-        });
-
-        tx
-    }
-}
-
-async fn detect_available_skills(bus: &Bus) -> Result<Vec<String>> {
-    let response = bus
-        .get(
-            SubsystemName::Config,
-            SubsystemName::Context,
-            "global_config_path",
-        )
-        .await?;
-    if !response.is_ok() {
-        return Err(anyhow!(
-            "Config response missing global config path: {:?}",
-            response.body
-        ));
-    }
-    let global_config_path = response
-        .body
-        .get("path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Config response missing global config path"))?;
-    let global_skills_path = PathBuf::from(global_config_path)
-        .join("skills")
-        .to_str()
-        .map(|s| s.to_string())
-        .expect("Not a valid path");
-
-    let response = bus
-        .get(
-            SubsystemName::Config,
-            SubsystemName::Context,
-            "workspace_config_path",
-        )
-        .await?;
-    if !response.is_ok() {
-        return Err(anyhow!(
-            "Config response missing workspace config path: {:?}",
-            response.body
-        ));
-    }
-    let workspace_config_path = response
-        .body
-        .get("path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Config response missing workspace config path"))?;
-    let workspace_skills_path = PathBuf::from(workspace_config_path)
-        .join("skills")
-        .to_str()
-        .map(|s| s.to_string())
-        .expect("Not a valid path");
-
-    Ok(vec![global_skills_path, workspace_skills_path])
-}
-
-async fn resolve_context_inputs(
-    bus: &Bus,
-    request: ContextResolveRequest,
-) -> Result<ContextResolveResponse> {
-    let units_response = if request.unit_uuids.is_empty() {
-        StorageUnitsResponse::default()
-    } else {
-        let response = bus
-            .post(
-                SubsystemName::Storage,
-                SubsystemName::Context,
-                "unit/read",
-                json!({ "uuids": request.unit_uuids }),
-            )
+impl ContextHandle {
+    pub async fn list_contexts(&self) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(ContextMsg::ListContexts { reply: reply_tx })
             .await
-            .map_err(|e| anyhow!("Failed to request units from storage: {e}"))?;
-        if !response.is_ok() {
-            return Err(anyhow!("Storage unit/read failed: {:?}", response.body));
-        }
-        response_body_as::<StorageUnitsResponse>(response.body)?
-    };
-
-    let contexts_response = if request.context_uuids.is_empty() {
-        StorageContextsResponse::default()
-    } else {
-        let response = bus
-            .post(
-                SubsystemName::Storage,
-                SubsystemName::Context,
-                "context/read",
-                json!({ "uuids": request.context_uuids }),
-            )
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+        reply_rx
             .await
-            .map_err(|e| anyhow!("Failed to request contexts from storage: {e}"))?;
-        if !response.is_ok() {
-            return Err(anyhow!("Storage context/read failed: {:?}", response.body));
-        }
-        response_body_as::<StorageContextsResponse>(response.body)?
-    };
-
-    let failed = units_response
-        .failed
-        .into_iter()
-        .map(|failure| ContextResolveFailure {
-            target: "unit".to_string(),
-            uuid: failure.uuid,
-            error: failure.error,
-        })
-        .chain(
-            contexts_response
-                .failed
-                .into_iter()
-                .map(|failure| ContextResolveFailure {
-                    target: "context".to_string(),
-                    uuid: failure.uuid,
-                    error: failure.error,
-                }),
-        )
-        .collect();
-
-    Ok(ContextResolveResponse {
-        units: units_response.units,
-        contexts: contexts_response.contexts,
-        failed,
-    })
-}
-
-async fn write_contexts(bus: &Bus, contexts: Vec<Context>) -> Result<Value> {
-    let response = bus
-        .post(
-            SubsystemName::Storage,
-            SubsystemName::Context,
-            "context/write",
-            json!({ "contexts": contexts }),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed to request context write from storage: {e}"))?;
-    if !response.is_ok() {
-        return Err(anyhow!("Storage context/write failed: {:?}", response.body));
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
     }
-    Ok(response.body)
-}
 
-async fn list_contexts(bus: &Bus) -> Result<Value> {
-    let response = bus
-        .get(
-            SubsystemName::Storage,
-            SubsystemName::Context,
-            "context/list",
-        )
-        .await
-        .map_err(|e| anyhow!("Failed to request context list from storage: {e}"))?;
-    if !response.is_ok() {
-        return Err(anyhow!("Storage context/list failed: {:?}", response.body));
+    pub async fn read_contexts(
+        &self,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<crate::actors::storage_actor::model::context::Context>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(ContextMsg::ReadContexts {
+                uuids,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
     }
-    Ok(response.body)
-}
 
-async fn read_contexts(bus: &Bus, uuids: Vec<String>) -> Result<ContextReadResponse> {
-    let response = bus
-        .post(
-            SubsystemName::Storage,
-            SubsystemName::Context,
-            "context/read",
-            json!({ "uuids": uuids }),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed to request contexts from storage: {e}"))?;
-    if !response.is_ok() {
-        return Err(anyhow!("Storage context/read failed: {:?}", response.body));
+    pub async fn write_contexts(
+        &self,
+        contexts: Vec<crate::actors::storage_actor::model::context::Context>,
+    ) -> SubsystemResult<Vec<String>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(ContextMsg::WriteContexts {
+                contexts,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
     }
-    let response = response_body_as::<StorageContextsResponse>(response.body)?;
-    let failed = response
-        .failed
-        .into_iter()
-        .map(|failure| ContextResolveFailure {
-            target: "context".to_string(),
-            uuid: failure.uuid,
-            error: failure.error,
-        })
-        .collect();
-    Ok(ContextReadResponse {
-        contexts: response.contexts,
-        failed,
-    })
+
+    pub async fn resolve(
+        &self,
+        request: ContextResolveRequest,
+    ) -> SubsystemResult<ContextResolveResponse> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(ContextMsg::Resolve {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+    }
+
+    pub async fn render(&self, request: ContextRenderRequest) -> SubsystemResult<String> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(ContextMsg::Render {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+    }
+
+    pub async fn build_messages(
+        &self,
+        request: BuildMessagesRequest,
+    ) -> SubsystemResult<Vec<ChatMessage>> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(ContextMsg::BuildMessages {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+    }
 }
 
 fn render_context_inputs(resolved: &ContextResolveResponse) -> String {
@@ -330,26 +228,4 @@ fn render_context_inputs(resolved: &ContextResolveResponse) -> String {
     }
 
     sections.join("\n\n")
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct StorageUnitsResponse {
-    #[serde(default)]
-    units: Vec<Unit>,
-    #[serde(default)]
-    failed: Vec<StorageObjectFailure>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct StorageContextsResponse {
-    #[serde(default)]
-    contexts: Vec<Context>,
-    #[serde(default)]
-    failed: Vec<StorageObjectFailure>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct StorageObjectFailure {
-    uuid: String,
-    error: String,
 }
