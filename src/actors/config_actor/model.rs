@@ -52,13 +52,6 @@ pub struct CurrentProvider {
     pub provider: ProviderConfig,
 }
 
-pub struct ConfigSubsystem {
-    pub global_config: GlobalConfig,
-    pub global_config_path: PathBuf,
-    pub workspace_config: WorkspaceConfig,
-    pub workspace_config_path: PathBuf,
-}
-
 /// ~/.config/prismagent/config.toml
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct GlobalConfig {
