@@ -3,9 +3,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::actors::storage_actor::model::agent::{Agent, AgentReplaceEntry};
 use crate::actors::storage_actor::model::context::Context;
-use crate::actors::storage_actor::model::misc::{
-    Misc, MiscReadEntry, MiscReplaceEntry, MiscWriteEntry,
-};
+use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowReplaceEntry};
 use crate::error::SubsystemResult;

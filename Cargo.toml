@@ -4,8 +4,8 @@ version = "0.9.0"
 edition = "2024"
 
 [[bin]]
-name = "prismagent"
-path = "src/bin/prismagent.rs"
+name = "prismagentd"
+path = "src/bin/prismagentd.rs"
 
 [dependencies]
 serde = { version = "1.0.228", features = ["derive", "rc"] }
@@ -26,6 +26,8 @@ reqwest = { version = "0.13", features = ["json"] }
 urlencoding = "2"
 unicode-width = "0.2.2"
 thiserror = "2.0.18"
+axum = "0.8"
+futures-util = "0.3"
 
 [profile.release]
 opt-level = 3

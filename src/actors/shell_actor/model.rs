@@ -1,55 +1,55 @@
-use serde::{Deserialize, Serialize};
+use crate::actors::agent_actor::model::{
+    AgentEvent, AgentSnapshot, ApproveRequest, SendMessageRequest,
+};
+use crate::actors::workspace_actor::model::{
+    AcquireLeaseRequest, Lease, ReleaseLeaseRequest, WorkspaceSummary,
+};
+use crate::error::SubsystemResult;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
-pub struct ShellSubsystem {
-    pub active_agent_uuid: String,
+pub const SHELL_ACTOR: &str = "shell";
+
+#[derive(Clone)]
+pub struct ShellHandle {
+    pub tx: mpsc::Sender<ShellMsg>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellInputRequest {
-    pub content: String,
-    pub agent_uuid: Option<String>,
+pub struct ShellActor {
+    pub(super) rx: mpsc::Receiver<ShellMsg>,
+    pub(super) workspace: crate::actors::workspace_actor::model::WorkspaceHandle,
+    pub(super) agent: crate::actors::agent_actor::model::AgentHandle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellSubmitRequest {
-    pub content: String,
-    pub agent_uuid: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellApproveRequest {
-    pub args: String,
-    pub agent_uuid: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ShellEvent {
-    Patch {
-        correlation_uuid: Option<String>,
-        text: String,
+pub enum ShellMsg {
+    ListWorkspaces {
+        reply: oneshot::Sender<SubsystemResult<Vec<WorkspaceSummary>>>,
     },
-    Snapshot {
-        correlation_uuid: Option<String>,
-        snapshot: ShellSnapshot,
+    AcquireLease {
+        request: AcquireLeaseRequest,
+        reply: oneshot::Sender<SubsystemResult<Lease>>,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellSnapshot {
-    pub active_agent_uuid: String,
-    pub agents: Vec<ShellAgentSnapshot>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellAgentSnapshot {
-    pub agent_uuid: String,
-    pub name: String,
-    pub messages: Vec<ShellMessage>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellMessage {
-    pub role: String,
-    pub content: String,
+    ReleaseLease {
+        request: ReleaseLeaseRequest,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
+    AgentSnapshot {
+        agent_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<AgentSnapshot>>,
+    },
+    SubscribeAgent {
+        agent_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<broadcast::Receiver<AgentEvent>>>,
+    },
+    SendMessage {
+        request: SendMessageRequest,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
+    ApproveRequest {
+        request: ApproveRequest,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
+    Cancel {
+        agent_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
 }
