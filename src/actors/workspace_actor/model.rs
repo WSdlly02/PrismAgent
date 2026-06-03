@@ -1,4 +1,5 @@
 use crate::error::SubsystemResult;
+use crate::handles::AppHandles;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,28 +14,25 @@ pub struct WorkspaceHandle {
 
 pub struct WorkspaceActor {
     pub(super) rx: mpsc::Receiver<WorkspaceMsg>,
-    pub(super) workspaces: HashMap<String, WorkspaceState>,
+    pub(super) root: PathBuf,
+    pub(super) workspaces: HashMap<String, Workspace>,
+    pub(super) _handles: AppHandles,
 }
 
 pub enum WorkspaceMsg {
     List {
         reply: oneshot::Sender<SubsystemResult<Vec<WorkspaceSummary>>>,
     },
-    AcquireLease {
-        request: AcquireLeaseRequest,
-        reply: oneshot::Sender<SubsystemResult<Lease>>,
-    },
-    ReleaseLease {
-        request: ReleaseLeaseRequest,
-        reply: oneshot::Sender<SubsystemResult<()>>,
+    Contains {
+        workspace_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<bool>>,
     },
 }
 
-pub struct WorkspaceState {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Workspace {
     pub uuid: String,
     pub path: PathBuf,
-    pub agents: Vec<AgentSummary>,
-    pub lease: Option<Lease>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,13 +40,6 @@ pub struct WorkspaceSummary {
     pub workspace_uuid: String,
     pub workspace_path: PathBuf,
     pub locked_by: Option<String>,
-    pub agents: Vec<AgentSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSummary {
-    pub agent_uuid: String,
-    pub agent_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

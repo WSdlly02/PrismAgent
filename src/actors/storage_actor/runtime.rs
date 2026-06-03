@@ -5,22 +5,27 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowReplaceEntry};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
+use crate::handles::AppHandles;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
 impl StorageActor {
-    pub fn load(rx: mpsc::Receiver<StorageMsg>) -> SubsystemResult<Self> {
-        let root = std::env::current_dir()?.join(".prismagent");
-        Self::from_root(rx, root)
+    pub fn load(rx: mpsc::Receiver<StorageMsg>, handles: AppHandles) -> SubsystemResult<Self> {
+        let root = directories::BaseDirs::new()
+            .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
+            .home_dir()
+            .join(".prismagent")
+            .join("workspaces");
+        Self::from_root(rx, handles, root)
     }
 
-    pub fn from_root(rx: mpsc::Receiver<StorageMsg>, root: PathBuf) -> SubsystemResult<Self> {
-        std::fs::create_dir_all(root.join("agents"))?;
-        std::fs::create_dir_all(root.join("units"))?;
-        std::fs::create_dir_all(root.join("contexts"))?;
-        std::fs::create_dir_all(root.join("workflows"))?;
-        std::fs::create_dir_all(root.join("misc"))?;
-        Ok(Self { rx, root })
+    pub fn from_root(
+        rx: mpsc::Receiver<StorageMsg>,
+        handles: AppHandles,
+        root: PathBuf,
+    ) -> SubsystemResult<Self> {
+        std::fs::create_dir_all(&root)?;
+        Ok(Self { rx, root, handles })
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
@@ -33,149 +38,243 @@ impl StorageActor {
                 StorageMsg::Root { reply } => {
                     let _ = reply.send(Ok(self.root.clone()));
                 }
-                StorageMsg::ListAgents { reply } => {
-                    let _ = reply.send(self.list_agents());
+                StorageMsg::ListAgents {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.list_agents(&workspace_uuid));
                 }
-                StorageMsg::ReadAgents { uuids, reply } => {
-                    let _ = reply.send(self.read_agents(uuids));
+                StorageMsg::ReadAgents {
+                    workspace_uuid,
+                    uuids,
+                    reply,
+                } => {
+                    let _ = reply.send(self.read_agents(&workspace_uuid, uuids));
                 }
-                StorageMsg::WriteAgents { agents, reply } => {
-                    let _ = reply.send(self.write_agents(&agents));
+                StorageMsg::WriteAgents {
+                    workspace_uuid,
+                    agents,
+                    reply,
+                } => {
+                    let _ = reply.send(self.write_agents(&workspace_uuid, &agents));
                 }
-                StorageMsg::ReplaceAgents { entries, reply } => {
-                    let _ = reply.send(self.replace_agents(entries));
+                StorageMsg::ReplaceAgents {
+                    workspace_uuid,
+                    entries,
+                    reply,
+                } => {
+                    let _ = reply.send(self.replace_agents(&workspace_uuid, entries));
                 }
-                StorageMsg::ListUnits { reply } => {
-                    let _ = reply.send(self.list_units());
+                StorageMsg::ListUnits {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.list_units(&workspace_uuid));
                 }
-                StorageMsg::ReadUnits { uuids, reply } => {
-                    let _ = reply.send(self.read_units(uuids));
+                StorageMsg::ReadUnits {
+                    workspace_uuid,
+                    uuids,
+                    reply,
+                } => {
+                    let _ = reply.send(self.read_units(&workspace_uuid, uuids));
                 }
-                StorageMsg::WriteUnits { units, reply } => {
-                    let _ = reply.send(self.write_units(&units));
+                StorageMsg::WriteUnits {
+                    workspace_uuid,
+                    units,
+                    reply,
+                } => {
+                    let _ = reply.send(self.write_units(&workspace_uuid, &units));
                 }
-                StorageMsg::ListContexts { reply } => {
-                    let _ = reply.send(self.list_contexts());
+                StorageMsg::ListContexts {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.list_contexts(&workspace_uuid));
                 }
-                StorageMsg::ReadContexts { uuids, reply } => {
-                    let _ = reply.send(self.read_contexts(uuids));
+                StorageMsg::ReadContexts {
+                    workspace_uuid,
+                    uuids,
+                    reply,
+                } => {
+                    let _ = reply.send(self.read_contexts(&workspace_uuid, uuids));
                 }
-                StorageMsg::WriteContexts { contexts, reply } => {
-                    let _ = reply.send(self.write_contexts(&contexts));
+                StorageMsg::WriteContexts {
+                    workspace_uuid,
+                    contexts,
+                    reply,
+                } => {
+                    let _ = reply.send(self.write_contexts(&workspace_uuid, &contexts));
                 }
-                StorageMsg::ListWorkflows { reply } => {
-                    let _ = reply.send(self.list_workflows());
+                StorageMsg::ListWorkflows {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.list_workflows(&workspace_uuid));
                 }
-                StorageMsg::ReadWorkflows { uuids, reply } => {
-                    let _ = reply.send(self.read_workflows(uuids));
+                StorageMsg::ReadWorkflows {
+                    workspace_uuid,
+                    uuids,
+                    reply,
+                } => {
+                    let _ = reply.send(self.read_workflows(&workspace_uuid, uuids));
                 }
-                StorageMsg::WriteWorkflows { workflows, reply } => {
-                    let _ = reply.send(self.write_workflows(&workflows));
+                StorageMsg::WriteWorkflows {
+                    workspace_uuid,
+                    workflows,
+                    reply,
+                } => {
+                    let _ = reply.send(self.write_workflows(&workspace_uuid, &workflows));
                 }
-                StorageMsg::ReplaceWorkflows { entries, reply } => {
-                    let _ = reply.send(self.replace_workflows(entries));
+                StorageMsg::ReplaceWorkflows {
+                    workspace_uuid,
+                    entries,
+                    reply,
+                } => {
+                    let _ = reply.send(self.replace_workflows(&workspace_uuid, entries));
                 }
-                StorageMsg::ListMisc { reply } => {
-                    let _ = reply.send(self.list_misc());
+                StorageMsg::ListMisc {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.list_misc(&workspace_uuid));
                 }
-                StorageMsg::ReadMisc { names, reply } => {
-                    let _ = reply.send(self.read_misc_entries(names));
+                StorageMsg::ReadMisc {
+                    workspace_uuid,
+                    names,
+                    reply,
+                } => {
+                    let _ = reply.send(self.read_misc_entries(&workspace_uuid, names));
                 }
-                StorageMsg::WriteMisc { entries, reply } => {
-                    let _ = reply.send(self.write_misc_entries(&entries));
+                StorageMsg::WriteMisc {
+                    workspace_uuid,
+                    entries,
+                    reply,
+                } => {
+                    let _ = reply.send(self.write_misc_entries(&workspace_uuid, &entries));
                 }
-                StorageMsg::ReplaceMisc { entries, reply } => {
-                    let _ = reply.send(self.replace_misc_entries(entries));
+                StorageMsg::ReplaceMisc {
+                    workspace_uuid,
+                    entries,
+                    reply,
+                } => {
+                    let _ = reply.send(self.replace_misc_entries(&workspace_uuid, entries));
                 }
             }
         }
     }
 
-    fn list_agents(&self) -> SubsystemResult<Vec<String>> {
-        list_json_object_ids(&self.root.join("agents"))
+    fn list_agents(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
+        list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("agents"))
     }
 
-    fn read_agents(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Agent>> {
+    fn read_agents(&self, workspace_uuid: &str, uuids: Vec<String>) -> SubsystemResult<Vec<Agent>> {
         uuids
             .iter()
-            .map(|uuid| read_json(&self.agent_path(uuid)))
+            .map(|uuid| read_json(&self.agent_path(workspace_uuid, uuid)?))
             .collect()
     }
 
-    fn write_agents(&self, agents: &[Agent]) -> SubsystemResult<Vec<String>> {
+    fn write_agents(&self, workspace_uuid: &str, agents: &[Agent]) -> SubsystemResult<Vec<String>> {
         let mut written = Vec::with_capacity(agents.len());
         for agent in agents {
-            write_json_create_only(&self.agent_path(&agent.uuid), agent)?;
+            write_json_create_only(&self.agent_path(workspace_uuid, &agent.uuid)?, agent)?;
             written.push(agent.uuid.clone());
         }
         Ok(written)
     }
 
-    fn replace_agents(&self, entries: Vec<AgentReplaceEntry>) -> SubsystemResult<Vec<String>> {
+    fn replace_agents(
+        &self,
+        workspace_uuid: &str,
+        entries: Vec<AgentReplaceEntry>,
+    ) -> SubsystemResult<Vec<String>> {
         let mut replaced = Vec::with_capacity(entries.len());
         for entry in entries {
             let new_data = to_pretty_json_vec(&entry.agent)?;
-            atomic_replace_file(&self.agent_path(&entry.uuid), &entry.old_data, &new_data)?;
+            atomic_replace_file(
+                &self.agent_path(workspace_uuid, &entry.uuid)?,
+                &entry.old_data,
+                &new_data,
+            )?;
             replaced.push(entry.uuid);
         }
         Ok(replaced)
     }
 
-    fn list_units(&self) -> SubsystemResult<Vec<String>> {
-        list_json_object_ids(&self.root.join("units"))
+    fn list_units(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
+        list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("units"))
     }
 
-    fn read_units(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Unit>> {
+    fn read_units(&self, workspace_uuid: &str, uuids: Vec<String>) -> SubsystemResult<Vec<Unit>> {
         uuids
             .iter()
-            .map(|uuid| read_json(&self.unit_path(uuid)))
+            .map(|uuid| read_json(&self.unit_path(workspace_uuid, uuid)?))
             .collect()
     }
 
-    fn write_units(&self, units: &[Unit]) -> SubsystemResult<Vec<String>> {
+    fn write_units(&self, workspace_uuid: &str, units: &[Unit]) -> SubsystemResult<Vec<String>> {
         let mut written = Vec::with_capacity(units.len());
         for unit in units {
-            write_json_create_only(&self.unit_path(&unit.uuid), unit)?;
+            write_json_create_only(&self.unit_path(workspace_uuid, &unit.uuid)?, unit)?;
             written.push(unit.uuid.clone());
         }
         Ok(written)
     }
 
-    fn list_contexts(&self) -> SubsystemResult<Vec<String>> {
-        list_json_object_ids(&self.root.join("contexts"))
+    fn list_contexts(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
+        list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("contexts"))
     }
 
-    fn read_contexts(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Context>> {
+    fn read_contexts(
+        &self,
+        workspace_uuid: &str,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<Context>> {
         uuids
             .iter()
-            .map(|uuid| read_json(&self.context_path(uuid)))
+            .map(|uuid| read_json(&self.context_path(workspace_uuid, uuid)?))
             .collect()
     }
 
-    fn write_contexts(&self, contexts: &[Context]) -> SubsystemResult<Vec<String>> {
+    fn write_contexts(
+        &self,
+        workspace_uuid: &str,
+        contexts: &[Context],
+    ) -> SubsystemResult<Vec<String>> {
         let mut written = Vec::with_capacity(contexts.len());
         for context in contexts {
-            write_json_create_only(&self.context_path(&context.uuid), context)?;
+            write_json_create_only(&self.context_path(workspace_uuid, &context.uuid)?, context)?;
             written.push(context.uuid.clone());
         }
         Ok(written)
     }
 
-    fn list_workflows(&self) -> SubsystemResult<Vec<String>> {
-        list_json_object_ids(&self.root.join("workflows"))
+    fn list_workflows(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
+        list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("workflows"))
     }
 
-    fn read_workflows(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Workflow>> {
+    fn read_workflows(
+        &self,
+        workspace_uuid: &str,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<Workflow>> {
         uuids
             .iter()
-            .map(|uuid| read_json(&self.workflow_path(uuid)))
+            .map(|uuid| read_json(&self.workflow_path(workspace_uuid, uuid)?))
             .collect()
     }
 
-    fn write_workflows(&self, workflows: &[Workflow]) -> SubsystemResult<Vec<String>> {
+    fn write_workflows(
+        &self,
+        workspace_uuid: &str,
+        workflows: &[Workflow],
+    ) -> SubsystemResult<Vec<String>> {
         let mut written = Vec::with_capacity(workflows.len());
         for workflow in workflows {
-            write_json_create_only(&self.workflow_path(&workflow.uuid), workflow)?;
+            write_json_create_only(
+                &self.workflow_path(workspace_uuid, &workflow.uuid)?,
+                workflow,
+            )?;
             written.push(workflow.uuid.clone());
         }
         Ok(written)
@@ -183,74 +282,123 @@ impl StorageActor {
 
     fn replace_workflows(
         &self,
+        workspace_uuid: &str,
         entries: Vec<WorkflowReplaceEntry>,
     ) -> SubsystemResult<Vec<String>> {
         let mut replaced = Vec::with_capacity(entries.len());
         for entry in entries {
             let new_data = to_pretty_json_vec(&entry.workflow)?;
-            atomic_replace_file(&self.workflow_path(&entry.uuid), &entry.old_data, &new_data)?;
+            atomic_replace_file(
+                &self.workflow_path(workspace_uuid, &entry.uuid)?,
+                &entry.old_data,
+                &new_data,
+            )?;
             replaced.push(entry.uuid);
         }
         Ok(replaced)
     }
 
-    fn list_misc(&self) -> SubsystemResult<Vec<String>> {
-        list_json_object_ids(&self.root.join("misc"))
+    fn list_misc(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
+        list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("misc"))
     }
 
-    fn read_misc_entries(&self, names: Vec<String>) -> SubsystemResult<Vec<MiscReadEntry>> {
+    fn read_misc_entries(
+        &self,
+        workspace_uuid: &str,
+        names: Vec<String>,
+    ) -> SubsystemResult<Vec<MiscReadEntry>> {
         let mut entries = Vec::with_capacity(names.len());
         for name in names {
             entries.push(MiscReadEntry {
-                misc: read_json(&self.misc_path(&name)?)?,
+                misc: read_json(&self.misc_path(workspace_uuid, &name)?)?,
                 name,
             });
         }
         Ok(entries)
     }
 
-    fn write_misc_entries(&self, entries: &[MiscWriteEntry]) -> SubsystemResult<Vec<String>> {
+    fn write_misc_entries(
+        &self,
+        workspace_uuid: &str,
+        entries: &[MiscWriteEntry],
+    ) -> SubsystemResult<Vec<String>> {
         let mut written = Vec::with_capacity(entries.len());
         for entry in entries {
-            write_json_create_only(&self.misc_path(&entry.name)?, &entry.misc)?;
+            write_json_create_only(&self.misc_path(workspace_uuid, &entry.name)?, &entry.misc)?;
             written.push(entry.name.clone());
         }
         Ok(written)
     }
 
-    fn replace_misc_entries(&self, entries: Vec<MiscReplaceEntry>) -> SubsystemResult<Vec<String>> {
+    fn replace_misc_entries(
+        &self,
+        workspace_uuid: &str,
+        entries: Vec<MiscReplaceEntry>,
+    ) -> SubsystemResult<Vec<String>> {
         let mut replaced = Vec::with_capacity(entries.len());
         for entry in entries {
             let new_data = to_pretty_json_vec(&entry.misc)?;
-            atomic_replace_file(&self.misc_path(&entry.name)?, &entry.old_data, &new_data)?;
+            atomic_replace_file(
+                &self.misc_path(workspace_uuid, &entry.name)?,
+                &entry.old_data,
+                &new_data,
+            )?;
             replaced.push(entry.name);
         }
         Ok(replaced)
     }
 
-    fn agent_path(&self, uuid: &str) -> PathBuf {
-        self.root.join("agents").join(format!("{uuid}.json"))
+    fn workspace_root(&self, workspace_uuid: &str) -> SubsystemResult<PathBuf> {
+        if !is_safe_object_name(workspace_uuid) {
+            return Err(SubsystemError::invalid_input(format!(
+                "invalid workspace uuid: {workspace_uuid}"
+            )));
+        }
+        let root = self.root.join(workspace_uuid);
+        if !root.is_dir() {
+            return Err(SubsystemError::not_found("workspace", workspace_uuid));
+        }
+        Ok(root)
     }
 
-    fn unit_path(&self, uuid: &str) -> PathBuf {
-        self.root.join("units").join(format!("{uuid}.json"))
+    fn agent_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        Ok(self
+            .workspace_root(workspace_uuid)?
+            .join("agents")
+            .join(format!("{uuid}.json")))
     }
 
-    fn context_path(&self, uuid: &str) -> PathBuf {
-        self.root.join("contexts").join(format!("{uuid}.json"))
+    fn unit_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        Ok(self
+            .workspace_root(workspace_uuid)?
+            .join("units")
+            .join(format!("{uuid}.json")))
     }
 
-    fn workflow_path(&self, uuid: &str) -> PathBuf {
-        self.root.join("workflows").join(format!("{uuid}.json"))
+    fn context_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        Ok(self
+            .workspace_root(workspace_uuid)?
+            .join("contexts")
+            .join(format!("{uuid}.json")))
     }
 
-    fn misc_path(&self, name: &str) -> SubsystemResult<PathBuf> {
+    fn workflow_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        Ok(self
+            .workspace_root(workspace_uuid)?
+            .join("workflows")
+            .join(format!("{uuid}.json")))
+    }
+
+    fn misc_path(&self, workspace_uuid: &str, name: &str) -> SubsystemResult<PathBuf> {
         if !is_safe_object_name(name) {
             return Err(SubsystemError::invalid_input(format!(
                 "invalid misc name: {name}"
             )));
         }
-        Ok(self.root.join("misc").join(format!("{name}.json")))
+        Ok(self
+            .workspace_root(workspace_uuid)?
+            .join("misc")
+            .join(format!("{name}.json")))
     }
 }
 
@@ -266,10 +414,16 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn list_agents(&self) -> SubsystemResult<Vec<String>> {
+    pub async fn list_agents(
+        &self,
+        workspace_uuid: impl Into<String>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StorageMsg::ListAgents { reply: reply_tx })
+            .send(StorageMsg::ListAgents {
+                workspace_uuid: workspace_uuid.into(),
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
         reply_rx
@@ -277,10 +431,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn read_agents(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Agent>> {
+    pub async fn read_agents(
+        &self,
+        workspace_uuid: impl Into<String>,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<Agent>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReadAgents {
+                workspace_uuid: workspace_uuid.into(),
                 uuids,
                 reply: reply_tx,
             })
@@ -291,10 +450,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn write_agents(&self, agents: Vec<Agent>) -> SubsystemResult<Vec<String>> {
+    pub async fn write_agents(
+        &self,
+        workspace_uuid: impl Into<String>,
+        agents: Vec<Agent>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::WriteAgents {
+                workspace_uuid: workspace_uuid.into(),
                 agents,
                 reply: reply_tx,
             })
@@ -307,11 +471,13 @@ impl StorageHandle {
 
     pub async fn replace_agents(
         &self,
+        workspace_uuid: impl Into<String>,
         entries: Vec<AgentReplaceEntry>,
     ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReplaceAgents {
+                workspace_uuid: workspace_uuid.into(),
                 entries,
                 reply: reply_tx,
             })
@@ -322,10 +488,16 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn list_units(&self) -> SubsystemResult<Vec<String>> {
+    pub async fn list_units(
+        &self,
+        workspace_uuid: impl Into<String>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StorageMsg::ListUnits { reply: reply_tx })
+            .send(StorageMsg::ListUnits {
+                workspace_uuid: workspace_uuid.into(),
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
         reply_rx
@@ -333,10 +505,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn read_units(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Unit>> {
+    pub async fn read_units(
+        &self,
+        workspace_uuid: impl Into<String>,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<Unit>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReadUnits {
+                workspace_uuid: workspace_uuid.into(),
                 uuids,
                 reply: reply_tx,
             })
@@ -347,10 +524,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn write_units(&self, units: Vec<Unit>) -> SubsystemResult<Vec<String>> {
+    pub async fn write_units(
+        &self,
+        workspace_uuid: impl Into<String>,
+        units: Vec<Unit>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::WriteUnits {
+                workspace_uuid: workspace_uuid.into(),
                 units,
                 reply: reply_tx,
             })
@@ -361,10 +543,16 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn list_contexts(&self) -> SubsystemResult<Vec<String>> {
+    pub async fn list_contexts(
+        &self,
+        workspace_uuid: impl Into<String>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StorageMsg::ListContexts { reply: reply_tx })
+            .send(StorageMsg::ListContexts {
+                workspace_uuid: workspace_uuid.into(),
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
         reply_rx
@@ -372,10 +560,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn read_contexts(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Context>> {
+    pub async fn read_contexts(
+        &self,
+        workspace_uuid: impl Into<String>,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<Context>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReadContexts {
+                workspace_uuid: workspace_uuid.into(),
                 uuids,
                 reply: reply_tx,
             })
@@ -386,10 +579,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn write_contexts(&self, contexts: Vec<Context>) -> SubsystemResult<Vec<String>> {
+    pub async fn write_contexts(
+        &self,
+        workspace_uuid: impl Into<String>,
+        contexts: Vec<Context>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::WriteContexts {
+                workspace_uuid: workspace_uuid.into(),
                 contexts,
                 reply: reply_tx,
             })
@@ -400,10 +598,16 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn list_workflows(&self) -> SubsystemResult<Vec<String>> {
+    pub async fn list_workflows(
+        &self,
+        workspace_uuid: impl Into<String>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StorageMsg::ListWorkflows { reply: reply_tx })
+            .send(StorageMsg::ListWorkflows {
+                workspace_uuid: workspace_uuid.into(),
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
         reply_rx
@@ -411,10 +615,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn read_workflows(&self, uuids: Vec<String>) -> SubsystemResult<Vec<Workflow>> {
+    pub async fn read_workflows(
+        &self,
+        workspace_uuid: impl Into<String>,
+        uuids: Vec<String>,
+    ) -> SubsystemResult<Vec<Workflow>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReadWorkflows {
+                workspace_uuid: workspace_uuid.into(),
                 uuids,
                 reply: reply_tx,
             })
@@ -425,10 +634,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn write_workflows(&self, workflows: Vec<Workflow>) -> SubsystemResult<Vec<String>> {
+    pub async fn write_workflows(
+        &self,
+        workspace_uuid: impl Into<String>,
+        workflows: Vec<Workflow>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::WriteWorkflows {
+                workspace_uuid: workspace_uuid.into(),
                 workflows,
                 reply: reply_tx,
             })
@@ -441,11 +655,13 @@ impl StorageHandle {
 
     pub async fn replace_workflows(
         &self,
+        workspace_uuid: impl Into<String>,
         entries: Vec<WorkflowReplaceEntry>,
     ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReplaceWorkflows {
+                workspace_uuid: workspace_uuid.into(),
                 entries,
                 reply: reply_tx,
             })
@@ -456,10 +672,16 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn list_misc(&self) -> SubsystemResult<Vec<String>> {
+    pub async fn list_misc(
+        &self,
+        workspace_uuid: impl Into<String>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StorageMsg::ListMisc { reply: reply_tx })
+            .send(StorageMsg::ListMisc {
+                workspace_uuid: workspace_uuid.into(),
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
         reply_rx
@@ -467,10 +689,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn read_misc(&self, names: Vec<String>) -> SubsystemResult<Vec<MiscReadEntry>> {
+    pub async fn read_misc(
+        &self,
+        workspace_uuid: impl Into<String>,
+        names: Vec<String>,
+    ) -> SubsystemResult<Vec<MiscReadEntry>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReadMisc {
+                workspace_uuid: workspace_uuid.into(),
                 names,
                 reply: reply_tx,
             })
@@ -481,10 +708,15 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn write_misc(&self, entries: Vec<MiscWriteEntry>) -> SubsystemResult<Vec<String>> {
+    pub async fn write_misc(
+        &self,
+        workspace_uuid: impl Into<String>,
+        entries: Vec<MiscWriteEntry>,
+    ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::WriteMisc {
+                workspace_uuid: workspace_uuid.into(),
                 entries,
                 reply: reply_tx,
             })
@@ -497,11 +729,13 @@ impl StorageHandle {
 
     pub async fn replace_misc(
         &self,
+        workspace_uuid: impl Into<String>,
         entries: Vec<MiscReplaceEntry>,
     ) -> SubsystemResult<Vec<String>> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::ReplaceMisc {
+                workspace_uuid: workspace_uuid.into(),
                 entries,
                 reply: reply_tx,
             })

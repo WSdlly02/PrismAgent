@@ -7,6 +7,7 @@ use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry,
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowReplaceEntry};
 use crate::error::SubsystemResult;
+use crate::handles::AppHandles;
 
 pub mod agent;
 pub mod context;
@@ -24,6 +25,7 @@ pub struct StorageHandle {
 pub struct StorageActor {
     pub(super) rx: mpsc::Receiver<StorageMsg>,
     pub(super) root: PathBuf,
+    pub(super) handles: AppHandles,
 }
 
 pub enum StorageMsg {
@@ -31,69 +33,87 @@ pub enum StorageMsg {
         reply: oneshot::Sender<SubsystemResult<PathBuf>>,
     },
     ListAgents {
+        workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReadAgents {
+        workspace_uuid: String,
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Agent>>>,
     },
     WriteAgents {
+        workspace_uuid: String,
         agents: Vec<Agent>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReplaceAgents {
+        workspace_uuid: String,
         entries: Vec<AgentReplaceEntry>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ListUnits {
+        workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReadUnits {
+        workspace_uuid: String,
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Unit>>>,
     },
     WriteUnits {
+        workspace_uuid: String,
         units: Vec<Unit>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ListContexts {
+        workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReadContexts {
+        workspace_uuid: String,
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
     },
     WriteContexts {
+        workspace_uuid: String,
         contexts: Vec<Context>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ListWorkflows {
+        workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReadWorkflows {
+        workspace_uuid: String,
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Workflow>>>,
     },
     WriteWorkflows {
+        workspace_uuid: String,
         workflows: Vec<Workflow>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReplaceWorkflows {
+        workspace_uuid: String,
         entries: Vec<WorkflowReplaceEntry>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ListMisc {
+        workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReadMisc {
+        workspace_uuid: String,
         names: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<MiscReadEntry>>>,
     },
     WriteMisc {
+        workspace_uuid: String,
         entries: Vec<MiscWriteEntry>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReplaceMisc {
+        workspace_uuid: String,
         entries: Vec<MiscReplaceEntry>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },

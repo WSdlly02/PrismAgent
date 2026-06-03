@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// $PWD/.prismagent/units/{uuid}.json
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Unit {
     pub uuid: String,
     pub visibility: UnitVisibility,

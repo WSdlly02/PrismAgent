@@ -1,10 +1,58 @@
-use crate::actors::config_actor::model::ConfigHandle;
+use crate::actors::agent_actor::model::AgentHandle;
 use crate::actors::context_actor::model::ContextHandle;
+use crate::actors::profile_actor::model::{ProfileHandle, ProfileMsg};
+use crate::actors::shell_actor::model::ShellHandle;
 use crate::actors::storage_actor::model::StorageHandle;
+use crate::actors::workspace_actor::model::WorkspaceHandle;
 
 #[derive(Clone)]
 pub struct AppHandles {
-    pub config: ConfigHandle,
+    pub profile: ProfileHandle,
     pub context: ContextHandle,
     pub storage: StorageHandle,
+    pub workspace: WorkspaceHandle,
+    pub agent: AgentHandle,
+    pub shell: ShellHandle,
+}
+
+impl AppHandles {
+    /// Temporary bootstrap helper until ProfileActor is part of daemon startup.
+    pub fn without_profile_actor(
+        context: ContextHandle,
+        storage: StorageHandle,
+        workspace: WorkspaceHandle,
+        agent: AgentHandle,
+        shell: ShellHandle,
+    ) -> Self {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ProfileMsg>(1);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        Self {
+            profile: ProfileHandle { tx },
+            context,
+            storage,
+            workspace,
+            agent,
+            shell,
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn test_handles() -> AppHandles {
+    use crate::actors::agent_actor::model::AgentMsg;
+    use crate::actors::shell_actor::model::ShellMsg;
+    use crate::actors::workspace_actor::model::WorkspaceMsg;
+
+    let (context, _) = tokio::sync::mpsc::channel(1);
+    let (storage, _) = tokio::sync::mpsc::channel(1);
+    let (workspace, _) = tokio::sync::mpsc::channel::<WorkspaceMsg>(1);
+    let (agent, _) = tokio::sync::mpsc::channel::<AgentMsg>(1);
+    let (shell, _) = tokio::sync::mpsc::channel::<ShellMsg>(1);
+    AppHandles::without_profile_actor(
+        ContextHandle { tx: context },
+        StorageHandle { tx: storage },
+        WorkspaceHandle { tx: workspace },
+        AgentHandle { tx: agent },
+        ShellHandle { tx: shell },
+    )
 }

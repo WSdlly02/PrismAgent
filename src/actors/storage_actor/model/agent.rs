@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub struct Agent {
     pub uuid: String,              // Agent的唯一标识符
     pub name: String,              // Agent的展示名称，最好不要重复
+    pub profile: String,           // Agent的配置文件名称，例如 "default"、"custom-profile-1" 等
     pub unit_chain: Vec<String>,   // 存储Agent执行的单元ID列表
     pub unit_head: String,         // 最后一个执行的单元ID
     pub context_refs: Vec<String>, // 上下文引用列表，存储与Agent相关的上下文ID或名称
