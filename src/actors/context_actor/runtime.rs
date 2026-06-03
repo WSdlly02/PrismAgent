@@ -1,10 +1,15 @@
 use crate::actors::context_actor::model::{
-    BuildMessagesRequest, CONTEXT_ACTOR, ContextActor, ContextHandle, ContextMsg,
-    ContextRenderRequest, ContextResolveRequest, ContextResolveResponse,
+    CONTEXT_ACTOR, ContextActor, ContextHandle, ContextMsg, ReadSkillRequest,
+    RenderCapabilitiesRequest, RenderInitialPromptsRequest, ResolveContextRefsRequest,
+    SkillDescriptor, SkillScope,
 };
+use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use directories::BaseDirs;
 use genai::chat::ChatMessage;
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 impl ContextActor {
@@ -19,213 +24,400 @@ impl ContextActor {
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
             match msg {
-                ContextMsg::ListContexts { reply } => {
-                    let _ = reply.send(self.handles.storage.list_contexts().await);
+                ContextMsg::ListContexts {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.handles.storage.list_contexts(workspace_uuid).await);
                 }
-                ContextMsg::ReadContexts { uuids, reply } => {
-                    let _ = reply.send(self.handles.storage.read_contexts(uuids).await);
+                ContextMsg::ReadContexts {
+                    workspace_uuid,
+                    uuids,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        self.handles
+                            .storage
+                            .read_contexts(workspace_uuid, uuids)
+                            .await,
+                    );
                 }
-                ContextMsg::WriteContexts { contexts, reply } => {
-                    let _ = reply.send(self.handles.storage.write_contexts(contexts).await);
+                ContextMsg::WriteContexts {
+                    workspace_uuid,
+                    contexts,
+                    reply,
+                } => {
+                    let _ = reply.send(
+                        self.handles
+                            .storage
+                            .write_contexts(workspace_uuid, contexts)
+                            .await,
+                    );
                 }
-                ContextMsg::Resolve { request, reply } => {
-                    let _ = reply.send(self.resolve(request).await);
+                ContextMsg::ResolveContextRefs { request, reply } => {
+                    let _ = reply.send(self.resolve_context_refs(request).await);
                 }
-                ContextMsg::Render { request, reply } => {
-                    let _ = reply.send(self.render(request).await);
+                ContextMsg::RenderTaskContext { contexts, reply } => {
+                    let _ = reply.send(Ok(render_task_context(&contexts)));
                 }
-                ContextMsg::BuildMessages { request, reply } => {
-                    let _ = reply.send(self.build_messages(request).await);
+                ContextMsg::ReadSkill { request, reply } => {
+                    let _ = reply.send(read_skill(request));
+                }
+                ContextMsg::RenderCapabilities { request, reply } => {
+                    let _ = reply.send(render_capabilities(request));
+                }
+                ContextMsg::RenderInitialPrompts { request, reply } => {
+                    let _ = reply.send(self.render_initial_prompts(request).await);
                 }
             }
         }
     }
 
-    async fn resolve(
+    async fn resolve_context_refs(
         &self,
-        request: ContextResolveRequest,
-    ) -> SubsystemResult<ContextResolveResponse> {
-        let units = if request.unit_uuids.is_empty() {
-            Vec::new()
-        } else {
-            self.handles.storage.read_units(request.unit_uuids).await?
-        };
-
-        let contexts = if request.context_uuids.is_empty() {
-            Vec::new()
-        } else {
-            self.handles
-                .storage
-                .read_contexts(request.context_uuids)
-                .await?
-        };
-
-        Ok(ContextResolveResponse { units, contexts })
+        request: ResolveContextRefsRequest,
+    ) -> SubsystemResult<Vec<Context>> {
+        if request.context_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.handles
+            .storage
+            .read_contexts(request.workspace_uuid, request.context_refs)
+            .await
     }
 
-    async fn render(&self, request: ContextRenderRequest) -> SubsystemResult<String> {
-        let resolved = self
-            .resolve(ContextResolveRequest {
-                unit_uuids: request.unit_uuids,
-                context_uuids: request.context_uuids,
-            })
-            .await?;
-        Ok(render_context_inputs(&resolved))
-    }
-
-    async fn build_messages(
+    async fn render_initial_prompts(
         &self,
-        request: BuildMessagesRequest,
-    ) -> SubsystemResult<Vec<ChatMessage>> {
-        let resolved = self
-            .resolve(ContextResolveRequest {
-                unit_uuids: request.unit_uuids,
-                context_uuids: request.context_uuids,
-            })
-            .await?;
+        request: RenderInitialPromptsRequest,
+    ) -> SubsystemResult<Vec<Unit>> {
+        let capabilities = render_capabilities(RenderCapabilitiesRequest {
+            workspace_uuid: request.workspace_uuid.clone(),
+            profile: request.profile.clone(),
+        })?;
+        let system = render_system_prompt(&request.profile, &capabilities);
+        let mut units = vec![Unit::from_chat_message(ChatMessage::system(system))];
 
-        let mut messages = Vec::new();
-        let rendered_context = render_context_inputs(&resolved);
-        if !rendered_context.trim().is_empty() {
-            messages.push(ChatMessage::system(rendered_context));
+        if request.profile.prompts.user_context_refs {
+            let contexts = self
+                .resolve_context_refs(ResolveContextRefsRequest {
+                    workspace_uuid: request.workspace_uuid,
+                    context_refs: request.context_refs,
+                })
+                .await?;
+            if !contexts.is_empty() {
+                units.push(Unit::from_chat_message(ChatMessage::user(
+                    render_task_context(&contexts),
+                )));
+            }
         }
-        messages.extend(resolved.units.iter().map(|unit| unit.to_chat_message()));
-        if let Some(user_input) = request.user_input
-            && !user_input.trim().is_empty()
-        {
-            messages.push(ChatMessage::user(user_input));
-        }
-        Ok(messages)
+
+        Ok(units)
     }
 }
 
 impl ContextHandle {
-    pub async fn list_contexts(&self) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(ContextMsg::ListContexts { reply: reply_tx })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+    pub async fn list_contexts(
+        &self,
+        workspace_uuid: impl Into<String>,
+    ) -> SubsystemResult<Vec<String>> {
+        request(&self.tx, |reply| ContextMsg::ListContexts {
+            workspace_uuid: workspace_uuid.into(),
+            reply,
+        })
+        .await
     }
 
     pub async fn read_contexts(
         &self,
+        workspace_uuid: impl Into<String>,
         uuids: Vec<String>,
-    ) -> SubsystemResult<Vec<crate::actors::storage_actor::model::context::Context>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(ContextMsg::ReadContexts {
-                uuids,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+    ) -> SubsystemResult<Vec<Context>> {
+        request(&self.tx, |reply| ContextMsg::ReadContexts {
+            workspace_uuid: workspace_uuid.into(),
+            uuids,
+            reply,
+        })
+        .await
     }
 
     pub async fn write_contexts(
         &self,
-        contexts: Vec<crate::actors::storage_actor::model::context::Context>,
+        workspace_uuid: impl Into<String>,
+        contexts: Vec<Context>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(ContextMsg::WriteContexts {
-                contexts,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+        request(&self.tx, |reply| ContextMsg::WriteContexts {
+            workspace_uuid: workspace_uuid.into(),
+            contexts,
+            reply,
+        })
+        .await
     }
 
-    pub async fn resolve(
+    pub async fn resolve_context_refs(
         &self,
-        request: ContextResolveRequest,
-    ) -> SubsystemResult<ContextResolveResponse> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(ContextMsg::Resolve {
-                request,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+        request_body: ResolveContextRefsRequest,
+    ) -> SubsystemResult<Vec<Context>> {
+        request(&self.tx, |reply| ContextMsg::ResolveContextRefs {
+            request: request_body,
+            reply,
+        })
+        .await
     }
 
-    pub async fn render(&self, request: ContextRenderRequest) -> SubsystemResult<String> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(ContextMsg::Render {
-                request,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+    pub async fn render_task_context(&self, contexts: Vec<Context>) -> SubsystemResult<String> {
+        request(&self.tx, |reply| ContextMsg::RenderTaskContext {
+            contexts,
+            reply,
+        })
+        .await
     }
 
-    pub async fn build_messages(
+    pub async fn read_skill(
         &self,
-        request: BuildMessagesRequest,
-    ) -> SubsystemResult<Vec<ChatMessage>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(ContextMsg::BuildMessages {
-                request,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+        request_body: ReadSkillRequest,
+    ) -> SubsystemResult<SkillDescriptor> {
+        request(&self.tx, |reply| ContextMsg::ReadSkill {
+            request: request_body,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn render_capabilities(
+        &self,
+        request_body: RenderCapabilitiesRequest,
+    ) -> SubsystemResult<String> {
+        request(&self.tx, |reply| ContextMsg::RenderCapabilities {
+            request: request_body,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn render_initial_prompts(
+        &self,
+        request_body: RenderInitialPromptsRequest,
+    ) -> SubsystemResult<Vec<Unit>> {
+        request(&self.tx, |reply| ContextMsg::RenderInitialPrompts {
+            request: request_body,
+            reply,
+        })
+        .await
     }
 }
 
-fn render_context_inputs(resolved: &ContextResolveResponse) -> String {
+async fn request<T>(
+    tx: &mpsc::Sender<ContextMsg>,
+    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> ContextMsg,
+) -> SubsystemResult<T> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(message(reply_tx))
+        .await
+        .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
+    reply_rx
+        .await
+        .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
+}
+
+fn render_system_prompt(
+    profile: &crate::actors::profile_actor::model::Profile,
+    capabilities: &str,
+) -> String {
+    let system = &profile.prompts.system;
+    [
+        system.identity.trim(),
+        system.behavior.trim(),
+        system.response_style.trim(),
+        &system
+            .capabilities
+            .replace("{skills} {tools}", capabilities),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n")
+}
+
+fn render_task_context(contexts: &[Context]) -> String {
+    let rendered = contexts
+        .iter()
+        .map(|context| format!("## {}\n\n{}", context.title.trim(), context.content.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    format!("# Task Context\n\n{rendered}")
+}
+
+fn render_capabilities(request: RenderCapabilitiesRequest) -> SubsystemResult<String> {
     let mut sections = Vec::new();
+    let skills = list_skills(&request.workspace_uuid)?
+        .into_iter()
+        .map(|skill| {
+            format!(
+                "- {} ({:?}):\n{}",
+                skill.name,
+                skill.scope,
+                skill.frontmatter.trim()
+            )
+        })
+        .collect::<Vec<_>>();
+    if !skills.is_empty() {
+        sections.push(format!("Available skills:\n{}", skills.join("\n\n")));
+    }
+    if !request.profile.tools.available_tools.is_empty() {
+        sections.push(format!(
+            "Available tools: {}.",
+            request.profile.tools.available_tools.join(", ")
+        ));
+    }
+    if request.profile.tools.yolo {
+        sections.push("Tool approval mode: yolo.".to_string());
+    } else if !request.profile.tools.auto_approve.is_empty() {
+        sections.push(format!(
+            "Auto-approved tools: {}.",
+            request.profile.tools.auto_approve.join(", ")
+        ));
+    } else {
+        sections.push("Tool approval mode: ask before tool execution.".to_string());
+    }
+    Ok(sections.join("\n\n"))
+}
 
-    if !resolved.contexts.is_empty() {
-        let rendered_contexts = resolved
-            .contexts
-            .iter()
-            .map(|context| {
-                format!(
-                    "## Context: {}\n\n{}\n",
-                    context.title.trim(),
-                    context.content.trim()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        sections.push(format!("# Context Documents\n\n{rendered_contexts}"));
+fn read_skill(request: ReadSkillRequest) -> SubsystemResult<SkillDescriptor> {
+    let workspace_path = workspace_skill_path(&request.workspace_uuid, &request.name)?;
+    if workspace_path.is_file() {
+        return read_skill_file(request.name, SkillScope::Workspace, workspace_path);
+    }
+    let global_path = global_skill_path(&request.name)?;
+    if global_path.is_file() {
+        return read_skill_file(request.name, SkillScope::Global, global_path);
+    }
+    Err(SubsystemError::not_found("skill", request.name))
+}
+
+fn list_skills(workspace_uuid: &str) -> SubsystemResult<Vec<SkillDescriptor>> {
+    let mut skills = Vec::new();
+    collect_skills(
+        SkillScope::Global,
+        prismagent_root()?.join("skills"),
+        &mut skills,
+    )?;
+    collect_skills(
+        SkillScope::Workspace,
+        workspaces_root()?.join(workspace_uuid).join("skills"),
+        &mut skills,
+    )?;
+    skills.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(skills)
+}
+
+fn collect_skills(
+    scope: SkillScope,
+    root: PathBuf,
+    skills: &mut Vec<SkillDescriptor>,
+) -> SubsystemResult<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        let skill_path = path.join("SKILL.md");
+        if !skill_path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        skills.push(read_skill_file(
+            name.to_string(),
+            scope.clone(),
+            skill_path,
+        )?);
+    }
+    Ok(())
+}
+
+fn read_skill_file(
+    name: String,
+    scope: SkillScope,
+    path: PathBuf,
+) -> SubsystemResult<SkillDescriptor> {
+    let data = std::fs::read_to_string(&path)
+        .map_err(|error| SubsystemError::io(format!("{}: {error}", path.display())))?;
+    let frontmatter = extract_frontmatter(&data).ok_or_else(|| {
+        SubsystemError::invalid_input(format!("{}: missing frontmatter", path.display()))
+    })?;
+    Ok(SkillDescriptor {
+        name,
+        scope,
+        path,
+        frontmatter,
+    })
+}
+
+fn extract_frontmatter(data: &str) -> Option<String> {
+    let mut lines = data.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let mut frontmatter = Vec::new();
+    for line in lines {
+        if line.trim() == "---" {
+            return Some(frontmatter.join("\n"));
+        }
+        frontmatter.push(line.to_string());
+    }
+    None
+}
+
+fn workspace_skill_path(workspace_uuid: &str, name: &str) -> SubsystemResult<PathBuf> {
+    Ok(workspaces_root()?
+        .join(workspace_uuid)
+        .join("skills")
+        .join(name)
+        .join("SKILL.md"))
+}
+
+fn global_skill_path(name: &str) -> SubsystemResult<PathBuf> {
+    Ok(prismagent_root()?
+        .join("skills")
+        .join(name)
+        .join("SKILL.md"))
+}
+
+fn workspaces_root() -> SubsystemResult<PathBuf> {
+    Ok(prismagent_root()?.join("workspaces"))
+}
+
+fn prismagent_root() -> SubsystemResult<PathBuf> {
+    Ok(BaseDirs::new()
+        .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
+        .home_dir()
+        .join(".prismagent"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_frontmatter() {
+        let data = "---\nname: demo\ndescription: test\n---\nbody";
+        assert_eq!(
+            extract_frontmatter(data).unwrap(),
+            "name: demo\ndescription: test"
+        );
     }
 
-    if !resolved.units.is_empty() {
-        let rendered_units = resolved
-            .units
-            .iter()
-            .map(|unit| {
-                let content = serde_json::to_string_pretty(&unit.content)
-                    .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"));
-                format!("## Unit: {}\n\n```json\n{}\n```\n", unit.uuid, content)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        sections.push(format!("# Referenced Units\n\n{rendered_units}"));
+    #[test]
+    fn renders_task_context_documents() {
+        let rendered = render_task_context(&[Context {
+            uuid: "ctx".to_string(),
+            title: "Task".to_string(),
+            content: "Do the thing.".to_string(),
+            created_at: 0,
+        }]);
+        assert!(rendered.contains("# Task Context"));
+        assert!(rendered.contains("## Task"));
+        assert!(rendered.contains("Do the thing."));
     }
-
-    sections.join("\n\n")
 }

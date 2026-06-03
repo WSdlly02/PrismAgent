@@ -59,13 +59,13 @@ pub struct ModelConfigSection {
 pub struct FinalModelConfig {
     pub provider: String,
     pub model_name: String,
-    pub api_key_env: String,
     pub api_key: String,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PromptsConfigSection {
     pub system: SystemPromptConfig,
     pub user_context_refs: bool, // whether to use context_refs as first user message
+    pub auto_loop: bool, // whether to automatically loop until the "finish" tool is called, without asking for user confirmation after each tool call
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -98,6 +98,7 @@ system.response_style = "concise and informative"
 system.capabilities = "{skills} {tools}"
 
 user_context_refs = false
+auto_loop = false
 
 [tools]
 yolo = false

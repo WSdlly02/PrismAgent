@@ -9,7 +9,7 @@ pub struct Unit {
     pub visibility: UnitVisibility,
 
     pub content: genai::chat::ChatMessage, // 直接使用 genai 的 ChatMessage 结构
-    pub estimated_tokens: u32,             // 估算 token 数量
+    pub token_usage: Option<genai::chat::Usage>, // LLM 返回的真实请求级 token usage, 只有assistant消息才会有值
 
     pub metadata: HashMap<String, String>,
     pub created_at: i64,
@@ -23,11 +23,18 @@ impl Unit {
     }
 
     pub fn from_chat_message(message: genai::chat::ChatMessage) -> Self {
+        Self::from_chat_message_with_usage(message, None)
+    }
+
+    pub fn from_chat_message_with_usage(
+        message: genai::chat::ChatMessage,
+        token_usage: Option<genai::chat::Usage>,
+    ) -> Self {
         Self {
             uuid: Uuid::now_v7().to_string(),
             visibility: UnitVisibility::Public,
-            estimated_tokens: message.size() as u32,
             content: message,
+            token_usage,
             metadata: HashMap::new(),
             created_at: chrono::Utc::now().timestamp(),
         }

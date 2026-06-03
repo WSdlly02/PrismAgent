@@ -83,7 +83,6 @@ impl ProfileActor {
         Ok(FinalModelConfig {
             provider: model.provider,
             model_name: model.model_name,
-            api_key_env: model.api_key_env,
             api_key,
         })
     }

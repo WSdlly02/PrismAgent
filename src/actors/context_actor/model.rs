@@ -1,9 +1,10 @@
+use crate::actors::profile_actor::model::Profile;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
-use genai::chat::ChatMessage;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
 pub const CONTEXT_ACTOR: &str = "context";
@@ -20,55 +21,77 @@ pub struct ContextActor {
 
 pub enum ContextMsg {
     ListContexts {
+        workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ReadContexts {
+        workspace_uuid: String,
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
     },
     WriteContexts {
+        workspace_uuid: String,
         contexts: Vec<Context>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
-    Resolve {
-        request: ContextResolveRequest,
-        reply: oneshot::Sender<SubsystemResult<ContextResolveResponse>>,
+    ResolveContextRefs {
+        request: ResolveContextRefsRequest,
+        reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
     },
-    Render {
-        request: ContextRenderRequest,
+    RenderTaskContext {
+        contexts: Vec<Context>,
         reply: oneshot::Sender<SubsystemResult<String>>,
     },
-    BuildMessages {
-        request: BuildMessagesRequest,
-        reply: oneshot::Sender<SubsystemResult<Vec<ChatMessage>>>,
+    ReadSkill {
+        request: ReadSkillRequest,
+        reply: oneshot::Sender<SubsystemResult<SkillDescriptor>>,
+    },
+    RenderCapabilities {
+        request: RenderCapabilitiesRequest,
+        reply: oneshot::Sender<SubsystemResult<String>>,
+    },
+    RenderInitialPrompts {
+        request: RenderInitialPromptsRequest,
+        reply: oneshot::Sender<SubsystemResult<Vec<Unit>>>,
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct ContextResolveRequest {
-    #[serde(default)]
-    pub unit_uuids: Vec<String>,
-    #[serde(default)]
-    pub context_uuids: Vec<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveContextRefsRequest {
+    pub workspace_uuid: String,
+    pub context_refs: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct ContextRenderRequest {
-    #[serde(default)]
-    pub unit_uuids: Vec<String>,
-    #[serde(default)]
-    pub context_uuids: Vec<String>,
+#[derive(Debug, Clone)]
+pub struct RenderInitialPromptsRequest {
+    pub workspace_uuid: String,
+    pub context_refs: Vec<String>,
+    pub profile: Profile,
 }
 
-#[derive(Debug, Default)]
-pub struct BuildMessagesRequest {
-    pub unit_uuids: Vec<String>,
-    pub context_uuids: Vec<String>,
-    pub user_input: Option<String>,
+#[derive(Debug, Clone)]
+pub struct RenderCapabilitiesRequest {
+    pub workspace_uuid: String,
+    pub profile: Profile,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ContextResolveResponse {
-    pub units: Vec<Unit>,
-    pub contexts: Vec<Context>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadSkillRequest {
+    pub workspace_uuid: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDescriptor {
+    pub name: String,
+    pub scope: SkillScope,
+    pub path: PathBuf,
+    pub frontmatter: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillScope {
+    Global,
+    Workspace,
 }
