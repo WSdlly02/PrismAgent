@@ -27,6 +27,10 @@ pub enum WorkspaceMsg {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<bool>>,
     },
+    Get {
+        workspace_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<Workspace>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

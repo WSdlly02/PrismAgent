@@ -47,6 +47,12 @@ impl WorkspaceActor {
                 } => {
                     let _ = reply.send(Ok(self.workspaces.contains_key(&workspace_uuid)));
                 }
+                WorkspaceMsg::Get {
+                    workspace_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.get(&workspace_uuid));
+                }
             }
         }
     }
@@ -74,6 +80,13 @@ impl WorkspaceActor {
             .collect::<Vec<_>>();
         workspaces.sort_by(|left, right| left.workspace_path.cmp(&right.workspace_path));
         Ok(workspaces)
+    }
+
+    fn get(&self, workspace_uuid: &str) -> SubsystemResult<Workspace> {
+        self.workspaces
+            .get(workspace_uuid)
+            .cloned()
+            .ok_or_else(|| SubsystemError::not_found("workspace", workspace_uuid))
     }
 }
 
@@ -116,6 +129,20 @@ impl WorkspaceHandle {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(WorkspaceMsg::Contains {
+                workspace_uuid: workspace_uuid.into(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?
+    }
+
+    pub async fn get(&self, workspace_uuid: impl Into<String>) -> SubsystemResult<Workspace> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(WorkspaceMsg::Get {
                 workspace_uuid: workspace_uuid.into(),
                 reply: reply_tx,
             })
