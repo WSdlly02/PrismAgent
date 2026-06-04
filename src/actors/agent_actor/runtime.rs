@@ -7,6 +7,7 @@ use crate::actors::agent_actor::pipeline::{
     clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
     tool_batch_is_auto_approved, tool_response_units,
 };
+use crate::actors::context_actor::model::RenderInitialPromptsRequest;
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
@@ -125,9 +126,30 @@ impl AgentActor {
 
     async fn create(&mut self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
         let workspace_uuid = request.workspace_uuid.clone();
-        let agent = self.handles.storage.create_agent(request).await?;
+        let profile_name = request.profile.clone();
+        let context_refs = request.context_refs.clone();
+        let has_initial_task = !context_refs.is_empty();
+        let profile = self.handles.profile.profile(&profile_name).await?;
+        let auto_loop = profile.prompts.auto_loop;
+        let initial_units = self
+            .handles
+            .context
+            .render_initial_prompts(RenderInitialPromptsRequest {
+                workspace_uuid: workspace_uuid.clone(),
+                context_refs,
+                profile,
+            })
+            .await?;
+        let mut agent = self.handles.storage.create_agent(request).await?;
+        if !initial_units.is_empty() {
+            agent = self
+                .handles
+                .storage
+                .append_agent_units(workspace_uuid.clone(), agent.uuid.clone(), initial_units)
+                .await?;
+        }
         self.agent_workspace
-            .insert(agent.uuid.clone(), workspace_uuid);
+            .insert(agent.uuid.clone(), workspace_uuid.clone());
         self.runtimes.insert(
             agent.uuid.clone(),
             AgentRuntime {
@@ -137,7 +159,10 @@ impl AgentActor {
                 active_tool_batch: None,
             },
         );
-        self.agents.insert(agent.uuid.clone(), agent.clone()); // Clone agent must be carefull !!!
+        self.agents.insert(agent.uuid.clone(), agent.clone());
+        if has_initial_task && auto_loop {
+            self.spawn_llm_continuation(&agent.uuid).await?;
+        }
         Ok(agent)
     }
 

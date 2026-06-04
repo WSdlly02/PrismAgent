@@ -64,7 +64,6 @@ pub struct FinalModelConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PromptsConfigSection {
     pub system: SystemPromptConfig,
-    pub user_context_refs: bool, // whether to use context_refs as first user message
     pub auto_loop: bool, // whether to automatically loop until the "finish" tool is called, without asking for user confirmation after each tool call
 }
 

@@ -98,20 +98,21 @@ impl ContextActor {
             profile: request.profile.clone(),
         })?;
         let system = render_system_prompt(&request.profile, &capabilities);
-        let mut units = vec![Unit::from_chat_message(ChatMessage::system(system))];
+        let mut system_unit = Unit::from_chat_message(ChatMessage::system(system));
+        system_unit.visibility =
+            crate::actors::storage_actor::model::unit::UnitVisibility::Internal;
+        let mut units = vec![system_unit];
 
-        if request.profile.prompts.user_context_refs {
+        if !request.context_refs.is_empty() {
             let contexts = self
                 .resolve_context_refs(ResolveContextRefsRequest {
                     workspace_uuid: request.workspace_uuid,
                     context_refs: request.context_refs,
                 })
                 .await?;
-            if !contexts.is_empty() {
-                units.push(Unit::from_chat_message(ChatMessage::user(
-                    render_task_context(&contexts),
-                )));
-            }
+            units.push(Unit::from_chat_message(ChatMessage::user(
+                render_task_context(&contexts),
+            )));
         }
 
         Ok(units)
