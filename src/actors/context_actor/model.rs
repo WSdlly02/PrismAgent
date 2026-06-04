@@ -1,5 +1,5 @@
 use crate::actors::profile_actor::model::Profile;
-use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
@@ -33,6 +33,10 @@ pub enum ContextMsg {
         workspace_uuid: String,
         contexts: Vec<Context>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
+    },
+    CreateContext {
+        request: ContextCreateRequest,
+        reply: oneshot::Sender<SubsystemResult<Context>>,
     },
     ResolveContextRefs {
         request: ResolveContextRefsRequest,

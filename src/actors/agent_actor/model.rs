@@ -1,4 +1,4 @@
-use crate::actors::storage_actor::model::agent::Agent;
+use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
@@ -26,6 +26,10 @@ pub enum AgentMsg {
     List {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<AgentSummary>>>,
+    },
+    Create {
+        request: AgentCreateRequest,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     Contains {
         workspace_uuid: String,

@@ -1,11 +1,15 @@
-use crate::actors::storage_actor::model::agent::Agent;
-use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
+use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
-use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowReplaceEntry};
+use crate::actors::storage_actor::model::workflow::{
+    Workflow, WorkflowCreateRequest, WorkflowReplaceEntry,
+};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::id::petname_uuid;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
@@ -62,6 +66,9 @@ impl StorageActor {
                 } => {
                     let _ = reply.send(self.write_agents(&workspace_uuid, &agents));
                 }
+                StorageMsg::CreateAgent { request, reply } => {
+                    let _ = reply.send(self.create_agent(request));
+                }
                 StorageMsg::AppendAgentUnits {
                     workspace_uuid,
                     agent_uuid,
@@ -111,6 +118,9 @@ impl StorageActor {
                 } => {
                     let _ = reply.send(self.write_contexts(&workspace_uuid, &contexts));
                 }
+                StorageMsg::CreateContext { request, reply } => {
+                    let _ = reply.send(self.create_context(request));
+                }
                 StorageMsg::ListWorkflows {
                     workspace_uuid,
                     reply,
@@ -130,6 +140,9 @@ impl StorageActor {
                     reply,
                 } => {
                     let _ = reply.send(self.write_workflows(&workspace_uuid, &workflows));
+                }
+                StorageMsg::CreateWorkflow { request, reply } => {
+                    let _ = reply.send(self.create_workflow(request));
                 }
                 StorageMsg::ReplaceWorkflows {
                     workspace_uuid,
@@ -187,6 +200,29 @@ impl StorageActor {
             written.push(agent.uuid.clone());
         }
         Ok(written)
+    }
+
+    fn create_agent(&self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
+        let name = non_empty_string(request.name, "agent name")?;
+        let profile = non_empty_string(request.profile, "agent profile")?;
+        let now = chrono::Utc::now().timestamp();
+        let agent = Agent {
+            uuid: petname_uuid(self.list_agents(&request.workspace_uuid)?)?,
+            name,
+            profile,
+            unit_chain: Vec::new(),
+            unit_head: String::new(),
+            context_refs: request.context_refs,
+            context_out: request.context_out,
+            snapshots: HashMap::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        write_json_create_only(
+            &self.agent_path(&request.workspace_uuid, &agent.uuid)?,
+            &agent,
+        )?;
+        Ok(agent)
     }
 
     fn append_agent_units(
@@ -259,6 +295,20 @@ impl StorageActor {
         Ok(written)
     }
 
+    fn create_context(&self, request: ContextCreateRequest) -> SubsystemResult<Context> {
+        let context = Context {
+            uuid: petname_uuid(self.list_contexts(&request.workspace_uuid)?)?,
+            title: non_empty_string(request.title, "context title")?,
+            content: non_empty_string(request.content, "context content")?,
+            created_at: chrono::Utc::now().timestamp(),
+        };
+        write_json_create_only(
+            &self.context_path(&request.workspace_uuid, &context.uuid)?,
+            &context,
+        )?;
+        Ok(context)
+    }
+
     fn list_workflows(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
         list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("workflows"))
     }
@@ -288,6 +338,23 @@ impl StorageActor {
             written.push(workflow.uuid.clone());
         }
         Ok(written)
+    }
+
+    fn create_workflow(&self, request: WorkflowCreateRequest) -> SubsystemResult<Workflow> {
+        let now = chrono::Utc::now().timestamp();
+        let workflow = Workflow {
+            uuid: petname_uuid(self.list_workflows(&request.workspace_uuid)?)?,
+            title: non_empty_string(request.title, "workflow title")?,
+            content: non_empty_string(request.content, "workflow content")?,
+            metadata: request.metadata,
+            created_at: now,
+            updated_at: now,
+        };
+        write_json_create_only(
+            &self.workflow_path(&request.workspace_uuid, &workflow.uuid)?,
+            &workflow,
+        )?;
+        Ok(workflow)
     }
 
     fn replace_workflows(
@@ -479,6 +546,20 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
+    pub async fn create_agent(&self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::CreateAgent {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
     pub async fn append_agent_units(
         &self,
         workspace_uuid: impl Into<String>,
@@ -610,6 +691,20 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
+    pub async fn create_context(&self, request: ContextCreateRequest) -> SubsystemResult<Context> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::CreateContext {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
     pub async fn list_workflows(
         &self,
         workspace_uuid: impl Into<String>,
@@ -656,6 +751,23 @@ impl StorageHandle {
             .send(StorageMsg::WriteWorkflows {
                 workspace_uuid: workspace_uuid.into(),
                 workflows,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn create_workflow(
+        &self,
+        request: WorkflowCreateRequest,
+    ) -> SubsystemResult<Workflow> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::CreateWorkflow {
+                request,
                 reply: reply_tx,
             })
             .await
@@ -844,4 +956,15 @@ fn is_safe_object_name(name: &str) -> bool {
         && name != "."
         && name != ".."
         && !name.ends_with(".json")
+}
+
+fn non_empty_string(value: String, field: &'static str) -> SubsystemResult<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(SubsystemError::invalid_input(format!(
+            "{field} must not be empty"
+        )))
+    } else {
+        Ok(trimmed.to_string())
+    }
 }

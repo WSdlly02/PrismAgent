@@ -3,7 +3,7 @@ use crate::actors::context_actor::model::{
     RenderCapabilitiesRequest, RenderInitialPromptsRequest, ResolveContextRefsRequest,
     SkillDescriptor, SkillScope,
 };
-use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
@@ -53,6 +53,9 @@ impl ContextActor {
                             .write_contexts(workspace_uuid, contexts)
                             .await,
                     );
+                }
+                ContextMsg::CreateContext { request, reply } => {
+                    let _ = reply.send(self.handles.storage.create_context(request).await);
                 }
                 ContextMsg::ResolveContextRefs { request, reply } => {
                     let _ = reply.send(self.resolve_context_refs(request).await);
@@ -148,6 +151,17 @@ impl ContextHandle {
         request(&self.tx, |reply| ContextMsg::WriteContexts {
             workspace_uuid: workspace_uuid.into(),
             contexts,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn create_context(
+        &self,
+        request_body: ContextCreateRequest,
+    ) -> SubsystemResult<Context> {
+        request(&self.tx, |reply| ContextMsg::CreateContext {
+            request: request_body,
             reply,
         })
         .await

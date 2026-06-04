@@ -1,11 +1,13 @@
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::actors::storage_actor::model::agent::Agent;
-use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
+use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
-use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowReplaceEntry};
+use crate::actors::storage_actor::model::workflow::{
+    Workflow, WorkflowCreateRequest, WorkflowReplaceEntry,
+};
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
 
@@ -46,6 +48,10 @@ pub enum StorageMsg {
         agents: Vec<Agent>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
+    CreateAgent {
+        request: AgentCreateRequest,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
+    },
     AppendAgentUnits {
         workspace_uuid: String,
         agent_uuid: String,
@@ -80,6 +86,10 @@ pub enum StorageMsg {
         contexts: Vec<Context>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
+    CreateContext {
+        request: ContextCreateRequest,
+        reply: oneshot::Sender<SubsystemResult<Context>>,
+    },
     ListWorkflows {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
@@ -93,6 +103,10 @@ pub enum StorageMsg {
         workspace_uuid: String,
         workflows: Vec<Workflow>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
+    },
+    CreateWorkflow {
+        request: WorkflowCreateRequest,
+        reply: oneshot::Sender<SubsystemResult<Workflow>>,
     },
     ReplaceWorkflows {
         workspace_uuid: String,

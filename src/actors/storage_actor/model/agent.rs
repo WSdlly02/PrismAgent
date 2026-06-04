@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// $PWD/.prismagent/agents/{uuid}.json
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Agent {
     pub uuid: String,              // Agent的唯一标识符
     pub name: String,              // Agent的展示名称，最好不要重复
@@ -11,6 +11,7 @@ pub struct Agent {
     pub unit_chain: Vec<String>,   // 存储Agent执行的单元ID列表
     pub unit_head: String,         // 最后一个执行的单元ID
     pub context_refs: Vec<String>, // 上下文引用列表，存储与Agent相关的上下文ID或名称
+    pub context_out: Vec<String>,  // 上下文输出列表，存储Agent执行过程中产生的上下文输出ID或名称
     /// 快照UID到单元UUID列表的映射
     ///
     /// 快照UID可以是一个时间戳字符串，也可以是一个用户指定的名称，例如
@@ -37,17 +38,18 @@ pub struct AgentWriteRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub struct AgentCreateRequest {
+    pub workspace_uuid: String,
+    pub name: String,
+    pub profile: String,
+    #[serde(default)]
+    pub context_refs: Vec<String>,
+    #[serde(default)]
+    pub context_out: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AgentAppendUnitsRequest {
     pub agent_uuid: String,
     pub units: Vec<Unit>,
-}
-
-/// $PWD/.prismagent/agents/{uuid}.lock
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AgentLock {
-    pub pid: u32,             // 锁定进程的 PID
-    pub owner: String,        // 锁定者的标识
-    pub locked_at: i64,       // 锁定时间戳
-    pub hostname: String,     // 锁定者的主机名
-    pub note: Option<String>, // 锁定备注信息
 }

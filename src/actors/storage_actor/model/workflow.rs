@@ -23,6 +23,15 @@ pub struct WorkflowWriteRequest {
     pub workflows: Vec<Workflow>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WorkflowCreateRequest {
+    pub workspace_uuid: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WorkflowReplaceEntry {
     pub uuid: String,

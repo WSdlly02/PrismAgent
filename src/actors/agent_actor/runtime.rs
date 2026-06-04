@@ -7,7 +7,7 @@ use crate::actors::agent_actor::pipeline::{
     clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
     tool_batch_is_auto_approved, tool_response_units,
 };
-use crate::actors::storage_actor::model::agent::Agent;
+use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
@@ -39,6 +39,9 @@ impl AgentActor {
                     reply,
                 } => {
                     let _ = reply.send(self.list(&workspace_uuid).await);
+                }
+                AgentMsg::Create { request, reply } => {
+                    let _ = reply.send(self.create(request).await);
                 }
                 AgentMsg::Contains {
                     workspace_uuid,
@@ -118,6 +121,24 @@ impl AgentActor {
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| left.agent_name.cmp(&right.agent_name));
         Ok(agents)
+    }
+
+    async fn create(&mut self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
+        let workspace_uuid = request.workspace_uuid.clone();
+        let agent = self.handles.storage.create_agent(request).await?;
+        self.agent_workspace
+            .insert(agent.uuid.clone(), workspace_uuid);
+        self.runtimes.insert(
+            agent.uuid.clone(),
+            AgentRuntime {
+                status: AgentStatus::Idle,
+                inference_uuid: None,
+                pending_tool_batch: None,
+                active_tool_batch: None,
+            },
+        );
+        self.agents.insert(agent.uuid.clone(), agent.clone()); // Clone agent must be carefull !!!
+        Ok(agent)
     }
 
     fn contains(&self, workspace_uuid: &str, agent_uuid: &str) -> bool {
@@ -553,6 +574,14 @@ impl AgentHandle {
     ) -> SubsystemResult<Vec<AgentSummary>> {
         request(&self.tx, |reply| AgentMsg::List {
             workspace_uuid: workspace_uuid.into(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn create(&self, request_body: AgentCreateRequest) -> SubsystemResult<Agent> {
+        request(&self.tx, |reply| AgentMsg::Create {
+            request: request_body,
             reply,
         })
         .await

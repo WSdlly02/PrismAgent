@@ -3,7 +3,7 @@ use crate::actors::tools_actor::model::{
     TOOLS_ACTOR, ToolApproval, ToolBatchRequest, ToolBatchResponse, ToolExecutionContext,
     ToolExecutor, ToolFuture, ToolStreamEvent, ToolsActor, ToolsHandle, ToolsMsg,
 };
-use crate::actors::tools_actor::{fs, shell, web};
+use crate::actors::tools_actor::{fs, prismagent, shell, web};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use genai::chat::{ChatMessage, Tool, ToolCall, ToolResponse};
@@ -54,6 +54,9 @@ register_tools! {
     shell::exec / execute,
     web::search / execute_search,
     web::fetch / execute_fetch,
+    prismagent::agent_new / execute_agent_new,
+    prismagent::context_new / execute_context_new,
+    prismagent::workflow_new / execute_workflow_new,
 }
 
 impl ToolsActor {

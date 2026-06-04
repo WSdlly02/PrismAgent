@@ -18,3 +18,10 @@ pub struct ContextReadRequest {
 pub struct ContextWriteRequest {
     pub contexts: Vec<Context>,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ContextCreateRequest {
+    pub workspace_uuid: String,
+    pub title: String,
+    pub content: String,
+}
