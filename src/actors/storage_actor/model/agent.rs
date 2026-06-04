@@ -1,3 +1,4 @@
+use crate::actors::storage_actor::model::unit::Unit;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -36,15 +37,9 @@ pub struct AgentWriteRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct AgentReplaceEntry {
-    pub uuid: String,
-    pub old_data: Vec<u8>,
-    pub agent: Agent,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct AgentReplaceRequest {
-    pub entries: Vec<AgentReplaceEntry>,
+pub struct AgentAppendUnitsRequest {
+    pub agent_uuid: String,
+    pub units: Vec<Unit>,
 }
 
 /// $PWD/.prismagent/agents/{uuid}.lock

@@ -1,4 +1,4 @@
-use crate::actors::storage_actor::model::agent::{Agent, AgentReplaceEntry};
+use crate::actors::storage_actor::model::agent::Agent;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
@@ -25,7 +25,11 @@ impl StorageActor {
         root: PathBuf,
     ) -> SubsystemResult<Self> {
         std::fs::create_dir_all(&root)?;
-        Ok(Self { rx, root, handles })
+        Ok(Self {
+            rx,
+            root,
+            _handles: handles,
+        })
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
@@ -58,12 +62,14 @@ impl StorageActor {
                 } => {
                     let _ = reply.send(self.write_agents(&workspace_uuid, &agents));
                 }
-                StorageMsg::ReplaceAgents {
+                StorageMsg::AppendAgentUnits {
                     workspace_uuid,
-                    entries,
+                    agent_uuid,
+                    units,
                     reply,
                 } => {
-                    let _ = reply.send(self.replace_agents(&workspace_uuid, entries));
+                    let _ =
+                        reply.send(self.append_agent_units(&workspace_uuid, &agent_uuid, &units));
                 }
                 StorageMsg::ListUnits {
                     workspace_uuid,
@@ -183,22 +189,26 @@ impl StorageActor {
         Ok(written)
     }
 
-    fn replace_agents(
+    fn append_agent_units(
         &self,
         workspace_uuid: &str,
-        entries: Vec<AgentReplaceEntry>,
-    ) -> SubsystemResult<Vec<String>> {
-        let mut replaced = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let new_data = to_pretty_json_vec(&entry.agent)?;
-            atomic_replace_file(
-                &self.agent_path(workspace_uuid, &entry.uuid)?,
-                &entry.old_data,
-                &new_data,
-            )?;
-            replaced.push(entry.uuid);
+        agent_uuid: &str,
+        units: &[Unit],
+    ) -> SubsystemResult<Agent> {
+        let agent_path = self.agent_path(workspace_uuid, agent_uuid)?;
+        let old_data = std::fs::read(&agent_path)?;
+        let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
+            SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
+        })?;
+        for unit in units {
+            write_json_create_only(&self.unit_path(workspace_uuid, &unit.uuid)?, unit)?;
+            agent.unit_chain.push(unit.uuid.clone());
+            agent.unit_head = unit.uuid.clone();
         }
-        Ok(replaced)
+        agent.updated_at = chrono::Utc::now().timestamp();
+        let new_data = to_pretty_json_vec(&agent)?;
+        atomic_replace_file(&agent_path, &old_data, &new_data)?;
+        Ok(agent)
     }
 
     fn list_units(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
@@ -469,16 +479,18 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn replace_agents(
+    pub async fn append_agent_units(
         &self,
         workspace_uuid: impl Into<String>,
-        entries: Vec<AgentReplaceEntry>,
-    ) -> SubsystemResult<Vec<String>> {
+        agent_uuid: impl Into<String>,
+        units: Vec<Unit>,
+    ) -> SubsystemResult<Agent> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
-            .send(StorageMsg::ReplaceAgents {
+            .send(StorageMsg::AppendAgentUnits {
                 workspace_uuid: workspace_uuid.into(),
-                entries,
+                agent_uuid: agent_uuid.into(),
+                units,
                 reply: reply_tx,
             })
             .await

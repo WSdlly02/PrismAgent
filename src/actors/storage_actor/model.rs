@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::actors::storage_actor::model::agent::{Agent, AgentReplaceEntry};
+use crate::actors::storage_actor::model::agent::Agent;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
@@ -25,7 +25,7 @@ pub struct StorageHandle {
 pub struct StorageActor {
     pub(super) rx: mpsc::Receiver<StorageMsg>,
     pub(super) root: PathBuf,
-    pub(super) handles: AppHandles,
+    pub(super) _handles: AppHandles,
 }
 
 pub enum StorageMsg {
@@ -46,10 +46,11 @@ pub enum StorageMsg {
         agents: Vec<Agent>,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
-    ReplaceAgents {
+    AppendAgentUnits {
         workspace_uuid: String,
-        entries: Vec<AgentReplaceEntry>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
+        agent_uuid: String,
+        units: Vec<Unit>,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     ListUnits {
         workspace_uuid: String,
