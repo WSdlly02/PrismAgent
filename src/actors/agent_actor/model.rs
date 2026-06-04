@@ -1,7 +1,11 @@
+use crate::actors::storage_actor::model::agent::Agent;
+use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
+use crate::handles::AppHandles;
+use genai::chat::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 pub const AGENT_ACTOR: &str = "agent";
 
@@ -12,17 +16,25 @@ pub struct AgentHandle {
 
 pub struct AgentActor {
     pub(super) rx: mpsc::Receiver<AgentMsg>,
-    pub(super) agents: HashMap<String, AgentState>,
+    pub(super) agents: HashMap<String, Agent>, // agent_uuid -> Agent
+    pub(super) agent_workspace: HashMap<String, String>, // agent_uuid -> workspace_uuid
+    pub(super) runtimes: HashMap<String, AgentRuntime>, // agent_uuid -> AgentRuntime
+    pub(super) handles: AppHandles,
 }
 
 pub enum AgentMsg {
+    List {
+        workspace_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<Vec<AgentSummary>>>,
+    },
+    Contains {
+        workspace_uuid: String,
+        agent_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<bool>>,
+    },
     Snapshot {
         agent_uuid: String,
         reply: oneshot::Sender<SubsystemResult<AgentSnapshot>>,
-    },
-    Subscribe {
-        agent_uuid: String,
-        reply: oneshot::Sender<SubsystemResult<broadcast::Receiver<AgentEvent>>>,
     },
     SendMessage {
         request: SendMessageRequest,
@@ -36,46 +48,53 @@ pub enum AgentMsg {
         agent_uuid: String,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
+    InferenceFinished {
+        agent_uuid: String,
+        inference_uuid: String,
+        result: SubsystemResult<AgentInferenceOutput>,
+    },
+    ToolBatchFinished {
+        agent_uuid: String,
+        job_uuid: String,
+        result: SubsystemResult<ToolBatchOutput>,
+    },
 }
 
-pub struct AgentState {
-    pub uuid: String,
-    pub name: String,
-    pub units: Vec<AgentUnit>,
+pub struct AgentRuntime {
     pub status: AgentStatus,
-    pub events: broadcast::Sender<AgentEvent>,
+    pub inference_uuid: Option<String>,
+    pub pending_tool_batch: Option<PendingToolBatch>,
+    pub active_tool_batch: Option<PendingToolBatch>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSnapshot {
-    pub agent_uuid: String,
-    pub agent_name: String,
-    pub units: Vec<AgentUnit>,
+    pub units: Vec<Unit>,
     pub status: AgentStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentUnit {
-    pub unit_uuid: String,
-    pub role: String,
-    pub content: String,
-    pub created_at: i64,
+pub struct AgentSummary {
+    pub agent_uuid: String,
+    pub agent_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    UnitAppend { unit: AgentUnit },
+    UnitAppend { unit: Unit },
+    StreamDelta { text: String },
     ApproveRequest { request: PendingApproval },
     StatusChanged { status: AgentStatus },
     Error { message: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Idle,
-    Running,
+    RunningLlm,
+    RunningTool,
     WaitingApproval,
 }
 
@@ -104,10 +123,26 @@ pub struct ApproveRequest {
     pub agent_uuid: String,
     pub request_uuid: String,
     pub approved: bool,
+    pub approved_indices: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingApproval {
     pub request_uuid: String,
     pub description: String,
+}
+
+pub struct AgentInferenceOutput {
+    pub units: Vec<Unit>,
+    pub is_tool_calls: bool,
+}
+
+pub struct PendingToolBatch {
+    pub request_uuid: String,
+    pub tool_calls: Vec<ToolCall>,
+}
+
+pub struct ToolBatchOutput {
+    pub units: Vec<Unit>,
+    pub continue_loop: bool,
 }
