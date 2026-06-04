@@ -1,32 +1,19 @@
-use crate::bus::{Bus, SubsystemName};
-use crate::subsystems::tools_subsystem::runtime::tool_template;
+use crate::actors::tools_actor::model::ToolExecutionContext;
+use crate::actors::tools_actor::runtime::tool_template;
 use genai::chat::Tool;
 use reqwest::Client;
 use serde_json::{Value, json};
-use std::path::Path;
 
 static CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(Client::new);
 
-async fn api_key(bus: &Bus) -> Result<String, String> {
-    let response = bus
-        .post(
-            SubsystemName::Config,
-            SubsystemName::Tools,
-            "tool_config",
-            json!({ "name": "tinyfish" }),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    if !response.is_ok() {
-        return Err(response.body.to_string());
+async fn api_key(_ctx: &ToolExecutionContext) -> Result<String, String> {
+    let key =
+        std::env::var("TINYFISH_API_KEY").map_err(|_| "TINYFISH_API_KEY is missing".to_string())?;
+    if key.trim().is_empty() {
+        Err("TINYFISH_API_KEY is empty".to_string())
+    } else {
+        Ok(key)
     }
-    response
-        .body
-        .get("api_key")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|key| !key.is_empty())
-        .ok_or_else(|| "tools.tinyfish.api_key is missing".to_string())
 }
 
 // ─── web_search ───────────────────────────────────────────────────────────────
@@ -46,12 +33,12 @@ pub fn search() -> Tool {
     )
 }
 
-pub async fn execute_search(bus: &Bus, _run_root: &Path, args: &Value) -> String {
+pub async fn execute_search(ctx: ToolExecutionContext, args: Value) -> String {
     let query = match args["query"].as_str() {
         Some(q) => q,
         None => return json!({"status":"error","error":"missing query"}).to_string(),
     };
-    let api_key = match api_key(bus).await {
+    let api_key = match api_key(&ctx).await {
         Ok(api_key) => api_key,
         Err(error) => return json!({"status":"error","error":error}).to_string(),
     };
@@ -93,12 +80,12 @@ pub fn fetch() -> Tool {
     )
 }
 
-pub async fn execute_fetch(bus: &Bus, _run_root: &Path, args: &Value) -> String {
+pub async fn execute_fetch(ctx: ToolExecutionContext, args: Value) -> String {
     let urls = match args["urls"].as_array() {
         Some(u) => u.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
         None => return json!({"status":"error","error":"missing urls"}).to_string(),
     };
-    let api_key = match api_key(bus).await {
+    let api_key = match api_key(&ctx).await {
         Ok(api_key) => api_key,
         Err(error) => return json!({"status":"error","error":error}).to_string(),
     };

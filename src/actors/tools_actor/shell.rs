@@ -1,15 +1,13 @@
-use crate::bus::Bus;
-use crate::subsystems::tools_subsystem::fs::resolve_tool_path;
-use crate::subsystems::tools_subsystem::runtime::tool_template;
+use crate::actors::tools_actor::fs::{resolve_tool_path, run_rtk_json};
+use crate::actors::tools_actor::model::ToolExecutionContext;
+use crate::actors::tools_actor::runtime::tool_template;
 use genai::chat::Tool;
 use serde_json::{Value, json};
-use tokio::process::Command;
-use tokio::time::{Duration, Instant};
 
 pub fn exec() -> Tool {
     tool_template(
         "shell_exec",
-        "Execute a shell command in the workspace. Use for build/test/search commands.",
+        "Execute a shell command in the workspace through rtk. Known commands are token-optimized; unknown commands are passed through.",
         json!({
             "type": "object",
             "properties": {
@@ -22,7 +20,7 @@ pub fn exec() -> Tool {
     )
 }
 
-pub async fn execute(_bus: &Bus, run_root: &std::path::Path, args: &Value) -> String {
+pub async fn execute(ctx: ToolExecutionContext, args: Value) -> String {
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
     let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let timeout_secs = args
@@ -39,77 +37,28 @@ pub async fn execute(_bus: &Bus, run_root: &std::path::Path, args: &Value) -> St
         .to_string();
     }
 
-    let cwd = resolve_tool_path(run_root, cwd);
-    let mut child = match Command::new("sh")
-        .arg("-lc")
-        .arg(command)
-        .current_dir(&cwd)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            return json!({
-                "status": "error",
-                "command": command,
-                "cwd": cwd.display().to_string(),
-                "error": error.to_string(),
-            })
-            .to_string();
-        }
-    };
+    let cwd = resolve_tool_path(&ctx.workspace_path, cwd);
+    let rtk_args = rtk_args_for_shell_command(command);
+    run_rtk_json(&cwd, rtk_args, None, timeout_secs).await
+}
 
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    let timed_out = tokio::select! {
-        result = child.wait() => {
-            match result {
-                Ok(_) => false,
-                Err(error) => {
-                    return json!({
-                        "status": "error",
-                        "command": command,
-                        "cwd": cwd.display().to_string(),
-                        "error": error.to_string(),
-                    })
-                    .to_string();
-                }
-            }
-        }
-        _ = tokio::time::sleep_until(deadline) => {
-            let _ = child.kill().await;
-            true
-        }
-    };
-
-    match child.wait_with_output().await {
-        Ok(output) => if timed_out {
-            json!({
-                "status": "timeout",
-                "command": command,
-                "cwd": cwd.display().to_string(),
-                "timeout_secs": timeout_secs,
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
-            })
-        } else {
-            json!({
-                "status": "ok",
-                "command": command,
-                "cwd": cwd.display().to_string(),
-                "exit_code": output.status.code(),
-                "success": output.status.success(),
-                "stdout": String::from_utf8_lossy(&output.stdout),
-                "stderr": String::from_utf8_lossy(&output.stderr),
-            })
-        }
-        .to_string(),
-        Err(error) => json!({
-            "status": if timed_out { "timeout" } else { "error" },
-            "command": command,
-            "cwd": cwd.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
+fn rtk_args_for_shell_command(command: &str) -> Vec<String> {
+    if is_simple_command(command) {
+        command
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        vec!["run".to_string(), "-c".to_string(), command.to_string()]
     }
+}
+
+fn is_simple_command(command: &str) -> bool {
+    !command.is_empty()
+        && !command.chars().any(|ch| {
+            matches!(
+                ch,
+                '|' | '&' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '\'' | '"' | '\\'
+            )
+        })
 }

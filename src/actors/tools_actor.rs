@@ -1,5 +1,5 @@
 pub(super) mod fs;
-pub(crate) mod model;
-pub(crate) mod runtime;
+pub mod model;
+pub mod runtime;
 pub(super) mod shell;
 pub(super) mod web;

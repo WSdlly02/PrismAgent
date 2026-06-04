@@ -1,9 +1,14 @@
-use crate::bus::Bus;
-use crate::subsystems::tools_subsystem::runtime::tool_template;
+use crate::actors::tools_actor::model::ToolExecutionContext;
+use crate::actors::tools_actor::runtime::tool_template;
 use genai::chat::Tool;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+
+const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 pub fn ls_tree() -> Tool {
     tool_template(
@@ -153,108 +158,59 @@ pub fn copy() -> Tool {
     )
 }
 
-pub async fn execute_read(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let path = resolve_tool_path(run_root, path);
-    match fs::read_to_string(&path) {
-        Ok(content) => json!({
-            "status": "ok",
-            "path": path.display().to_string(),
-            "content": content,
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
-            "path": path.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
-    }
+pub async fn execute_read(ctx: ToolExecutionContext, args: Value) -> String {
+    let path = tool_arg(args.get("path").and_then(Value::as_str));
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["read".into(), path],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
 }
 
-pub async fn execute_ls_tree(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2) as usize;
-    let path = resolve_tool_path(run_root, path);
-    let mut entries = Vec::new();
-    match collect_tree_entries(&path, depth, 0, &mut entries) {
-        Ok(()) => json!({
-            "status": "ok",
-            "path": path.display().to_string(),
-            "entries": entries,
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
-            "path": path.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
-    }
+pub async fn execute_ls_tree(ctx: ToolExecutionContext, args: Value) -> String {
+    let path = tool_arg(args.get("path").and_then(Value::as_str));
+    let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2);
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["tree".into(), "-L".into(), depth.to_string(), path],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
 }
 
-pub async fn execute_list(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let path = resolve_tool_path(run_root, path);
-    match fs::read_dir(&path) {
-        Ok(entries) => {
-            let entries = entries
-                .filter_map(Result::ok)
-                .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-                .map(|entry| {
-                    let entry_path = entry.path();
-                    json!({
-                        "name": entry.file_name().to_string_lossy(),
-                        "path": entry_path.display().to_string(),
-                        "kind": path_kind(&entry_path),
-                    })
-                })
-                .collect::<Vec<_>>();
-            json!({
-                "status": "ok",
-                "path": path.display().to_string(),
-                "entries": entries,
-            })
-            .to_string()
-        }
-        Err(error) => json!({
-            "status": "error",
-            "path": path.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
-    }
+pub async fn execute_list(ctx: ToolExecutionContext, args: Value) -> String {
+    let path = tool_arg(args.get("path").and_then(Value::as_str));
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["ls".into(), "-la".into(), path],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
 }
 
-pub async fn execute_stat(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let path = resolve_tool_path(run_root, path);
-    match fs::metadata(&path) {
-        Ok(metadata) => json!({
-            "status": "ok",
-            "path": path.display().to_string(),
-            "kind": path_kind(&path),
-            "len": metadata.len(),
-            "readonly": metadata.permissions().readonly(),
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
-            "path": path.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
-    }
+pub async fn execute_stat(ctx: ToolExecutionContext, args: Value) -> String {
+    let path = tool_arg(args.get("path").and_then(Value::as_str));
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["stat".into(), path],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
 }
 
-pub async fn execute_write(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
+pub async fn execute_write(ctx: ToolExecutionContext, args: Value) -> String {
+    let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let path = resolve_tool_path(&ctx.workspace_path, path_arg);
     let content = args.get("content").and_then(Value::as_str).unwrap_or("");
     let create_parent_dirs = args
         .get("create_parent_dirs")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let path = resolve_tool_path(run_root, path);
     if create_parent_dirs
         && let Some(parent) = path.parent()
         && let Err(error) = fs::create_dir_all(parent)
@@ -282,11 +238,11 @@ pub async fn execute_write(_bus: &Bus, run_root: &Path, args: &Value) -> String 
     }
 }
 
-pub async fn execute_replace(_bus: &Bus, run_root: &Path, args: &Value) -> String {
+pub async fn execute_replace(ctx: ToolExecutionContext, args: Value) -> String {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
+    let path = resolve_tool_path(&ctx.workspace_path, path_arg);
     let old = args.get("old").and_then(Value::as_str).unwrap_or("");
     let new = args.get("new").and_then(Value::as_str).unwrap_or("");
-    let path = resolve_tool_path(run_root, path_arg);
     if old.is_empty() {
         return json!({
             "status": "error",
@@ -333,147 +289,132 @@ pub async fn execute_replace(_bus: &Bus, run_root: &Path, args: &Value) -> Strin
     }
 }
 
-pub async fn execute_mkdir(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let path = resolve_tool_path(run_root, path);
-    match fs::create_dir_all(&path) {
-        Ok(()) => json!({
-            "status": "ok",
-            "path": path.display().to_string(),
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
-            "path": path.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
-    }
+pub async fn execute_mkdir(ctx: ToolExecutionContext, args: Value) -> String {
+    let path = tool_arg(args.get("path").and_then(Value::as_str));
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["mkdir".into(), "-p".into(), path],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
 }
 
-pub async fn execute_remove(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
+pub async fn execute_remove(ctx: ToolExecutionContext, args: Value) -> String {
+    let path = tool_arg(args.get("path").and_then(Value::as_str));
     let recursive = args
         .get("recursive")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let path = resolve_tool_path(run_root, path);
-    let result = if path.is_dir() {
-        if recursive {
-            fs::remove_dir_all(&path)
+    let mut command = vec!["rm".into()];
+    if recursive {
+        command.push("-rf".into());
+    } else {
+        command.push("-f".into());
+    }
+    command.push(path);
+    run_rtk_json(&ctx.workspace_path, command, None, DEFAULT_TIMEOUT_SECS).await
+}
+
+pub async fn execute_rename(ctx: ToolExecutionContext, args: Value) -> String {
+    let from = tool_arg(args.get("from").and_then(Value::as_str));
+    let to = tool_arg(args.get("to").and_then(Value::as_str));
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["mv".into(), from, to],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
+}
+
+pub async fn execute_copy(ctx: ToolExecutionContext, args: Value) -> String {
+    let from = tool_arg(args.get("from").and_then(Value::as_str));
+    let to = tool_arg(args.get("to").and_then(Value::as_str));
+    run_rtk_json(
+        &ctx.workspace_path,
+        vec!["cp".into(), from, to],
+        None,
+        DEFAULT_TIMEOUT_SECS,
+    )
+    .await
+}
+
+pub(super) async fn run_rtk_json(
+    cwd: &Path,
+    args: Vec<String>,
+    stdin: Option<Vec<u8>>,
+    timeout_secs: u64,
+) -> String {
+    let command = format!("rtk {}", args.join(" "));
+    let mut child = match Command::new("rtk")
+        .args(&args)
+        .current_dir(cwd)
+        .kill_on_drop(true)
+        .stdin(if stdin.is_some() {
+            std::process::Stdio::piped()
         } else {
-            fs::remove_dir(&path)
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            return json!({
+                "status": "error",
+                "command": command,
+                "error": error.to_string(),
+            })
+            .to_string();
         }
-    } else {
-        fs::remove_file(&path)
     };
-    match result {
-        Ok(()) => json!({
-            "status": "ok",
-            "path": path.display().to_string(),
+    if let Some(input) = stdin
+        && let Some(mut child_stdin) = child.stdin.take()
+    {
+        tokio::spawn(async move {
+            let _ = child_stdin.write_all(&input).await;
+        });
+    }
+    match tokio::time::timeout(
+        Duration::from_secs(timeout_secs.clamp(1, 300)),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => json!({
+            "status": if output.status.success() { "ok" } else { "error" },
+            "command": command,
+            "exit_code": output.status.code(),
+            "success": output.status.success(),
+            "stdout": String::from_utf8_lossy(&output.stdout),
+            "stderr": String::from_utf8_lossy(&output.stderr),
         })
         .to_string(),
-        Err(error) => json!({
+        Ok(Err(error)) => json!({
             "status": "error",
-            "path": path.display().to_string(),
+            "command": command,
             "error": error.to_string(),
         })
         .to_string(),
-    }
-}
-
-pub async fn execute_rename(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let from = args.get("from").and_then(Value::as_str).unwrap_or(".");
-    let to = args.get("to").and_then(Value::as_str).unwrap_or(".");
-    let from = resolve_tool_path(run_root, from);
-    let to = resolve_tool_path(run_root, to);
-    match fs::rename(&from, &to) {
-        Ok(()) => json!({
-            "status": "ok",
-            "from": from.display().to_string(),
-            "to": to.display().to_string(),
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
-            "from": from.display().to_string(),
-            "to": to.display().to_string(),
-            "error": error.to_string(),
+        Err(_) => json!({
+            "status": "timeout",
+            "command": command,
+            "timeout_secs": timeout_secs,
         })
         .to_string(),
     }
 }
 
-pub async fn execute_copy(_bus: &Bus, run_root: &Path, args: &Value) -> String {
-    let from = args.get("from").and_then(Value::as_str).unwrap_or(".");
-    let to = args.get("to").and_then(Value::as_str).unwrap_or(".");
-    let from = resolve_tool_path(run_root, from);
-    let to = resolve_tool_path(run_root, to);
-    match fs::copy(&from, &to) {
-        Ok(bytes) => json!({
-            "status": "ok",
-            "from": from.display().to_string(),
-            "to": to.display().to_string(),
-            "bytes": bytes,
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
-            "from": from.display().to_string(),
-            "to": to.display().to_string(),
-            "error": error.to_string(),
-        })
-        .to_string(),
-    }
-}
-
-fn collect_tree_entries(
-    path: &Path,
-    max_depth: usize,
-    current_depth: usize,
-    entries: &mut Vec<String>,
-) -> anyhow::Result<()> {
-    if current_depth > max_depth {
-        return Ok(());
-    }
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name.to_string_lossy().starts_with('.') {
-            continue;
-        }
-        let entry_path = entry.path();
-        let kind = if entry_path.is_dir() { "dir" } else { "file" };
-        let indent = "  ".repeat(current_depth);
-        entries.push(format!("{indent}[{kind}] {}", name.to_string_lossy()));
-        if entry_path.is_dir() && current_depth < max_depth {
-            collect_tree_entries(&entry_path, max_depth, current_depth + 1, entries)?;
-        }
-    }
-    Ok(())
-}
-
-fn path_kind(path: &Path) -> &'static str {
-    if path.is_dir() {
-        "dir"
-    } else if path.is_file() {
-        "file"
-    } else if path.is_symlink() {
-        "symlink"
-    } else {
-        "other"
-    }
-}
-
-pub(super) fn resolve_tool_path(run_root: &Path, path: &str) -> PathBuf {
+pub(super) fn resolve_tool_path(workspace_path: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
         return path.to_path_buf();
     }
-    run_root
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .map(|workspace_dir| workspace_dir.join(path))
-        .unwrap_or_else(|| path.to_path_buf())
+    workspace_path.join(path)
+}
+
+fn tool_arg(path: Option<&str>) -> String {
+    path.unwrap_or(".").to_string()
 }
