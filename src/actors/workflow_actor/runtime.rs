@@ -58,18 +58,14 @@ impl WorkflowActor {
         &mut self,
         request: WorkflowRunRequest,
     ) -> SubsystemResult<WorkflowRuntime> {
-        let workflows = self
+        let workflow = self
             .handles
             .storage
-            .read_workflows(
+            .read_workflow(
                 request.workspace_uuid.clone(),
-                vec![request.workflow_uuid.clone()],
+                request.workflow_uuid.clone(),
             )
             .await?;
-        let workflow = workflows
-            .into_iter()
-            .next()
-            .ok_or_else(|| SubsystemError::not_found("workflow", &request.workflow_uuid))?;
         let agent = self
             .handles
             .agent

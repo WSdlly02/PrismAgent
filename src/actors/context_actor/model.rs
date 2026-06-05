@@ -1,5 +1,4 @@
 use crate::actors::profile_actor::model::Profile;
-use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
@@ -20,35 +19,9 @@ pub struct ContextActor {
 }
 
 pub enum ContextMsg {
-    ListContexts {
-        workspace_uuid: String,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
-    },
-    ReadContexts {
-        workspace_uuid: String,
-        uuids: Vec<String>,
-        reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
-    },
-    WriteContexts {
-        workspace_uuid: String,
-        contexts: Vec<Context>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
-    },
-    ResolveContextRefs {
-        request: ResolveContextRefsRequest,
-        reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
-    },
-    RenderTaskContext {
-        contexts: Vec<Context>,
-        reply: oneshot::Sender<SubsystemResult<String>>,
-    },
     ReadSkill {
         request: ReadSkillRequest,
         reply: oneshot::Sender<SubsystemResult<SkillDescriptor>>,
-    },
-    RenderCapabilities {
-        request: RenderCapabilitiesRequest,
-        reply: oneshot::Sender<SubsystemResult<String>>,
     },
     RenderInitialPrompts {
         request: RenderInitialPromptsRequest,
@@ -87,6 +60,7 @@ pub struct SkillDescriptor {
     pub scope: SkillScope,
     pub path: PathBuf,
     pub frontmatter: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

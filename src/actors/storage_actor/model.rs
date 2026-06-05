@@ -5,9 +5,7 @@ use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
-use crate::actors::storage_actor::model::workflow::{
-    Workflow, WorkflowCreateRequest, WorkflowReplaceEntry,
-};
+use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::error::SubsystemResult;
 
 pub mod agent;
@@ -86,11 +84,6 @@ pub enum StorageMsg {
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Context>>>,
     },
-    WriteContexts {
-        workspace_uuid: String,
-        contexts: Vec<Context>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
-    },
     CreateContext {
         request: ContextCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Context>>,
@@ -99,24 +92,14 @@ pub enum StorageMsg {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
-    ReadWorkflows {
+    ReadWorkflow {
         workspace_uuid: String,
-        uuids: Vec<String>,
-        reply: oneshot::Sender<SubsystemResult<Vec<Workflow>>>,
-    },
-    WriteWorkflows {
-        workspace_uuid: String,
-        workflows: Vec<Workflow>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
+        uuid: String,
+        reply: oneshot::Sender<SubsystemResult<Workflow>>,
     },
     CreateWorkflow {
         request: WorkflowCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Workflow>>,
-    },
-    ReplaceWorkflows {
-        workspace_uuid: String,
-        entries: Vec<WorkflowReplaceEntry>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ListMisc {
         workspace_uuid: String,

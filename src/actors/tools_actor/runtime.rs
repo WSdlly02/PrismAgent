@@ -55,6 +55,7 @@ register_tools! {
     web::search / execute_search,
     web::fetch / execute_fetch,
     prismagent::uuid_new / execute_uuid_new,
+    prismagent::read_skill / execute_read_skill,
     prismagent::agent_new / execute_agent_new,
     prismagent::context_new / execute_context_new,
     prismagent::workflow_new / execute_workflow_new,

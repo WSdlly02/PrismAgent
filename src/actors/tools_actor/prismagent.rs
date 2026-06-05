@@ -1,3 +1,4 @@
+use crate::actors::context_actor::model::ReadSkillRequest;
 use crate::actors::profile_actor::model::DEFAULT_PROFILE_NAME;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::ContextCreateRequest;
@@ -33,6 +34,20 @@ pub fn list_profiles() -> Tool {
             "type": "object",
             "properties": {},
             "required": []
+        }),
+    )
+}
+
+pub fn read_skill() -> Tool {
+    tool_template(
+        "prismagent_read_skill",
+        "Read the full SKILL.md body for a workspace or global skill. System prompts only include skill frontmatter; use this tool when detailed skill instructions are needed.",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name to read"}
+            },
+            "required": ["name"]
         }),
     )
 }
@@ -189,6 +204,17 @@ pub async fn execute_agent_new(ctx: ToolExecutionContext, args: Value) -> String
 pub async fn execute_list_profiles(ctx: ToolExecutionContext, _args: Value) -> String {
     match ctx.handles.profile.list_profiles().await {
         Ok(profiles) => json!({"status": "ok", "profiles": profiles}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
+}
+
+pub async fn execute_read_skill(ctx: ToolExecutionContext, args: Value) -> String {
+    let request = ReadSkillRequest {
+        workspace_uuid: ctx.workspace_uuid.clone(),
+        name: string_arg(&args, "name").unwrap_or_default(),
+    };
+    match ctx.handles.context.read_skill(request).await {
+        Ok(skill) => json!({"status": "ok", "skill": skill}).to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }

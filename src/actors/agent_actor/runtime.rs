@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-const AUTO_LOOP_MSG: &str = "Go ahead until you have completed all tasks, or use prismagent_finish_task tool to end the loop.";
+const AUTO_LOOP_MSG: &str = "Go ahead until you have completed all tasks, or use prismagent_task_finished tool to end the loop.";
 
 impl AgentActor {
     pub fn load(rx: mpsc::Receiver<AgentMsg>, handles: AppHandles) -> Self {
@@ -437,7 +437,7 @@ impl AgentActor {
         self.spawn_tool_batch(
             request.agent_uuid,
             pending.tool_calls,
-            approval_mask_from_request(request.approved, request.approved_indices),
+            approval_mask_from_request(request.approval_mask),
             "user denied tool execution",
         )
         .await
@@ -789,15 +789,11 @@ impl ApprovalMask {
     }
 }
 
-fn approval_mask_from_request(
-    approved: bool,
-    approved_indices: Option<Vec<usize>>,
-) -> ApprovalMask {
-    match approved_indices {
-        Some(indices) => ApprovalMask::Selected(indices.into_iter().collect()),
-        None if approved => ApprovalMask::All,
-        None => ApprovalMask::None,
+fn approval_mask_from_request(mask: u64) -> ApprovalMask {
+    if mask == 0 {
+        return ApprovalMask::None;
     }
+    ApprovalMask::Selected((0..64).filter(|index| ((mask >> index) & 1) == 1).collect())
 }
 
 async fn request<T>(

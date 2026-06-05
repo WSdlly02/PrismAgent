@@ -24,47 +24,8 @@ impl ContextActor {
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
             match msg {
-                ContextMsg::ListContexts {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.handles.storage.list_contexts(workspace_uuid).await);
-                }
-                ContextMsg::ReadContexts {
-                    workspace_uuid,
-                    uuids,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        self.handles
-                            .storage
-                            .read_contexts(workspace_uuid, uuids)
-                            .await,
-                    );
-                }
-                ContextMsg::WriteContexts {
-                    workspace_uuid,
-                    contexts,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        self.handles
-                            .storage
-                            .write_contexts(workspace_uuid, contexts)
-                            .await,
-                    );
-                }
-                ContextMsg::ResolveContextRefs { request, reply } => {
-                    let _ = reply.send(self.resolve_context_refs(request).await);
-                }
-                ContextMsg::RenderTaskContext { contexts, reply } => {
-                    let _ = reply.send(Ok(render_task_context(&contexts)));
-                }
                 ContextMsg::ReadSkill { request, reply } => {
                     let _ = reply.send(read_skill(request));
-                }
-                ContextMsg::RenderCapabilities { request, reply } => {
-                    let _ = reply.send(render_capabilities(request));
                 }
                 ContextMsg::RenderInitialPrompts { request, reply } => {
                     let _ = reply.send(self.render_initial_prompts(request).await);
@@ -117,78 +78,11 @@ impl ContextActor {
 }
 
 impl ContextHandle {
-    pub async fn list_contexts(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<String>> {
-        request(&self.tx, |reply| ContextMsg::ListContexts {
-            workspace_uuid: workspace_uuid.into(),
-            reply,
-        })
-        .await
-    }
-
-    pub async fn read_contexts(
-        &self,
-        workspace_uuid: impl Into<String>,
-        uuids: Vec<String>,
-    ) -> SubsystemResult<Vec<Context>> {
-        request(&self.tx, |reply| ContextMsg::ReadContexts {
-            workspace_uuid: workspace_uuid.into(),
-            uuids,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn write_contexts(
-        &self,
-        workspace_uuid: impl Into<String>,
-        contexts: Vec<Context>,
-    ) -> SubsystemResult<Vec<String>> {
-        request(&self.tx, |reply| ContextMsg::WriteContexts {
-            workspace_uuid: workspace_uuid.into(),
-            contexts,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn resolve_context_refs(
-        &self,
-        request_body: ResolveContextRefsRequest,
-    ) -> SubsystemResult<Vec<Context>> {
-        request(&self.tx, |reply| ContextMsg::ResolveContextRefs {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn render_task_context(&self, contexts: Vec<Context>) -> SubsystemResult<String> {
-        request(&self.tx, |reply| ContextMsg::RenderTaskContext {
-            contexts,
-            reply,
-        })
-        .await
-    }
-
     pub async fn read_skill(
         &self,
         request_body: ReadSkillRequest,
     ) -> SubsystemResult<SkillDescriptor> {
         request(&self.tx, |reply| ContextMsg::ReadSkill {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn render_capabilities(
-        &self,
-        request_body: RenderCapabilitiesRequest,
-    ) -> SubsystemResult<String> {
-        request(&self.tx, |reply| ContextMsg::RenderCapabilities {
             request: request_body,
             reply,
         })
@@ -352,6 +246,7 @@ fn read_skill_file(
         scope,
         path,
         frontmatter,
+        content: strip_frontmatter(&data).trim().to_string(),
     })
 }
 
@@ -368,6 +263,16 @@ fn extract_frontmatter(data: &str) -> Option<String> {
         frontmatter.push(line.to_string());
     }
     None
+}
+
+fn strip_frontmatter(data: &str) -> &str {
+    let Some(rest) = data.strip_prefix("---") else {
+        return data;
+    };
+    let Some((_, content)) = rest.split_once("\n---") else {
+        return data;
+    };
+    content
 }
 
 fn workspace_skill_path(workspace_uuid: &str, name: &str) -> SubsystemResult<PathBuf> {

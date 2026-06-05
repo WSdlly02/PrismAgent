@@ -136,8 +136,7 @@ pub struct Attachment {
 pub struct ApproveRequest {
     pub agent_uuid: String,
     pub request_uuid: String,
-    pub approved: bool,
-    pub approved_indices: Option<Vec<usize>>,
+    pub approval_mask: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

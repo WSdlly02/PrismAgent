@@ -13,16 +13,6 @@ pub struct Workflow {
     pub updated_at: i64,                   // 更新时间戳
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct WorkflowReadRequest {
-    pub uuids: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct WorkflowWriteRequest {
-    pub workflows: Vec<Workflow>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkflowCreateRequest {
     pub workspace_uuid: String,
@@ -31,16 +21,4 @@ pub struct WorkflowCreateRequest {
     pub content: String,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct WorkflowReplaceEntry {
-    pub uuid: String,
-    pub old_data: Vec<u8>,
-    pub workflow: Workflow,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct WorkflowReplaceRequest {
-    pub entries: Vec<WorkflowReplaceEntry>,
 }
