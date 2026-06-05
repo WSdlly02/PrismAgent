@@ -50,6 +50,13 @@ pub enum StorageMsg {
     },
     CreateAgent {
         request: AgentCreateRequest,
+        auto_loop: bool,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
+    },
+    SetAgentAutoLoop {
+        workspace_uuid: String,
+        agent_uuid: String,
+        enabled: bool,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     AppendAgentUnits {

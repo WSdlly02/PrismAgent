@@ -68,6 +68,25 @@ pub fn workflow_new() -> Tool {
     )
 }
 
+pub fn task_finished() -> Tool {
+    tool_template(
+        "prismagent_task_finished",
+        "Mark the current agent task as finished by disabling its auto-loop runtime flag.",
+        json!({
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "Short summary of the completed task"},
+                "context_outputs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Context uuids produced for this task, if any"
+                }
+            },
+            "required": ["summary"]
+        }),
+    )
+}
+
 pub async fn execute_agent_new(ctx: ToolExecutionContext, args: Value) -> String {
     let request = AgentCreateRequest {
         workspace_uuid: ctx.workspace_uuid.clone(),
@@ -103,6 +122,27 @@ pub async fn execute_workflow_new(ctx: ToolExecutionContext, args: Value) -> Str
     };
     match ctx.handles.storage.create_workflow(request).await {
         Ok(workflow) => json!({"status": "ok", "workflow": workflow}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
+}
+
+pub async fn execute_task_finished(ctx: ToolExecutionContext, args: Value) -> String {
+    let summary = string_arg(&args, "summary").unwrap_or_else(|| "task finished".to_string());
+    let context_outputs = string_array_arg(&args, "context_outputs");
+    match ctx
+        .handles
+        .agent
+        .set_auto_loop(ctx.caller_agent_uuid.clone(), false)
+        .await
+    {
+        Ok(agent) => json!({
+            "status": "ok",
+            "agent_uuid": agent.uuid,
+            "auto_loop": agent.auto_loop,
+            "summary": summary,
+            "context_outputs": context_outputs,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }

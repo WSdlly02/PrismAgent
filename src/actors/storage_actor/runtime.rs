@@ -66,8 +66,21 @@ impl StorageActor {
                 } => {
                     let _ = reply.send(self.write_agents(&workspace_uuid, &agents));
                 }
-                StorageMsg::CreateAgent { request, reply } => {
-                    let _ = reply.send(self.create_agent(request));
+                StorageMsg::CreateAgent {
+                    request,
+                    auto_loop,
+                    reply,
+                } => {
+                    let _ = reply.send(self.create_agent(request, auto_loop));
+                }
+                StorageMsg::SetAgentAutoLoop {
+                    workspace_uuid,
+                    agent_uuid,
+                    enabled,
+                    reply,
+                } => {
+                    let _ =
+                        reply.send(self.set_agent_auto_loop(&workspace_uuid, &agent_uuid, enabled));
                 }
                 StorageMsg::AppendAgentUnits {
                     workspace_uuid,
@@ -202,7 +215,7 @@ impl StorageActor {
         Ok(written)
     }
 
-    fn create_agent(&self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
+    fn create_agent(&self, request: AgentCreateRequest, auto_loop: bool) -> SubsystemResult<Agent> {
         let name = non_empty_string(request.name, "agent name")?;
         let profile = non_empty_string(request.profile, "agent profile")?;
         let now = chrono::Utc::now().timestamp();
@@ -210,6 +223,7 @@ impl StorageActor {
             uuid: petname_uuid(self.list_agents(&request.workspace_uuid)?)?,
             name,
             profile,
+            auto_loop,
             unit_chain: Vec::new(),
             unit_head: String::new(),
             context_refs: request.context_refs,
@@ -222,6 +236,24 @@ impl StorageActor {
             &self.agent_path(&request.workspace_uuid, &agent.uuid)?,
             &agent,
         )?;
+        Ok(agent)
+    }
+
+    fn set_agent_auto_loop(
+        &self,
+        workspace_uuid: &str,
+        agent_uuid: &str,
+        enabled: bool,
+    ) -> SubsystemResult<Agent> {
+        let agent_path = self.agent_path(workspace_uuid, agent_uuid)?;
+        let old_data = std::fs::read(&agent_path)?;
+        let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
+            SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
+        })?;
+        agent.auto_loop = enabled;
+        agent.updated_at = chrono::Utc::now().timestamp();
+        let new_data = to_pretty_json_vec(&agent)?;
+        atomic_replace_file(&agent_path, &old_data, &new_data)?;
         Ok(agent)
     }
 
@@ -546,11 +578,37 @@ impl StorageHandle {
             .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
     }
 
-    pub async fn create_agent(&self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
+    pub async fn create_agent(
+        &self,
+        request: AgentCreateRequest,
+        auto_loop: bool,
+    ) -> SubsystemResult<Agent> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::CreateAgent {
                 request,
+                auto_loop,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn set_agent_auto_loop(
+        &self,
+        workspace_uuid: impl Into<String>,
+        agent_uuid: impl Into<String>,
+        enabled: bool,
+    ) -> SubsystemResult<Agent> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::SetAgentAutoLoop {
+                workspace_uuid: workspace_uuid.into(),
+                agent_uuid: agent_uuid.into(),
+                enabled,
                 reply: reply_tx,
             })
             .await

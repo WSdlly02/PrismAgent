@@ -52,6 +52,11 @@ pub enum AgentMsg {
         agent_uuid: String,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
+    SetAutoLoop {
+        agent_uuid: String,
+        enabled: bool,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
+    },
     InferenceFinished {
         agent_uuid: String,
         inference_uuid: String,

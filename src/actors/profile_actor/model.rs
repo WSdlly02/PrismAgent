@@ -101,5 +101,5 @@ auto_loop = false
 [tools]
 yolo = false
 available_tools = ["*"]
-auto_approve = ["fs_ls_tree", "fs_read", "fs_list", "fs_stat"]
+auto_approve = ["fs_ls_tree", "fs_read", "fs_list", "fs_stat", "prismagent_task_finished"]
 "#;

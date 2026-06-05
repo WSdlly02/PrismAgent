@@ -57,6 +57,7 @@ register_tools! {
     prismagent::agent_new / execute_agent_new,
     prismagent::context_new / execute_context_new,
     prismagent::workflow_new / execute_workflow_new,
+    prismagent::task_finished / execute_task_finished,
 }
 
 impl ToolsActor {

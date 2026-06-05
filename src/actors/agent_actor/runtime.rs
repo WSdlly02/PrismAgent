@@ -9,13 +9,15 @@ use crate::actors::agent_actor::pipeline::{
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
-use crate::actors::storage_actor::model::unit::Unit;
+use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use genai::chat::ToolCall;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+const AUTO_LOOP_MSG: &str = "Go ahead until you have completed all tasks, or use prismagent_finish_task tool to end the loop.";
 
 impl AgentActor {
     pub fn load(rx: mpsc::Receiver<AgentMsg>, handles: AppHandles) -> Self {
@@ -62,6 +64,13 @@ impl AgentActor {
                 }
                 AgentMsg::Cancel { agent_uuid, reply } => {
                     let _ = reply.send(self.cancel(&agent_uuid).await);
+                }
+                AgentMsg::SetAutoLoop {
+                    agent_uuid,
+                    enabled,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_auto_loop(&agent_uuid, enabled).await);
                 }
                 AgentMsg::InferenceFinished {
                     agent_uuid,
@@ -140,7 +149,11 @@ impl AgentActor {
                 profile,
             })
             .await?;
-        let mut agent = self.handles.storage.create_agent(request).await?;
+        let mut agent = self
+            .handles
+            .storage
+            .create_agent(request, auto_loop)
+            .await?;
         if !initial_units.is_empty() {
             agent = self
                 .handles
@@ -270,7 +283,21 @@ impl AgentActor {
                         }
                         return;
                     }
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if self.agent(agent_uuid).is_ok_and(|agent| agent.auto_loop) {
+                            if let Err(error) = self.spawn_auto_loop_continuation(agent_uuid).await
+                            {
+                                self.emit_event(
+                                    agent_uuid,
+                                    AgentEvent::Error {
+                                        message: error.to_string(),
+                                    },
+                                );
+                                let _ = self.set_status(agent_uuid, AgentStatus::Idle);
+                            }
+                            return;
+                        }
+                    }
                     Err(error) => {
                         self.emit_event(
                             agent_uuid,
@@ -446,6 +473,22 @@ impl AgentActor {
         Ok(())
     }
 
+    async fn set_auto_loop(&mut self, agent_uuid: &str, enabled: bool) -> SubsystemResult<Agent> {
+        if enabled {
+            return Err(SubsystemError::invalid_input(
+                "set_auto_loop(true) is not supported yet",
+            ));
+        }
+        let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
+        let agent = self
+            .handles
+            .storage
+            .set_agent_auto_loop(workspace_uuid, agent_uuid.to_string(), enabled)
+            .await?;
+        self.agents.insert(agent_uuid.to_string(), agent.clone());
+        Ok(agent)
+    }
+
     async fn handle_tool_calls(
         &mut self,
         agent_uuid: &str,
@@ -553,6 +596,13 @@ impl AgentActor {
         Ok(())
     }
 
+    async fn spawn_auto_loop_continuation(&mut self, agent_uuid: &str) -> SubsystemResult<()> {
+        let mut unit = Unit::from_chat_message(genai::chat::ChatMessage::user(AUTO_LOOP_MSG));
+        unit.visibility = UnitVisibility::Internal;
+        self.commit_units(agent_uuid, vec![unit]).await?;
+        self.spawn_llm_continuation(agent_uuid).await
+    }
+
     fn set_status(&mut self, agent_uuid: &str, status: AgentStatus) -> SubsystemResult<()> {
         self.runtime_mut(agent_uuid)?.status = status.clone();
         self.emit_event(agent_uuid, AgentEvent::StatusChanged { status });
@@ -652,6 +702,19 @@ impl AgentHandle {
     pub async fn cancel(&self, agent_uuid: impl Into<String>) -> SubsystemResult<()> {
         request(&self.tx, |reply| AgentMsg::Cancel {
             agent_uuid: agent_uuid.into(),
+            reply,
+        })
+        .await
+    }
+
+    pub async fn set_auto_loop(
+        &self,
+        agent_uuid: impl Into<String>,
+        enabled: bool,
+    ) -> SubsystemResult<Agent> {
+        request(&self.tx, |reply| AgentMsg::SetAutoLoop {
+            agent_uuid: agent_uuid.into(),
+            enabled,
             reply,
         })
         .await
