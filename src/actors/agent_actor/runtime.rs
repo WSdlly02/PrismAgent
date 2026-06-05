@@ -252,7 +252,7 @@ impl AgentActor {
                     output
                         .units
                         .last()
-                        .map(|unit| clone_tool_calls(unit))
+                        .map(clone_tool_calls)
                         .unwrap_or_default()
                 } else {
                     Vec::new()

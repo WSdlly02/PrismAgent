@@ -18,8 +18,7 @@ pub struct Unit {
 impl Unit {
     pub fn from_user_text(content: String) -> Self {
         let message = genai::chat::ChatMessage::user(content);
-        let unit = Self::from_chat_message(message);
-        unit
+        Self::from_chat_message(message)
     }
 
     pub fn from_chat_message(message: genai::chat::ChatMessage) -> Self {

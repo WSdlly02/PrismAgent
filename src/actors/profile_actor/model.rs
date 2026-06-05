@@ -96,7 +96,6 @@ system.behavior = "If the task requires using any of the above skills or tools, 
 system.response_style = "concise and informative"
 system.capabilities = "{skills} {tools}"
 
-user_context_refs = false
 auto_loop = false
 
 [tools]
