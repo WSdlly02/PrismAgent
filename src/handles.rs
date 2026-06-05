@@ -1,7 +1,7 @@
 use crate::actors::agent_actor::model::AgentHandle;
 use crate::actors::context_actor::model::ContextHandle;
 use crate::actors::llm_actor::model::LlmHandle;
-use crate::actors::profile_actor::model::{ProfileHandle, ProfileMsg};
+use crate::actors::profile_actor::model::ProfileHandle;
 use crate::actors::shell_actor::model::ShellHandle;
 use crate::actors::storage_actor::model::StorageHandle;
 use crate::actors::tools_actor::model::ToolsHandle;
@@ -23,7 +23,8 @@ pub struct AppHandles {
 
 impl AppHandles {
     /// Temporary bootstrap helper until ProfileActor is part of daemon startup.
-    pub fn without_profile_actor(
+    pub fn new(
+        profile: ProfileHandle,
         context: ContextHandle,
         storage: StorageHandle,
         workspace: WorkspaceHandle,
@@ -33,10 +34,8 @@ impl AppHandles {
         tools: ToolsHandle,
         workflow: WorkflowHandle,
     ) -> Self {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<ProfileMsg>(1);
-        tokio::spawn(async move { while rx.recv().await.is_some() {} });
         Self {
-            profile: ProfileHandle { tx },
+            profile,
             context,
             storage,
             workspace,
@@ -58,6 +57,7 @@ pub fn test_handles() -> AppHandles {
     use crate::actors::workflow_actor::model::WorkflowMsg;
     use crate::actors::workspace_actor::model::WorkspaceMsg;
 
+    let (profile, _) = tokio::sync::mpsc::channel(1);
     let (context, _) = tokio::sync::mpsc::channel(1);
     let (storage, _) = tokio::sync::mpsc::channel(1);
     let (workspace, _) = tokio::sync::mpsc::channel::<WorkspaceMsg>(1);
@@ -66,7 +66,8 @@ pub fn test_handles() -> AppHandles {
     let (llm, _) = tokio::sync::mpsc::channel::<LlmMsg>(1);
     let (tools, _) = tokio::sync::mpsc::channel::<ToolsMsg>(1);
     let (workflow, _) = tokio::sync::mpsc::channel::<WorkflowMsg>(1);
-    AppHandles::without_profile_actor(
+    AppHandles::new(
+        ProfileHandle { tx: profile },
         ContextHandle { tx: context },
         StorageHandle { tx: storage },
         WorkspaceHandle { tx: workspace },

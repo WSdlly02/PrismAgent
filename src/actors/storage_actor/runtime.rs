@@ -7,32 +7,23 @@ use crate::actors::storage_actor::model::workflow::{
 };
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
-use crate::handles::AppHandles;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
 impl StorageActor {
-    pub fn load(rx: mpsc::Receiver<StorageMsg>, handles: AppHandles) -> SubsystemResult<Self> {
+    pub fn load(rx: mpsc::Receiver<StorageMsg>) -> SubsystemResult<Self> {
         let root = directories::BaseDirs::new()
             .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
             .home_dir()
             .join(".prismagent")
             .join("workspaces");
-        Self::from_root(rx, handles, root)
+        Self::from_root(rx, root)
     }
 
-    pub fn from_root(
-        rx: mpsc::Receiver<StorageMsg>,
-        handles: AppHandles,
-        root: PathBuf,
-    ) -> SubsystemResult<Self> {
+    pub fn from_root(rx: mpsc::Receiver<StorageMsg>, root: PathBuf) -> SubsystemResult<Self> {
         std::fs::create_dir_all(&root)?;
-        Ok(Self {
-            rx,
-            root,
-            _handles: handles,
-        })
+        Ok(Self { rx, root })
     }
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {

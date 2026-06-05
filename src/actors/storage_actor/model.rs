@@ -9,7 +9,6 @@ use crate::actors::storage_actor::model::workflow::{
     Workflow, WorkflowCreateRequest, WorkflowReplaceEntry,
 };
 use crate::error::SubsystemResult;
-use crate::handles::AppHandles;
 
 pub mod agent;
 pub mod context;
@@ -27,7 +26,6 @@ pub struct StorageHandle {
 pub struct StorageActor {
     pub(super) rx: mpsc::Receiver<StorageMsg>,
     pub(super) root: PathBuf,
-    pub(super) _handles: AppHandles,
 }
 
 pub enum StorageMsg {

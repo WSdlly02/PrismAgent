@@ -2,32 +2,26 @@ use crate::actors::workspace_actor::model::{
     WORKSPACE_ACTOR, Workspace, WorkspaceActor, WorkspaceHandle, WorkspaceMsg, WorkspaceSummary,
 };
 use crate::error::{SubsystemError, SubsystemResult};
-use crate::handles::AppHandles;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 impl WorkspaceActor {
-    pub fn load(rx: mpsc::Receiver<WorkspaceMsg>, handles: AppHandles) -> SubsystemResult<Self> {
+    pub fn load(rx: mpsc::Receiver<WorkspaceMsg>) -> SubsystemResult<Self> {
         let root = directories::BaseDirs::new()
             .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
             .home_dir()
             .join(".prismagent")
             .join("workspaces");
-        Self::from_root(rx, handles, root)
+        Self::from_root(rx, root)
     }
 
-    pub fn from_root(
-        rx: mpsc::Receiver<WorkspaceMsg>,
-        handles: AppHandles,
-        root: PathBuf,
-    ) -> SubsystemResult<Self> {
+    pub fn from_root(rx: mpsc::Receiver<WorkspaceMsg>, root: PathBuf) -> SubsystemResult<Self> {
         std::fs::create_dir_all(&root)?;
         Ok(Self {
             rx,
             root,
             workspaces: HashMap::new(),
-            _handles: handles,
         })
     }
 

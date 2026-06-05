@@ -1,5 +1,4 @@
 use crate::error::SubsystemResult;
-use crate::handles::AppHandles;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,7 +15,6 @@ pub struct WorkspaceActor {
     pub(super) rx: mpsc::Receiver<WorkspaceMsg>,
     pub(super) root: PathBuf,
     pub(super) workspaces: HashMap<String, Workspace>,
-    pub(super) _handles: AppHandles,
 }
 
 pub enum WorkspaceMsg {
