@@ -41,6 +41,7 @@ pub struct AgentWriteRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AgentCreateRequest {
     pub workspace_uuid: String,
+    pub uuid: String,
     pub name: String,
     pub profile: String,
     #[serde(default)]

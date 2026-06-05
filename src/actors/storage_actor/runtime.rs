@@ -8,7 +8,6 @@ use crate::actors::storage_actor::model::workflow::{
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
-use crate::id::petname_uuid;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -220,7 +219,7 @@ impl StorageActor {
         let profile = non_empty_string(request.profile, "agent profile")?;
         let now = chrono::Utc::now().timestamp();
         let agent = Agent {
-            uuid: petname_uuid(self.list_agents(&request.workspace_uuid)?)?,
+            uuid: safe_object_name(request.uuid, "agent uuid")?,
             name,
             profile,
             auto_loop,
@@ -329,7 +328,7 @@ impl StorageActor {
 
     fn create_context(&self, request: ContextCreateRequest) -> SubsystemResult<Context> {
         let context = Context {
-            uuid: petname_uuid(self.list_contexts(&request.workspace_uuid)?)?,
+            uuid: safe_object_name(request.uuid, "context uuid")?,
             title: non_empty_string(request.title, "context title")?,
             content: non_empty_string(request.content, "context content")?,
             created_at: chrono::Utc::now().timestamp(),
@@ -375,7 +374,7 @@ impl StorageActor {
     fn create_workflow(&self, request: WorkflowCreateRequest) -> SubsystemResult<Workflow> {
         let now = chrono::Utc::now().timestamp();
         let workflow = Workflow {
-            uuid: petname_uuid(self.list_workflows(&request.workspace_uuid)?)?,
+            uuid: safe_object_name(request.uuid, "workflow uuid")?,
             title: non_empty_string(request.title, "workflow title")?,
             content: non_empty_string(request.content, "workflow content")?,
             metadata: request.metadata,
@@ -471,6 +470,7 @@ impl StorageActor {
     }
 
     fn agent_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        validate_object_name(uuid, "agent uuid")?;
         Ok(self
             .workspace_root(workspace_uuid)?
             .join("agents")
@@ -478,6 +478,7 @@ impl StorageActor {
     }
 
     fn unit_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        validate_object_name(uuid, "unit uuid")?;
         Ok(self
             .workspace_root(workspace_uuid)?
             .join("units")
@@ -485,6 +486,7 @@ impl StorageActor {
     }
 
     fn context_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        validate_object_name(uuid, "context uuid")?;
         Ok(self
             .workspace_root(workspace_uuid)?
             .join("contexts")
@@ -492,6 +494,7 @@ impl StorageActor {
     }
 
     fn workflow_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
+        validate_object_name(uuid, "workflow uuid")?;
         Ok(self
             .workspace_root(workspace_uuid)?
             .join("workflows")
@@ -1024,5 +1027,21 @@ fn non_empty_string(value: String, field: &'static str) -> SubsystemResult<Strin
         )))
     } else {
         Ok(trimmed.to_string())
+    }
+}
+
+fn safe_object_name(value: String, field: &'static str) -> SubsystemResult<String> {
+    let value = non_empty_string(value, field)?;
+    validate_object_name(&value, field)?;
+    Ok(value)
+}
+
+fn validate_object_name(value: &str, field: &'static str) -> SubsystemResult<()> {
+    if is_safe_object_name(value) {
+        Ok(())
+    } else {
+        Err(SubsystemError::invalid_input(format!(
+            "invalid {field}: {value}"
+        )))
     }
 }

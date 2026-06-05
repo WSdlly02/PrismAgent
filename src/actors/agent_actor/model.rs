@@ -86,6 +86,11 @@ pub struct AgentSnapshot {
 pub struct AgentSummary {
     pub agent_uuid: String,
     pub agent_name: String,
+    pub profile: String,
+    pub auto_loop: bool,
+    pub context_refs: Vec<String>,
+    pub context_out: Vec<String>,
+    pub status: AgentStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

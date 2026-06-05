@@ -127,6 +127,15 @@ impl AgentActor {
             .map(|agent| AgentSummary {
                 agent_uuid: agent.uuid.clone(),
                 agent_name: agent.name.clone(),
+                profile: agent.profile.clone(),
+                auto_loop: agent.auto_loop,
+                context_refs: agent.context_refs.clone(),
+                context_out: agent.context_out.clone(),
+                status: self
+                    .runtimes
+                    .get(&agent.uuid)
+                    .map(|runtime| runtime.status.clone())
+                    .unwrap_or(AgentStatus::Idle),
             })
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| left.agent_name.cmp(&right.agent_name));

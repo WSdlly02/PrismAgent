@@ -5,4 +5,5 @@ pub mod profile_actor;
 pub mod shell_actor;
 pub mod storage_actor;
 pub mod tools_actor;
+pub mod workflow_actor;
 pub mod workspace_actor;

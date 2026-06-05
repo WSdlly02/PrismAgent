@@ -26,6 +26,7 @@ pub struct WorkflowWriteRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkflowCreateRequest {
     pub workspace_uuid: String,
+    pub uuid: String,
     pub title: String,
     pub content: String,
     #[serde(default)]

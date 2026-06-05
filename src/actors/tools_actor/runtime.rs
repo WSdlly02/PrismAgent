@@ -54,9 +54,14 @@ register_tools! {
     shell::exec / execute,
     web::search / execute_search,
     web::fetch / execute_fetch,
+    prismagent::uuid_new / execute_uuid_new,
     prismagent::agent_new / execute_agent_new,
     prismagent::context_new / execute_context_new,
     prismagent::workflow_new / execute_workflow_new,
+    prismagent::workflow_run / execute_workflow_run,
+    prismagent::trigger_new / execute_trigger_new,
+    prismagent::list_profiles / execute_list_profiles,
+    prismagent::list_context_out / execute_list_context_out,
     prismagent::task_finished / execute_task_finished,
 }
 

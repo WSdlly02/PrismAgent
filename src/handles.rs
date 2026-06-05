@@ -5,6 +5,7 @@ use crate::actors::profile_actor::model::{ProfileHandle, ProfileMsg};
 use crate::actors::shell_actor::model::ShellHandle;
 use crate::actors::storage_actor::model::StorageHandle;
 use crate::actors::tools_actor::model::ToolsHandle;
+use crate::actors::workflow_actor::model::WorkflowHandle;
 use crate::actors::workspace_actor::model::WorkspaceHandle;
 
 #[derive(Clone)]
@@ -17,6 +18,7 @@ pub struct AppHandles {
     pub shell: ShellHandle,
     pub llm: LlmHandle,
     pub tools: ToolsHandle,
+    pub workflow: WorkflowHandle,
 }
 
 impl AppHandles {
@@ -29,6 +31,7 @@ impl AppHandles {
         shell: ShellHandle,
         llm: LlmHandle,
         tools: ToolsHandle,
+        workflow: WorkflowHandle,
     ) -> Self {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ProfileMsg>(1);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -41,6 +44,7 @@ impl AppHandles {
             shell,
             llm,
             tools,
+            workflow,
         }
     }
 }
@@ -51,6 +55,7 @@ pub fn test_handles() -> AppHandles {
     use crate::actors::llm_actor::model::LlmMsg;
     use crate::actors::shell_actor::model::ShellMsg;
     use crate::actors::tools_actor::model::ToolsMsg;
+    use crate::actors::workflow_actor::model::WorkflowMsg;
     use crate::actors::workspace_actor::model::WorkspaceMsg;
 
     let (context, _) = tokio::sync::mpsc::channel(1);
@@ -60,6 +65,7 @@ pub fn test_handles() -> AppHandles {
     let (shell, _) = tokio::sync::mpsc::channel::<ShellMsg>(1);
     let (llm, _) = tokio::sync::mpsc::channel::<LlmMsg>(1);
     let (tools, _) = tokio::sync::mpsc::channel::<ToolsMsg>(1);
+    let (workflow, _) = tokio::sync::mpsc::channel::<WorkflowMsg>(1);
     AppHandles::without_profile_actor(
         ContextHandle { tx: context },
         StorageHandle { tx: storage },
@@ -68,5 +74,6 @@ pub fn test_handles() -> AppHandles {
         ShellHandle { tx: shell },
         LlmHandle { tx: llm },
         ToolsHandle { tx: tools },
+        WorkflowHandle { tx: workflow },
     )
 }

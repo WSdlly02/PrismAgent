@@ -22,6 +22,7 @@ pub struct ContextWriteRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContextCreateRequest {
     pub workspace_uuid: String,
+    pub uuid: String,
     pub title: String,
     pub content: String,
 }
