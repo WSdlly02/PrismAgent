@@ -1,3 +1,4 @@
+use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest};
 use crate::actors::context_actor::model::ReadSkillRequest;
 use crate::actors::profile_actor::model::DEFAULT_PROFILE_NAME;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
@@ -165,6 +166,21 @@ pub fn show_myself() -> Tool {
     )
 }
 
+pub fn agent_send_message() -> Tool {
+    tool_template(
+        "prismagent_agent_send_message",
+        "Send a text message to another PrismAgent agent in the current workspace. The target agent UUID must be known from workflow/context content or prior tool results.",
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_uuid": {"type": "string", "description": "Target agent UUID"},
+                "message": {"type": "string", "description": "Text message to send to the target agent"}
+            },
+            "required": ["agent_uuid", "message"]
+        }),
+    )
+}
+
 pub fn task_finished() -> Tool {
     tool_template(
         "prismagent_task_finished",
@@ -290,6 +306,20 @@ pub async fn execute_show_myself(ctx: ToolExecutionContext, _args: Value) -> Str
     };
     match ctx.handles.workflow.show_myself(request).await {
         Ok(response) => json!({"status": "ok", "agent": response}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
+}
+
+pub async fn execute_agent_send_message(ctx: ToolExecutionContext, args: Value) -> String {
+    let request = SendMessageRequest {
+        agent_uuid: string_arg(&args, "agent_uuid").unwrap_or_default(),
+        message_body: MessageBody {
+            text: string_arg(&args, "message").unwrap_or_default(),
+            attachments: Vec::new(),
+        },
+    };
+    match ctx.handles.agent.send_message(request).await {
+        Ok(()) => json!({"status": "ok"}).to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }

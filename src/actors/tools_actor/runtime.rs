@@ -57,6 +57,7 @@ register_tools! {
     prismagent::uuid_new / execute_uuid_new,
     prismagent::read_skill / execute_read_skill,
     prismagent::agent_new / execute_agent_new,
+    prismagent::agent_send_message / execute_agent_send_message,
     prismagent::context_new / execute_context_new,
     prismagent::workflow_new / execute_workflow_new,
     prismagent::workflow_run / execute_workflow_run,
