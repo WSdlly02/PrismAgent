@@ -6,7 +6,7 @@ use crate::actors::storage_actor::model::workflow::WorkflowCreateRequest;
 use crate::actors::tools_actor::model::ToolExecutionContext;
 use crate::actors::tools_actor::runtime::tool_template;
 use crate::actors::workflow_actor::model::{
-    ListContextOutRequest, TaskFinishedRequest, WorkflowRunRequest, WorkflowTriggerCreateRequest,
+    ShowMyselfRequest, TaskFinishedRequest, WorkflowRunRequest, WorkflowTriggerCreateRequest,
 };
 use genai::chat::Tool;
 use serde_json::{Value, json};
@@ -153,15 +153,13 @@ pub fn trigger_new() -> Tool {
     )
 }
 
-pub fn list_context_out() -> Tool {
+pub fn show_myself() -> Tool {
     tool_template(
-        "prismagent_list_context_out",
-        "List the expected context_out UUIDs for an agent and whether each context currently exists.",
+        "prismagent_show_myself",
+        "Show stable metadata for the current caller agent, including context_refs and context_out existence.",
         json!({
             "type": "object",
-            "properties": {
-                "agent_uuid": {"type": "string", "description": "Agent UUID. Defaults to the current caller agent if omitted."}
-            },
+            "properties": {},
             "required": []
         }),
     )
@@ -285,14 +283,13 @@ pub async fn execute_trigger_new(ctx: ToolExecutionContext, args: Value) -> Stri
     }
 }
 
-pub async fn execute_list_context_out(ctx: ToolExecutionContext, args: Value) -> String {
-    let request = ListContextOutRequest {
+pub async fn execute_show_myself(ctx: ToolExecutionContext, _args: Value) -> String {
+    let request = ShowMyselfRequest {
         workspace_uuid: ctx.workspace_uuid.clone(),
-        agent_uuid: string_arg(&args, "agent_uuid")
-            .unwrap_or_else(|| ctx.caller_agent_uuid.clone()),
+        agent_uuid: ctx.caller_agent_uuid.clone(),
     };
-    match ctx.handles.workflow.list_context_out(request).await {
-        Ok(response) => json!({"status": "ok", "context_out": response}).to_string(),
+    match ctx.handles.workflow.show_myself(request).await {
+        Ok(response) => json!({"status": "ok", "agent": response}).to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }

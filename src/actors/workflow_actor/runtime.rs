@@ -2,7 +2,7 @@ use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest};
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::workflow_actor::model::{
-    ContextOutStatus, ListContextOutRequest, ListContextOutResponse, TaskFinishedRequest,
+    ContextStatus, ShowMyselfRequest, ShowMyselfResponse, TaskFinishedRequest,
     TaskFinishedResponse, WORKFLOW_ACTOR, WorkflowActor, WorkflowHandle, WorkflowMsg,
     WorkflowRunRequest, WorkflowRuntime, WorkflowTrigger, WorkflowTriggerCreateRequest,
 };
@@ -47,8 +47,8 @@ impl WorkflowActor {
                 WorkflowMsg::TaskFinished { request, reply } => {
                     let _ = reply.send(self.task_finished(request).await);
                 }
-                WorkflowMsg::ListContextOut { request, reply } => {
-                    let _ = reply.send(self.list_context_out(request).await);
+                WorkflowMsg::ShowMyself { request, reply } => {
+                    let _ = reply.send(self.show_myself(request).await);
                 }
             }
         }
@@ -175,7 +175,7 @@ impl WorkflowActor {
         let agent = agents
             .first()
             .ok_or_else(|| SubsystemError::not_found("agent", &request.agent_uuid))?;
-        let context_out = context_out_status(
+        let context_out = context_status(
             &self.handles,
             &request.workspace_uuid,
             agent.context_out.clone(),
@@ -205,10 +205,7 @@ impl WorkflowActor {
         })
     }
 
-    async fn list_context_out(
-        &self,
-        request: ListContextOutRequest,
-    ) -> SubsystemResult<ListContextOutResponse> {
+    async fn show_myself(&self, request: ShowMyselfRequest) -> SubsystemResult<ShowMyselfResponse> {
         let agents = self
             .handles
             .storage
@@ -220,9 +217,18 @@ impl WorkflowActor {
         let agent = agents
             .first()
             .ok_or_else(|| SubsystemError::not_found("agent", &request.agent_uuid))?;
-        Ok(ListContextOutResponse {
-            agent_uuid: request.agent_uuid,
-            context_out: context_out_status(
+        Ok(ShowMyselfResponse {
+            agent_uuid: agent.uuid.clone(),
+            name: agent.name.clone(),
+            profile: agent.profile.clone(),
+            auto_loop: agent.auto_loop,
+            context_refs: context_status(
+                &self.handles,
+                &request.workspace_uuid,
+                agent.context_refs.clone(),
+            )
+            .await?,
+            context_out: context_status(
                 &self.handles,
                 &request.workspace_uuid,
                 agent.context_out.clone(),
@@ -356,11 +362,11 @@ impl WorkflowHandle {
         .await
     }
 
-    pub async fn list_context_out(
+    pub async fn show_myself(
         &self,
-        request_body: ListContextOutRequest,
-    ) -> SubsystemResult<ListContextOutResponse> {
-        request(&self.tx, |reply| WorkflowMsg::ListContextOut {
+        request_body: ShowMyselfRequest,
+    ) -> SubsystemResult<ShowMyselfResponse> {
+        request(&self.tx, |reply| WorkflowMsg::ShowMyself {
             request: request_body,
             reply,
         })
@@ -413,20 +419,20 @@ fn uuid_new(count: usize) -> SubsystemResult<Vec<String>> {
     Ok(uuids)
 }
 
-async fn context_out_status(
+async fn context_status(
     handles: &AppHandles,
     workspace_uuid: &str,
-    context_out: Vec<String>,
-) -> SubsystemResult<Vec<ContextOutStatus>> {
+    context_uuids: Vec<String>,
+) -> SubsystemResult<Vec<ContextStatus>> {
     let existing = handles
         .storage
         .list_contexts(workspace_uuid.to_string())
         .await?
         .into_iter()
         .collect::<HashSet<_>>();
-    Ok(context_out
+    Ok(context_uuids
         .into_iter()
-        .map(|context_uuid| ContextOutStatus {
+        .map(|context_uuid| ContextStatus {
             exists: existing.contains(&context_uuid),
             context_uuid,
         })

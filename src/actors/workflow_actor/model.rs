@@ -45,9 +45,9 @@ pub enum WorkflowMsg {
         request: TaskFinishedRequest,
         reply: oneshot::Sender<SubsystemResult<TaskFinishedResponse>>,
     },
-    ListContextOut {
-        request: ListContextOutRequest,
-        reply: oneshot::Sender<SubsystemResult<ListContextOutResponse>>,
+    ShowMyself {
+        request: ShowMyselfRequest,
+        reply: oneshot::Sender<SubsystemResult<ShowMyselfResponse>>,
     },
 }
 
@@ -108,21 +108,25 @@ pub struct TaskFinishedResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListContextOutRequest {
+pub struct ShowMyselfRequest {
     pub workspace_uuid: String,
     pub agent_uuid: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextOutStatus {
+pub struct ContextStatus {
     pub context_uuid: String,
     pub exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ListContextOutResponse {
+pub struct ShowMyselfResponse {
     pub agent_uuid: String,
-    pub context_out: Vec<ContextOutStatus>,
+    pub name: String,
+    pub profile: String,
+    pub auto_loop: bool,
+    pub context_refs: Vec<ContextStatus>,
+    pub context_out: Vec<ContextStatus>,
 }
 
 fn default_coordinator_profile() -> String {

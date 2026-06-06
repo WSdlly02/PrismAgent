@@ -62,7 +62,7 @@ register_tools! {
     prismagent::workflow_run / execute_workflow_run,
     prismagent::trigger_new / execute_trigger_new,
     prismagent::list_profiles / execute_list_profiles,
-    prismagent::list_context_out / execute_list_context_out,
+    prismagent::show_myself / execute_show_myself,
     prismagent::task_finished / execute_task_finished,
 }
 
