@@ -7,7 +7,6 @@ use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
-use directories::BaseDirs;
 use genai::chat::ChatMessage;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -295,9 +294,8 @@ fn workspaces_root() -> SubsystemResult<PathBuf> {
 }
 
 fn prismagent_root() -> SubsystemResult<PathBuf> {
-    Ok(BaseDirs::new()
+    Ok(dirs::home_dir()
         .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
-        .home_dir()
         .join(".prismagent"))
 }
 

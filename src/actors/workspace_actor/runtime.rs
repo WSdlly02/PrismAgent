@@ -8,9 +8,8 @@ use tokio::sync::mpsc;
 
 impl WorkspaceActor {
     pub fn load(rx: mpsc::Receiver<WorkspaceMsg>) -> SubsystemResult<Self> {
-        let root = directories::BaseDirs::new()
+        let root = dirs::home_dir()
             .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
-            .home_dir()
             .join(".prismagent")
             .join("workspaces");
         Self::from_root(rx, root)

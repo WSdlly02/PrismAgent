@@ -3,7 +3,6 @@ use crate::actors::profile_actor::model::{
     ProfileHandle, ProfileMsg, PromptsConfigSection, ToolsConfigSection,
 };
 use crate::error::{SubsystemError, SubsystemResult};
-use directories::BaseDirs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -149,9 +148,8 @@ async fn request<T>(
 }
 
 fn default_profiles_root() -> SubsystemResult<PathBuf> {
-    Ok(BaseDirs::new()
+    Ok(dirs::home_dir()
         .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
-        .home_dir()
         .join(".prismagent")
         .join("profiles"))
 }

@@ -15,7 +15,7 @@ uuid = { version = "1.23.2", features = ["v7", "fast-rng"] }
 serde_json = "1.0.150"
 toml = "1.1.2"
 chrono = "0.4.45"
-directories = "6.0.0"
+dirs = "6.0.0"
 genai = "0.6"
 reqwest = { version = "0.13", features = ["json"] }
 urlencoding = "2"
@@ -27,6 +27,7 @@ petname = { version = "3.0.0", default-features = false, features = [
   "default-words",
   "macros",
 ] }
+
 
 [profile.release]
 opt-level = 3
