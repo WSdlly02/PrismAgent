@@ -21,6 +21,10 @@ pub enum WorkspaceMsg {
     List {
         reply: oneshot::Sender<SubsystemResult<Vec<WorkspaceSummary>>>,
     },
+    Create {
+        request: WorkspaceCreateRequest,
+        reply: oneshot::Sender<SubsystemResult<WorkspaceSummary>>,
+    },
     Contains {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<bool>>,
@@ -34,6 +38,11 @@ pub enum WorkspaceMsg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub uuid: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceCreateRequest {
     pub path: PathBuf,
 }
 

@@ -1,10 +1,12 @@
 use crate::actors::workspace_actor::model::{
-    WORKSPACE_ACTOR, Workspace, WorkspaceActor, WorkspaceHandle, WorkspaceMsg, WorkspaceSummary,
+    WORKSPACE_ACTOR, Workspace, WorkspaceActor, WorkspaceCreateRequest, WorkspaceHandle,
+    WorkspaceMsg, WorkspaceSummary,
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 impl WorkspaceActor {
     pub fn load(rx: mpsc::Receiver<WorkspaceMsg>) -> SubsystemResult<Self> {
@@ -33,6 +35,9 @@ impl WorkspaceActor {
             match msg {
                 WorkspaceMsg::List { reply } => {
                     let _ = reply.send(self.list());
+                }
+                WorkspaceMsg::Create { request, reply } => {
+                    let _ = reply.send(self.create(request));
                 }
                 WorkspaceMsg::Contains {
                     workspace_uuid,
@@ -75,12 +80,57 @@ impl WorkspaceActor {
         Ok(workspaces)
     }
 
+    fn create(&mut self, request: WorkspaceCreateRequest) -> SubsystemResult<WorkspaceSummary> {
+        let workspace_path = std::fs::canonicalize(&request.path)?;
+        if !workspace_path.is_dir() {
+            return Err(SubsystemError::invalid_input(format!(
+                "workspace path is not a directory: {}",
+                workspace_path.display()
+            )));
+        }
+        let existing = self.list()?;
+        if existing
+            .iter()
+            .any(|workspace| workspace.workspace_path == workspace_path)
+        {
+            return Err(SubsystemError::Conflict {
+                resource: "workspace_path",
+                id: workspace_path.display().to_string(),
+            });
+        }
+        let uuid = Uuid::now_v7().to_string();
+        let workspace_root = self.root.join(&uuid);
+        std::fs::create_dir(&workspace_root)?;
+        for child in ["agents", "units", "contexts", "workflows", "misc", "skills"] {
+            std::fs::create_dir_all(workspace_root.join(child))?;
+        }
+        let workspace = Workspace {
+            uuid,
+            path: workspace_path,
+        };
+        write_workspace(&workspace_root.join("metadata.json"), &workspace)?;
+        self.workspaces
+            .insert(workspace.uuid.clone(), workspace.clone());
+        Ok(WorkspaceSummary {
+            workspace_uuid: workspace.uuid,
+            workspace_path: workspace.path,
+            locked_by: None,
+        })
+    }
+
     fn get(&self, workspace_uuid: &str) -> SubsystemResult<Workspace> {
         self.workspaces
             .get(workspace_uuid)
             .cloned()
             .ok_or_else(|| SubsystemError::not_found("workspace", workspace_uuid))
     }
+}
+
+fn write_workspace(path: &std::path::Path, workspace: &Workspace) -> SubsystemResult<()> {
+    let data = serde_json::to_vec_pretty(workspace)
+        .map_err(|error| SubsystemError::invalid_input(error.to_string()))?;
+    std::fs::write(path, data)?;
+    Ok(())
 }
 
 fn read_workspace(path: &std::path::Path) -> SubsystemResult<Workspace> {
@@ -111,6 +161,23 @@ impl WorkspaceHandle {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(WorkspaceMsg::List { reply: reply_tx })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?
+    }
+
+    pub async fn create(
+        &self,
+        request_body: WorkspaceCreateRequest,
+    ) -> SubsystemResult<WorkspaceSummary> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(WorkspaceMsg::Create {
+                request: request_body,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
         reply_rx
