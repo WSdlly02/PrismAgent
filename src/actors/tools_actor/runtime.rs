@@ -64,6 +64,7 @@ register_tools! {
     prismagent::trigger_new / execute_trigger_new,
     prismagent::list_profiles / execute_list_profiles,
     prismagent::show_myself / execute_show_myself,
+    prismagent::update_myself / execute_update_myself,
     prismagent::task_finished / execute_task_finished,
 }
 

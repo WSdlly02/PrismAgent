@@ -1,14 +1,16 @@
 use crate::actors::agent_actor::model::{
     AGENT_ACTOR, AgentActor, AgentEvent, AgentHandle, AgentInferenceOutput, AgentMsg, AgentRuntime,
     AgentSnapshot, AgentStatus, AgentSummary, ApproveRequest, PendingApproval, PendingToolBatch,
-    SendMessageRequest, ToolBatchOutput,
+    SendMessageRequest, ToolBatchOutput, UpdateMyselfRequest,
 };
 use crate::actors::agent_actor::pipeline::{
     clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
     tool_batch_is_auto_approved, tool_response_units,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
-use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
+use crate::actors::storage_actor::model::agent::{
+    Agent, AgentCreateRequest, AgentUpdateRequest as StorageAgentUpdateRequest,
+};
 use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
@@ -58,6 +60,9 @@ impl AgentActor {
                 }
                 AgentMsg::SendMessage { request, reply } => {
                     let _ = reply.send(self.send_message(request).await);
+                }
+                AgentMsg::UpdateMyself { request, reply } => {
+                    let _ = reply.send(self.update_myself(request).await);
                 }
                 AgentMsg::ApproveRequest { request, reply } => {
                     let _ = reply.send(self.approve_request(request).await);
@@ -251,6 +256,37 @@ impl AgentActor {
         let runtime = self.runtime_mut(&agent_uuid)?;
         runtime.inference_uuid = Some(inference_uuid);
         Ok(())
+    }
+
+    async fn update_myself(&mut self, request: UpdateMyselfRequest) -> SubsystemResult<Agent> {
+        self.agent(&request.agent_uuid)?;
+        if request.context_refs.is_none()
+            && request.context_out.is_none()
+            && request.auto_loop.is_none()
+        {
+            return Err(SubsystemError::invalid_input(
+                "update_myself requires at least one field",
+            ));
+        }
+        if request.auto_loop == Some(true) {
+            return Err(SubsystemError::invalid_input(
+                "update_myself only supports setting auto_loop to false; use prismagent_task_finished for normal task completion",
+            ));
+        }
+        let workspace_uuid = self.workspace_uuid(&request.agent_uuid)?.to_string();
+        let agent = self
+            .handles
+            .storage
+            .update_agent(StorageAgentUpdateRequest {
+                workspace_uuid,
+                agent_uuid: request.agent_uuid.clone(),
+                context_refs: request.context_refs,
+                context_out: request.context_out,
+                auto_loop: request.auto_loop,
+            })
+            .await?;
+        self.agents.insert(agent.uuid.clone(), agent.clone());
+        Ok(agent)
     }
 
     async fn finish_inference(
@@ -695,6 +731,14 @@ impl AgentHandle {
 
     pub async fn send_message(&self, request_body: SendMessageRequest) -> SubsystemResult<()> {
         request(&self.tx, |reply| AgentMsg::SendMessage {
+            request: request_body,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn update_myself(&self, request_body: UpdateMyselfRequest) -> SubsystemResult<Agent> {
+        request(&self.tx, |reply| AgentMsg::UpdateMyself {
             request: request_body,
             reply,
         })

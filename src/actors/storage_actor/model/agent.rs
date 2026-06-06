@@ -51,6 +51,15 @@ pub struct AgentCreateRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub struct AgentUpdateRequest {
+    pub workspace_uuid: String,
+    pub agent_uuid: String,
+    pub context_refs: Option<Vec<String>>,
+    pub context_out: Option<Vec<String>>,
+    pub auto_loop: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AgentAppendUnitsRequest {
     pub agent_uuid: String,
     pub units: Vec<Unit>,

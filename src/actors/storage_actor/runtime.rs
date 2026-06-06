@@ -1,4 +1,4 @@
-use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
+use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest, AgentUpdateRequest};
 use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
@@ -68,6 +68,9 @@ impl StorageActor {
                 } => {
                     let _ =
                         reply.send(self.set_agent_auto_loop(&workspace_uuid, &agent_uuid, enabled));
+                }
+                StorageMsg::UpdateAgent { request, reply } => {
+                    let _ = reply.send(self.update_agent(request));
                 }
                 StorageMsg::AppendAgentUnits {
                     workspace_uuid,
@@ -217,6 +220,29 @@ impl StorageActor {
             SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
         })?;
         agent.auto_loop = enabled;
+        agent.updated_at = chrono::Utc::now().timestamp();
+        let new_data = to_pretty_json_vec(&agent)?;
+        atomic_replace_file(&agent_path, &old_data, &new_data)?;
+        Ok(agent)
+    }
+
+    fn update_agent(&self, request: AgentUpdateRequest) -> SubsystemResult<Agent> {
+        let agent_path = self.agent_path(&request.workspace_uuid, &request.agent_uuid)?;
+        let old_data = std::fs::read(&agent_path)?;
+        let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
+            SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
+        })?;
+        if let Some(context_refs) = request.context_refs {
+            validate_object_names(&context_refs, "context_refs")?;
+            agent.context_refs = context_refs;
+        }
+        if let Some(context_out) = request.context_out {
+            validate_object_names(&context_out, "context_out")?;
+            agent.context_out = context_out;
+        }
+        if let Some(auto_loop) = request.auto_loop {
+            agent.auto_loop = auto_loop;
+        }
         agent.updated_at = chrono::Utc::now().timestamp();
         let new_data = to_pretty_json_vec(&agent)?;
         atomic_replace_file(&agent_path, &old_data, &new_data)?;
@@ -527,6 +553,20 @@ impl StorageHandle {
                 workspace_uuid: workspace_uuid.into(),
                 agent_uuid: agent_uuid.into(),
                 enabled,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn update_agent(&self, request: AgentUpdateRequest) -> SubsystemResult<Agent> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::UpdateAgent {
+                request,
                 reply: reply_tx,
             })
             .await
@@ -902,4 +942,11 @@ fn validate_object_name(value: &str, field: &'static str) -> SubsystemResult<()>
             "invalid {field}: {value}"
         )))
     }
+}
+
+fn validate_object_names(values: &[String], field: &'static str) -> SubsystemResult<()> {
+    for value in values {
+        validate_object_name(value, field)?;
+    }
+    Ok(())
 }

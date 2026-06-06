@@ -1,4 +1,4 @@
-use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest};
+use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest, UpdateMyselfRequest};
 use crate::actors::context_actor::model::ReadSkillRequest;
 use crate::actors::profile_actor::model::DEFAULT_PROFILE_NAME;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
@@ -181,6 +181,33 @@ pub fn agent_send_message() -> Tool {
     )
 }
 
+pub fn update_myself() -> Tool {
+    tool_template(
+        "prismagent_update_myself",
+        "Update mutable metadata for the current caller agent. Only context_refs, context_out, and auto_loop=false are supported. Use auto_loop=false only to stop accidental infinite loops; use prismagent_task_finished for normal task completion.",
+        json!({
+            "type": "object",
+            "properties": {
+                "context_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replacement context UUIDs this agent depends on"
+                },
+                "context_out": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replacement context UUIDs this agent is expected to produce"
+                },
+                "auto_loop": {
+                    "type": "boolean",
+                    "description": "Only false is allowed. Use only to stop accidental infinite loops; normal task completion must use prismagent_task_finished."
+                }
+            },
+            "required": []
+        }),
+    )
+}
+
 pub fn task_finished() -> Tool {
     tool_template(
         "prismagent_task_finished",
@@ -324,6 +351,19 @@ pub async fn execute_agent_send_message(ctx: ToolExecutionContext, args: Value) 
     }
 }
 
+pub async fn execute_update_myself(ctx: ToolExecutionContext, args: Value) -> String {
+    let request = UpdateMyselfRequest {
+        agent_uuid: ctx.caller_agent_uuid.clone(),
+        context_refs: optional_string_array_arg(&args, "context_refs"),
+        context_out: optional_string_array_arg(&args, "context_out"),
+        auto_loop: args.get("auto_loop").and_then(Value::as_bool),
+    };
+    match ctx.handles.agent.update_myself(request).await {
+        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
+}
+
 pub async fn execute_task_finished(ctx: ToolExecutionContext, args: Value) -> String {
     let summary = string_arg(&args, "summary").unwrap_or_else(|| "task finished".to_string());
     let context_outputs = string_array_arg(&args, "context_outputs");
@@ -361,6 +401,10 @@ fn string_array_arg(args: &Value, name: &str) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+fn optional_string_array_arg(args: &Value, name: &str) -> Option<Vec<String>> {
+    args.get(name).map(|_| string_array_arg(args, name))
 }
 
 fn metadata_arg(args: &Value) -> HashMap<String, String> {

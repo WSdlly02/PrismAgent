@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
+use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest, AgentUpdateRequest};
 use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry, MiscWriteEntry};
 use crate::actors::storage_actor::model::unit::Unit;
@@ -53,6 +53,10 @@ pub enum StorageMsg {
         workspace_uuid: String,
         agent_uuid: String,
         enabled: bool,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
+    },
+    UpdateAgent {
+        request: AgentUpdateRequest,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     AppendAgentUnits {
