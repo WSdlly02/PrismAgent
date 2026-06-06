@@ -154,6 +154,7 @@ impl AgentActor {
             .context
             .render_initial_prompts(RenderInitialPromptsRequest {
                 workspace_uuid: workspace_uuid.clone(),
+                agent_uuid: request.uuid.clone(),
                 context_refs,
                 profile,
             })

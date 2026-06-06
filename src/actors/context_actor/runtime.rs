@@ -54,7 +54,7 @@ impl ContextActor {
             workspace_uuid: request.workspace_uuid.clone(),
             profile: request.profile.clone(),
         })?;
-        let system = render_system_prompt(&request.profile, &capabilities);
+        let system = render_system_prompt(&request.profile, &request.agent_uuid, &capabilities);
         let mut system_unit = Unit::from_chat_message(ChatMessage::system(system));
         system_unit.visibility =
             crate::actors::storage_actor::model::unit::UnitVisibility::Internal;
@@ -115,10 +115,12 @@ async fn request<T>(
 
 fn render_system_prompt(
     profile: &crate::actors::profile_actor::model::Profile,
+    agent_uuid: &str,
     capabilities: &str,
 ) -> String {
     let system = &profile.prompts.system;
     [
+        &format!("# Runtime Identity\n\nagent_uuid: {agent_uuid}"),
         system.identity.trim(),
         system.behavior.trim(),
         system.response_style.trim(),

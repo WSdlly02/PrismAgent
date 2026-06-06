@@ -38,6 +38,7 @@ pub struct ResolveContextRefsRequest {
 #[derive(Debug, Clone)]
 pub struct RenderInitialPromptsRequest {
     pub workspace_uuid: String,
+    pub agent_uuid: String,
     pub context_refs: Vec<String>,
     pub profile: Profile,
 }

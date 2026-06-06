@@ -40,8 +40,8 @@ pub enum ToolsMsg {
     },
 }
 
-pub type ToolFuture = Pin<Box<dyn Future<Output = String> + Send>>;
-pub type ToolExecutor = fn(ToolExecutionContext, Value) -> ToolFuture;
+pub type ToolFuture = Pin<Box<dyn Future<Output = String> + Send>>; // type alias for boxed future of string result, since async fn pointers are not directly supported in traits or structs
+pub type ToolExecutor = fn(ToolExecutionContext, Value) -> ToolFuture; // fn pointer to async function that takes context and args, returns future of string result
 
 #[derive(Clone)]
 pub struct ToolExecutionContext {
