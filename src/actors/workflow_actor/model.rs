@@ -34,6 +34,10 @@ pub enum WorkflowMsg {
         request: WorkflowRunRequest,
         reply: oneshot::Sender<SubsystemResult<WorkflowRuntime>>,
     },
+    WorkflowCancel {
+        request: WorkflowCancelRequest,
+        reply: oneshot::Sender<SubsystemResult<WorkflowCancelResponse>>,
+    },
     ContextNew {
         request: ContextCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Context>>,
@@ -71,6 +75,20 @@ pub struct WorkflowRunRequest {
     pub coordinator_name: String,
     #[serde(default = "default_coordinator_profile")]
     pub coordinator_profile: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCancelRequest {
+    pub workspace_uuid: String,
+    pub workflow_uuid: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCancelResponse {
+    pub workspace_uuid: String,
+    pub workflow_uuid: String,
+    pub coordinator_agent_uuid: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

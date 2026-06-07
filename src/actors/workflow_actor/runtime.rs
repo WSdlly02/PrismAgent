@@ -4,8 +4,8 @@ use crate::actors::storage_actor::model::context::Context;
 use crate::actors::workflow_actor::model::{
     AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, ShowMyselfRequest,
     ShowMyselfResponse, TaskFinishedRequest, TaskFinishedResponse, WORKFLOW_ACTOR, WorkflowActor,
-    WorkflowHandle, WorkflowMsg, WorkflowRunRequest, WorkflowRuntime, WorkflowTrigger,
-    WorkflowTriggerCreateRequest,
+    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg, WorkflowRunRequest,
+    WorkflowRuntime, WorkflowTrigger, WorkflowTriggerCreateRequest,
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
@@ -38,6 +38,9 @@ impl WorkflowActor {
                 }
                 WorkflowMsg::WorkflowRun { request, reply } => {
                     let _ = reply.send(self.workflow_run(request).await);
+                }
+                WorkflowMsg::WorkflowCancel { request, reply } => {
+                    let _ = reply.send(self.workflow_cancel(request).await);
                 }
                 WorkflowMsg::ContextNew { request, reply } => {
                     let _ = reply.send(self.context_new(request).await);
@@ -108,6 +111,39 @@ impl WorkflowActor {
             })
             .await?;
         Ok(runtime)
+    }
+
+    async fn workflow_cancel(
+        &mut self,
+        request: WorkflowCancelRequest,
+    ) -> SubsystemResult<WorkflowCancelResponse> {
+        let key = (
+            request.workspace_uuid.clone(),
+            request.workflow_uuid.clone(),
+        );
+        let runtime =
+            self.runtimes.get(&key).cloned().ok_or_else(|| {
+                SubsystemError::not_found("workflow_runtime", &request.workflow_uuid)
+            })?;
+        self.handles
+            .agent
+            .send_message(SendMessageRequest {
+                agent_uuid: runtime.coordinator_agent_uuid.clone(),
+                message_body: MessageBody {
+                    text: format!(
+                        "# Workflow Cancellation\n\nWorkflow `{}` has been cancelled by the user.\n\nReason:\n{}\n\nCoordinate a clean cancellation:\n1. Use prismagent_list_agents to inspect related agents.\n2. Use prismagent_agent_terminate for agents that should stop cleanly.\n3. Ensure required context_out documents are written if cleanup requires them.\n4. Let workflow triggers fire normally as cleanup contexts are produced.\n5. When coordinator cleanup is complete, wait for the next trigger or report completion as appropriate.",
+                        runtime.workflow_uuid,
+                        request.reason.trim()
+                    ),
+                    attachments: Vec::new(),
+                },
+            })
+            .await?;
+        Ok(WorkflowCancelResponse {
+            workspace_uuid: runtime.workspace_uuid,
+            workflow_uuid: runtime.workflow_uuid,
+            coordinator_agent_uuid: runtime.coordinator_agent_uuid,
+        })
     }
 
     async fn context_new(
@@ -385,6 +421,17 @@ impl WorkflowHandle {
         request_body: ListAgentsRequest,
     ) -> SubsystemResult<ListAgentsResponse> {
         request(&self.tx, |reply| WorkflowMsg::ListAgents {
+            request: request_body,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn workflow_cancel(
+        &self,
+        request_body: WorkflowCancelRequest,
+    ) -> SubsystemResult<WorkflowCancelResponse> {
+        request(&self.tx, |reply| WorkflowMsg::WorkflowCancel {
             request: request_body,
             reply,
         })
