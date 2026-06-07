@@ -1,10 +1,11 @@
-use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest};
+use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRequest};
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::workflow_actor::model::{
-    ContextStatus, ShowMyselfRequest, ShowMyselfResponse, TaskFinishedRequest,
-    TaskFinishedResponse, WORKFLOW_ACTOR, WorkflowActor, WorkflowHandle, WorkflowMsg,
-    WorkflowRunRequest, WorkflowRuntime, WorkflowTrigger, WorkflowTriggerCreateRequest,
+    AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, ShowMyselfRequest,
+    ShowMyselfResponse, TaskFinishedRequest, TaskFinishedResponse, WORKFLOW_ACTOR, WorkflowActor,
+    WorkflowHandle, WorkflowMsg, WorkflowRunRequest, WorkflowRuntime, WorkflowTrigger,
+    WorkflowTriggerCreateRequest,
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
@@ -49,6 +50,9 @@ impl WorkflowActor {
                 }
                 WorkflowMsg::ShowMyself { request, reply } => {
                     let _ = reply.send(self.show_myself(request).await);
+                }
+                WorkflowMsg::ListAgents { request, reply } => {
+                    let _ = reply.send(self.list_agents(request).await);
                 }
             }
         }
@@ -175,12 +179,15 @@ impl WorkflowActor {
         let agent = agents
             .first()
             .ok_or_else(|| SubsystemError::not_found("agent", &request.agent_uuid))?;
-        let context_out = context_status(
-            &self.handles,
-            &request.workspace_uuid,
-            agent.context_out.clone(),
-        )
-        .await?;
+        let existing_contexts = self
+            .handles
+            .storage
+            .list_contexts(request.workspace_uuid.clone())
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let context_out =
+            context_status_from_existing(agent.context_out.clone(), &existing_contexts);
         let missing = context_out
             .iter()
             .filter(|status| !status.exists)
@@ -206,34 +213,34 @@ impl WorkflowActor {
     }
 
     async fn show_myself(&self, request: ShowMyselfRequest) -> SubsystemResult<ShowMyselfResponse> {
+        self.list_agents(ListAgentsRequest {
+            workspace_uuid: request.workspace_uuid,
+        })
+        .await?
+        .agents
+        .into_iter()
+        .find(|agent| agent.agent_uuid == request.agent_uuid)
+        .ok_or_else(|| SubsystemError::not_found("agent", request.agent_uuid))
+    }
+
+    async fn list_agents(&self, request: ListAgentsRequest) -> SubsystemResult<ListAgentsResponse> {
         let agents = self
             .handles
-            .storage
-            .read_agents(
-                request.workspace_uuid.clone(),
-                vec![request.agent_uuid.clone()],
-            )
+            .agent
+            .list(request.workspace_uuid.clone())
             .await?;
-        let agent = agents
-            .first()
-            .ok_or_else(|| SubsystemError::not_found("agent", &request.agent_uuid))?;
-        Ok(ShowMyselfResponse {
-            agent_uuid: agent.uuid.clone(),
-            name: agent.name.clone(),
-            profile: agent.profile.clone(),
-            auto_loop: agent.auto_loop,
-            context_refs: context_status(
-                &self.handles,
-                &request.workspace_uuid,
-                agent.context_refs.clone(),
-            )
-            .await?,
-            context_out: context_status(
-                &self.handles,
-                &request.workspace_uuid,
-                agent.context_out.clone(),
-            )
-            .await?,
+        let existing_contexts = self
+            .handles
+            .storage
+            .list_contexts(request.workspace_uuid)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        Ok(ListAgentsResponse {
+            agents: agents
+                .into_iter()
+                .map(|agent| agent_view(agent, &existing_contexts))
+                .collect(),
         })
     }
 
@@ -372,6 +379,17 @@ impl WorkflowHandle {
         })
         .await
     }
+
+    pub async fn list_agents(
+        &self,
+        request_body: ListAgentsRequest,
+    ) -> SubsystemResult<ListAgentsResponse> {
+        request(&self.tx, |reply| WorkflowMsg::ListAgents {
+            request: request_body,
+            reply,
+        })
+        .await
+    }
 }
 
 fn validate_runtime_id(value: &str, field: &'static str) -> SubsystemResult<()> {
@@ -419,22 +437,27 @@ fn uuid_new(count: usize) -> SubsystemResult<Vec<String>> {
     Ok(uuids)
 }
 
-async fn context_status(
-    handles: &AppHandles,
-    workspace_uuid: &str,
+fn agent_view(agent: AgentSummary, existing_contexts: &HashSet<String>) -> AgentView {
+    AgentView {
+        agent_uuid: agent.agent_uuid,
+        name: agent.agent_name,
+        profile: agent.profile,
+        auto_loop: agent.auto_loop,
+        status: agent.status,
+        context_refs: context_status_from_existing(agent.context_refs, existing_contexts),
+        context_out: context_status_from_existing(agent.context_out, existing_contexts),
+    }
+}
+
+fn context_status_from_existing(
     context_uuids: Vec<String>,
-) -> SubsystemResult<Vec<ContextStatus>> {
-    let existing = handles
-        .storage
-        .list_contexts(workspace_uuid.to_string())
-        .await?
-        .into_iter()
-        .collect::<HashSet<_>>();
-    Ok(context_uuids
+    existing: &HashSet<String>,
+) -> Vec<ContextStatus> {
+    context_uuids
         .into_iter()
         .map(|context_uuid| ContextStatus {
             exists: existing.contains(&context_uuid),
             context_uuid,
         })
-        .collect())
+        .collect()
 }

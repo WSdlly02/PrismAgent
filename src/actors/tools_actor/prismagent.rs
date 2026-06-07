@@ -7,11 +7,12 @@ use crate::actors::storage_actor::model::workflow::WorkflowCreateRequest;
 use crate::actors::tools_actor::model::ToolExecutionContext;
 use crate::actors::tools_actor::runtime::tool_template;
 use crate::actors::workflow_actor::model::{
-    ShowMyselfRequest, TaskFinishedRequest, WorkflowRunRequest, WorkflowTriggerCreateRequest,
+    ListAgentsRequest, ShowMyselfRequest, TaskFinishedRequest, WorkflowRunRequest,
+    WorkflowTriggerCreateRequest,
 };
 use genai::chat::Tool;
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub fn uuid_new() -> Tool {
     tool_template(
@@ -307,34 +308,17 @@ pub async fn execute_agent_new(ctx: ToolExecutionContext, args: Value) -> String
 }
 
 pub async fn execute_list_agents(ctx: ToolExecutionContext, _args: Value) -> String {
-    let agents = match ctx.handles.agent.list(ctx.workspace_uuid.clone()).await {
-        Ok(agents) => agents,
-        Err(error) => return json!({"status": "error", "error": error.to_string()}).to_string(),
-    };
-    let existing_contexts = match ctx
+    match ctx
         .handles
-        .storage
-        .list_contexts(ctx.workspace_uuid.clone())
+        .workflow
+        .list_agents(ListAgentsRequest {
+            workspace_uuid: ctx.workspace_uuid.clone(),
+        })
         .await
     {
-        Ok(contexts) => contexts.into_iter().collect::<HashSet<_>>(),
-        Err(error) => return json!({"status": "error", "error": error.to_string()}).to_string(),
-    };
-    let agents = agents
-        .into_iter()
-        .map(|agent| {
-            json!({
-                "agent_uuid": agent.agent_uuid,
-                "name": agent.agent_name,
-                "profile": agent.profile,
-                "auto_loop": agent.auto_loop,
-                "status": agent.status,
-                "context_refs": context_statuses(agent.context_refs, &existing_contexts),
-                "context_out": context_statuses(agent.context_out, &existing_contexts),
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({"status": "ok", "agents": agents}).to_string()
+        Ok(response) => json!({"status": "ok", "agents": response.agents}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
 }
 
 pub async fn execute_list_profiles(ctx: ToolExecutionContext, _args: Value) -> String {
@@ -540,18 +524,6 @@ fn string_array_arg(args: &Value, name: &str) -> Vec<String> {
 
 fn optional_string_array_arg(args: &Value, name: &str) -> Option<Vec<String>> {
     args.get(name).map(|_| string_array_arg(args, name))
-}
-
-fn context_statuses(context_uuids: Vec<String>, existing_contexts: &HashSet<String>) -> Vec<Value> {
-    context_uuids
-        .into_iter()
-        .map(|context_uuid| {
-            json!({
-                "context_uuid": context_uuid,
-                "exists": existing_contexts.contains(&context_uuid),
-            })
-        })
-        .collect()
 }
 
 fn metadata_arg(args: &Value) -> HashMap<String, String> {

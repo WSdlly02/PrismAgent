@@ -1,3 +1,4 @@
+use crate::actors::agent_actor::model::AgentStatus;
 use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::error::SubsystemResult;
@@ -48,6 +49,10 @@ pub enum WorkflowMsg {
     ShowMyself {
         request: ShowMyselfRequest,
         reply: oneshot::Sender<SubsystemResult<ShowMyselfResponse>>,
+    },
+    ListAgents {
+        request: ListAgentsRequest,
+        reply: oneshot::Sender<SubsystemResult<ListAgentsResponse>>,
     },
 }
 
@@ -114,19 +119,32 @@ pub struct ShowMyselfRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListAgentsRequest {
+    pub workspace_uuid: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextStatus {
     pub context_uuid: String,
     pub exists: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShowMyselfResponse {
+pub struct AgentView {
     pub agent_uuid: String,
     pub name: String,
     pub profile: String,
     pub auto_loop: bool,
+    pub status: AgentStatus,
     pub context_refs: Vec<ContextStatus>,
     pub context_out: Vec<ContextStatus>,
+}
+
+pub type ShowMyselfResponse = AgentView;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListAgentsResponse {
+    pub agents: Vec<AgentView>,
 }
 
 fn default_coordinator_profile() -> String {
