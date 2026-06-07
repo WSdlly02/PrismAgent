@@ -11,7 +11,7 @@ use crate::actors::workflow_actor::model::{
 };
 use genai::chat::Tool;
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub fn uuid_new() -> Tool {
     tool_template(
@@ -75,6 +75,18 @@ pub fn agent_new() -> Tool {
                 }
             },
             "required": ["uuid", "name"]
+        }),
+    )
+}
+
+pub fn list_agents() -> Tool {
+    tool_template(
+        "prismagent_list_agents",
+        "List agents in the current workspace with their metadata and context_refs/context_out existence. Coordinators use this to inspect workflow state before updating agents or triggers.",
+        json!({
+            "type": "object",
+            "properties": {},
+            "required": []
         }),
     )
 }
@@ -197,10 +209,42 @@ pub fn agent_terminate() -> Tool {
     )
 }
 
+pub fn agent_update() -> Tool {
+    tool_template(
+        "prismagent_agent_update",
+        "Update mutable metadata for another PrismAgent agent. Coordinators should use this when changing context_refs/context_out and then register workflow triggers if needed. auto_loop can only be set to false.",
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_uuid": {"type": "string", "description": "Target agent UUID"},
+                "context_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replacement context UUIDs the target agent depends on"
+                },
+                "context_out": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replacement context UUIDs the target agent is expected to produce"
+                },
+                "auto_loop": {
+                    "type": "boolean",
+                    "description": "Only false is allowed. Use only to stop accidental infinite loops; normal task completion must use prismagent_task_finished."
+                },
+                "auto_loop_message": {
+                    "type": "string",
+                    "description": "Replacement auto-loop message for the target agent, commonly used for clean termination or cleanup instructions"
+                }
+            },
+            "required": ["agent_uuid"]
+        }),
+    )
+}
+
 pub fn update_myself() -> Tool {
     tool_template(
         "prismagent_update_myself",
-        "Update mutable metadata for the current caller agent. Only context_refs, context_out, and auto_loop=false are supported. Use auto_loop=false only to stop accidental infinite loops; use prismagent_task_finished for normal task completion.",
+        "Update mutable metadata for the current caller agent. Usually only use auto_loop=false for self-rescue; coordinators should use prismagent_agent_update when changing context_refs/context_out and workflow topology.",
         json!({
             "type": "object",
             "properties": {
@@ -217,6 +261,10 @@ pub fn update_myself() -> Tool {
                 "auto_loop": {
                     "type": "boolean",
                     "description": "Only false is allowed. Use only to stop accidental infinite loops; normal task completion must use prismagent_task_finished."
+                },
+                "auto_loop_message": {
+                    "type": "string",
+                    "description": "Replacement auto-loop message for the current agent"
                 }
             },
             "required": []
@@ -256,6 +304,37 @@ pub async fn execute_agent_new(ctx: ToolExecutionContext, args: Value) -> String
         Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
+}
+
+pub async fn execute_list_agents(ctx: ToolExecutionContext, _args: Value) -> String {
+    let agents = match ctx.handles.agent.list(ctx.workspace_uuid.clone()).await {
+        Ok(agents) => agents,
+        Err(error) => return json!({"status": "error", "error": error.to_string()}).to_string(),
+    };
+    let existing_contexts = match ctx
+        .handles
+        .storage
+        .list_contexts(ctx.workspace_uuid.clone())
+        .await
+    {
+        Ok(contexts) => contexts.into_iter().collect::<HashSet<_>>(),
+        Err(error) => return json!({"status": "error", "error": error.to_string()}).to_string(),
+    };
+    let agents = agents
+        .into_iter()
+        .map(|agent| {
+            json!({
+                "agent_uuid": agent.agent_uuid,
+                "name": agent.agent_name,
+                "profile": agent.profile,
+                "auto_loop": agent.auto_loop,
+                "status": agent.status,
+                "context_refs": context_statuses(agent.context_refs, &existing_contexts),
+                "context_out": context_statuses(agent.context_out, &existing_contexts),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"status": "ok", "agents": agents}).to_string()
 }
 
 pub async fn execute_list_profiles(ctx: ToolExecutionContext, _args: Value) -> String {
@@ -392,13 +471,27 @@ pub async fn execute_agent_terminate(ctx: ToolExecutionContext, args: Value) -> 
     }
 }
 
+pub async fn execute_agent_update(ctx: ToolExecutionContext, args: Value) -> String {
+    let request = UpdateMyselfRequest {
+        agent_uuid: string_arg(&args, "agent_uuid").unwrap_or_default(),
+        context_refs: optional_string_array_arg(&args, "context_refs"),
+        context_out: optional_string_array_arg(&args, "context_out"),
+        auto_loop: args.get("auto_loop").and_then(Value::as_bool),
+        auto_loop_message: string_arg(&args, "auto_loop_message"),
+    };
+    match ctx.handles.agent.update_myself(request).await {
+        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
+}
+
 pub async fn execute_update_myself(ctx: ToolExecutionContext, args: Value) -> String {
     let request = UpdateMyselfRequest {
         agent_uuid: ctx.caller_agent_uuid.clone(),
         context_refs: optional_string_array_arg(&args, "context_refs"),
         context_out: optional_string_array_arg(&args, "context_out"),
         auto_loop: args.get("auto_loop").and_then(Value::as_bool),
-        auto_loop_message: None,
+        auto_loop_message: string_arg(&args, "auto_loop_message"),
     };
     match ctx.handles.agent.update_myself(request).await {
         Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
@@ -447,6 +540,18 @@ fn string_array_arg(args: &Value, name: &str) -> Vec<String> {
 
 fn optional_string_array_arg(args: &Value, name: &str) -> Option<Vec<String>> {
     args.get(name).map(|_| string_array_arg(args, name))
+}
+
+fn context_statuses(context_uuids: Vec<String>, existing_contexts: &HashSet<String>) -> Vec<Value> {
+    context_uuids
+        .into_iter()
+        .map(|context_uuid| {
+            json!({
+                "context_uuid": context_uuid,
+                "exists": existing_contexts.contains(&context_uuid),
+            })
+        })
+        .collect()
 }
 
 fn metadata_arg(args: &Value) -> HashMap<String, String> {

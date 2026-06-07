@@ -59,16 +59,22 @@ register_tools! {
     prismagent::agent_new / execute_agent_new,
     prismagent::agent_send_message / execute_agent_send_message,
     prismagent::agent_terminate / execute_agent_terminate,
+    prismagent::agent_update / execute_agent_update,
     prismagent::context_new / execute_context_new,
+    // context_read is not needed
+    // the content of context file will be injected when creating the agent, using render_initial_prompts to render the context units
     prismagent::workflow_new / execute_workflow_new,
+    // workflow_read is not needed
     // the content of workflow file will be injected when creating the coordinator agent
     // not using render_initial_prompts
     prismagent::workflow_run / execute_workflow_run,
     prismagent::trigger_new / execute_trigger_new,
-    // list_contexts is useless?
-    // the content of context file will be injected when creating the agent, using render_initial_prompts to render the context units
+
+    prismagent::list_agents / execute_list_agents,
+    // list_agents indicates list_contexts
     prismagent::list_profiles / execute_list_profiles,
     prismagent::show_myself / execute_show_myself,
+    // equivalent to show_agent with agent_uuid, but show_myself does not require agent_uuid as input
     prismagent::update_myself / execute_update_myself,
     prismagent::task_finished / execute_task_finished,
 }
