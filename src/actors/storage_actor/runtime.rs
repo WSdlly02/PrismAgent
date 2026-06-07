@@ -56,9 +56,10 @@ impl StorageActor {
                 StorageMsg::CreateAgent {
                     request,
                     auto_loop,
+                    auto_loop_message,
                     reply,
                 } => {
-                    let _ = reply.send(self.create_agent(request, auto_loop));
+                    let _ = reply.send(self.create_agent(request, auto_loop, auto_loop_message));
                 }
                 StorageMsg::SetAgentAutoLoop {
                     workspace_uuid,
@@ -184,15 +185,22 @@ impl StorageActor {
         Ok(written)
     }
 
-    fn create_agent(&self, request: AgentCreateRequest, auto_loop: bool) -> SubsystemResult<Agent> {
+    fn create_agent(
+        &self,
+        request: AgentCreateRequest,
+        auto_loop: bool,
+        auto_loop_message: String,
+    ) -> SubsystemResult<Agent> {
         let name = non_empty_string(request.name, "agent name")?;
         let profile = non_empty_string(request.profile, "agent profile")?;
+        let auto_loop_message = non_empty_string(auto_loop_message, "auto_loop_message")?;
         let now = chrono::Utc::now().timestamp();
         let agent = Agent {
             uuid: safe_object_name(request.uuid, "agent uuid")?,
             name,
             profile,
             auto_loop,
+            auto_loop_message,
             unit_chain: Vec::new(),
             unit_head: String::new(),
             context_refs: request.context_refs,
@@ -242,6 +250,9 @@ impl StorageActor {
         }
         if let Some(auto_loop) = request.auto_loop {
             agent.auto_loop = auto_loop;
+        }
+        if let Some(auto_loop_message) = request.auto_loop_message {
+            agent.auto_loop_message = non_empty_string(auto_loop_message, "auto_loop_message")?;
         }
         agent.updated_at = chrono::Utc::now().timestamp();
         let new_data = to_pretty_json_vec(&agent)?;
@@ -526,12 +537,14 @@ impl StorageHandle {
         &self,
         request: AgentCreateRequest,
         auto_loop: bool,
+        auto_loop_message: String,
     ) -> SubsystemResult<Agent> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx
             .send(StorageMsg::CreateAgent {
                 request,
                 auto_loop,
+                auto_loop_message,
                 reply: reply_tx,
             })
             .await

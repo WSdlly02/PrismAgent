@@ -181,6 +181,22 @@ pub fn agent_send_message() -> Tool {
     )
 }
 
+pub fn agent_terminate() -> Tool {
+    tool_template(
+        "prismagent_agent_terminate",
+        "Ask another PrismAgent agent to cleanly terminate on its next auto-loop continuation by replacing its auto_loop_message. This does not interrupt the current step and does not enable auto_loop.",
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_uuid": {"type": "string", "description": "Target agent UUID"},
+                "reason": {"type": "string", "description": "Reason for termination or workflow cancellation"},
+                "instructions": {"type": "string", "description": "Optional cleanup instructions for the target agent"}
+            },
+            "required": ["agent_uuid", "reason"]
+        }),
+    )
+}
+
 pub fn update_myself() -> Tool {
     tool_template(
         "prismagent_update_myself",
@@ -351,12 +367,38 @@ pub async fn execute_agent_send_message(ctx: ToolExecutionContext, args: Value) 
     }
 }
 
+pub async fn execute_agent_terminate(ctx: ToolExecutionContext, args: Value) -> String {
+    let reason = string_arg(&args, "reason").unwrap_or_else(|| "workflow cancelled".to_string());
+    let instructions = string_arg(&args, "instructions").unwrap_or_default();
+    let cleanup_message = if instructions.is_empty() {
+        format!(
+            "The workflow has requested clean termination. Stop normal work, summarize partial progress, update context_refs/context_out if needed, write any required context outputs, and call prismagent_task_finished when cleanup is complete. Reason: {reason}"
+        )
+    } else {
+        format!(
+            "The workflow has requested clean termination. Stop normal work, summarize partial progress, update context_refs/context_out if needed, write any required context outputs, and call prismagent_task_finished when cleanup is complete. Reason: {reason}\n\nCleanup instructions:\n{instructions}"
+        )
+    };
+    let request = UpdateMyselfRequest {
+        agent_uuid: string_arg(&args, "agent_uuid").unwrap_or_default(),
+        context_refs: None,
+        context_out: None,
+        auto_loop: None,
+        auto_loop_message: Some(cleanup_message),
+    };
+    match ctx.handles.agent.update_myself(request).await {
+        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
+    }
+}
+
 pub async fn execute_update_myself(ctx: ToolExecutionContext, args: Value) -> String {
     let request = UpdateMyselfRequest {
         agent_uuid: ctx.caller_agent_uuid.clone(),
         context_refs: optional_string_array_arg(&args, "context_refs"),
         context_out: optional_string_array_arg(&args, "context_out"),
         auto_loop: args.get("auto_loop").and_then(Value::as_bool),
+        auto_loop_message: None,
     };
     match ctx.handles.agent.update_myself(request).await {
         Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),

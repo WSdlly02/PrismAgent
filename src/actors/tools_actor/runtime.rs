@@ -58,10 +58,15 @@ register_tools! {
     prismagent::read_skill / execute_read_skill,
     prismagent::agent_new / execute_agent_new,
     prismagent::agent_send_message / execute_agent_send_message,
+    prismagent::agent_terminate / execute_agent_terminate,
     prismagent::context_new / execute_context_new,
     prismagent::workflow_new / execute_workflow_new,
+    // the content of workflow file will be injected when creating the coordinator agent
+    // not using render_initial_prompts
     prismagent::workflow_run / execute_workflow_run,
     prismagent::trigger_new / execute_trigger_new,
+    // list_contexts is useless?
+    // the content of context file will be injected when creating the agent, using render_initial_prompts to render the context units
     prismagent::list_profiles / execute_list_profiles,
     prismagent::show_myself / execute_show_myself,
     prismagent::update_myself / execute_update_myself,

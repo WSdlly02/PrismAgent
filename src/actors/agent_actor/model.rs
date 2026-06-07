@@ -135,6 +135,7 @@ pub struct UpdateMyselfRequest {
     pub context_refs: Option<Vec<String>>,
     pub context_out: Option<Vec<String>>,
     pub auto_loop: Option<bool>,
+    pub auto_loop_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

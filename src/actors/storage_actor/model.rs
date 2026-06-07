@@ -47,6 +47,7 @@ pub enum StorageMsg {
     CreateAgent {
         request: AgentCreateRequest,
         auto_loop: bool,
+        auto_loop_message: String,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     SetAgentAutoLoop {

@@ -9,6 +9,7 @@ pub struct Agent {
     pub name: String,              // Agent的展示名称，最好不要重复
     pub profile: String,           // Agent的配置文件名称，例如 "default"、"custom-profile-1" 等
     pub auto_loop: bool,           // 是否自动循环执行，默认为false
+    pub auto_loop_message: String, // 如果auto_loop为true，每次循环后发送给用户的消息，例如 "The agent has called a tool. Do you want to let it continue to the next step? If you want to stop it, please reply with 'stop'."
     pub unit_chain: Vec<String>,   // 存储Agent执行的单元ID列表
     pub unit_head: String,         // 最后一个执行的单元ID
     pub context_refs: Vec<String>, // 上下文引用列表，存储与Agent相关的上下文ID或名称
@@ -57,6 +58,7 @@ pub struct AgentUpdateRequest {
     pub context_refs: Option<Vec<String>>,
     pub context_out: Option<Vec<String>>,
     pub auto_loop: Option<bool>,
+    pub auto_loop_message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

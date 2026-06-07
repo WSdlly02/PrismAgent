@@ -19,8 +19,6 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-const AUTO_LOOP_MSG: &str = "Go ahead until you have completed all tasks, or use prismagent_task_finished tool to end the loop.";
-
 impl AgentActor {
     pub fn load(rx: mpsc::Receiver<AgentMsg>, handles: AppHandles) -> Self {
         Self {
@@ -154,6 +152,7 @@ impl AgentActor {
         let has_initial_task = !context_refs.is_empty();
         let profile = self.handles.profile.profile(&profile_name).await?;
         let auto_loop = profile.prompts.auto_loop;
+        let auto_loop_message = profile.prompts.auto_loop_message.clone();
         let initial_units = self
             .handles
             .context
@@ -167,7 +166,7 @@ impl AgentActor {
         let mut agent = self
             .handles
             .storage
-            .create_agent(request, auto_loop)
+            .create_agent(request, auto_loop, auto_loop_message)
             .await?;
         if !initial_units.is_empty() {
             agent = self
@@ -263,6 +262,7 @@ impl AgentActor {
         if request.context_refs.is_none()
             && request.context_out.is_none()
             && request.auto_loop.is_none()
+            && request.auto_loop_message.is_none()
         {
             return Err(SubsystemError::invalid_input(
                 "update_myself requires at least one field",
@@ -283,6 +283,7 @@ impl AgentActor {
                 context_refs: request.context_refs,
                 context_out: request.context_out,
                 auto_loop: request.auto_loop,
+                auto_loop_message: request.auto_loop_message,
             })
             .await?;
         self.agents.insert(agent.uuid.clone(), agent.clone());
@@ -643,7 +644,8 @@ impl AgentActor {
     }
 
     async fn spawn_auto_loop_continuation(&mut self, agent_uuid: &str) -> SubsystemResult<()> {
-        let mut unit = Unit::from_chat_message(genai::chat::ChatMessage::user(AUTO_LOOP_MSG));
+        let auto_loop_message = self.agent(agent_uuid)?.auto_loop_message.clone();
+        let mut unit = Unit::from_chat_message(genai::chat::ChatMessage::user(auto_loop_message));
         unit.visibility = UnitVisibility::Internal;
         self.commit_units(agent_uuid, vec![unit]).await?;
         self.spawn_llm_continuation(agent_uuid).await

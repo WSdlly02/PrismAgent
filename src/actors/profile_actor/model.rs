@@ -65,6 +65,7 @@ pub struct FinalModelConfig {
 pub struct PromptsConfigSection {
     pub system: SystemPromptConfig,
     pub auto_loop: bool, // whether to automatically loop until the "finish" tool is called, without asking for user confirmation after each tool call
+    pub auto_loop_message: String, // if auto_loop is true, this message will be sent to the user after each tool call, e.g. "The agent has called a tool. Do you want to let it continue to the next step? If you want to stop it, please reply with 'stop'."
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -97,6 +98,7 @@ system.response_style = "concise and informative"
 system.capabilities = "{skills} {tools}"
 
 auto_loop = false
+auto_loop_message = "Go ahead until you have completed all tasks, or use prismagent_task_finished tool to end the loop."
 
 [tools]
 yolo = false
