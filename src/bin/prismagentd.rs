@@ -11,19 +11,29 @@ use axum::{
 use futures_util::stream::{self, Stream, StreamExt};
 use prismagent::{
     actors::{
-        agent_actor::model::{AgentActor, AgentMsg, ApproveRequest, SendMessageRequest},
-        shell_actor::model::{ShellActor, ShellHandle, ShellMsg},
+        agent_actor::model::{AgentActor, AgentMsg},
+        context_actor::model::{ContextActor, ContextHandle, ContextMsg},
+        llm_actor::model::{LlmActor, LlmHandle, LlmMsg},
+        profile_actor::model::{ProfileActor, ProfileHandle, ProfileMsg},
+        shell_actor::model::{
+            AgentAccessRequest, AuthorizedAgentCreateRequest, AuthorizedApproveRequest,
+            AuthorizedSendMessageRequest, AuthorizedWorkflowCancelRequest, ShellActor, ShellHandle,
+            ShellMsg, WorkspaceAccessRequest,
+        },
+        storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
+        tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
+        workflow_actor::model::{WorkflowActor, WorkflowHandle, WorkflowMsg},
         workspace_actor::model::{
-            AcquireLeaseRequest, AgentSummary, ReleaseLeaseRequest, WorkspaceActor, WorkspaceMsg,
+            AcquireLeaseRequest, ReleaseLeaseRequest, WorkspaceActor, WorkspaceCreateRequest,
+            WorkspaceMsg,
         },
     },
     error::SubsystemError,
+    handles::AppHandles,
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{convert::Infallible, net::SocketAddr, path::PathBuf, time::Duration};
-use tokio::sync::{broadcast, mpsc};
-use uuid::Uuid;
+use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use tokio::sync::mpsc;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:7618";
 
@@ -44,8 +54,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(index))
         .route("/health", get(health))
         .route("/api/workspaces/list", get(list_workspaces))
+        .route("/api/workspaces/add", post(add_workspace))
         .route("/api/workspaces/acquire_lease", post(acquire_lease))
         .route("/api/workspaces/release_lease", post(release_lease))
+        .route("/api/profiles/list", get(list_profiles))
+        .route("/api/workflows/cancel", post(workflow_cancel))
+        .route("/api/agents/list", get(list_agents))
+        .route("/api/agents/create", post(create_agent))
         .route("/api/agents/snapshot", get(agent_snapshot))
         .route("/api/agents/event_stream", get(agent_event_stream))
         .route("/api/agents/send_message", post(send_message))
@@ -60,30 +75,47 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn start_runtime() -> anyhow::Result<ShellHandle> {
-    let workspace_uuid = Uuid::now_v7().to_string();
-    let agent_uuid = Uuid::now_v7().to_string();
-
     let (workspace_tx, workspace_rx) = mpsc::channel::<WorkspaceMsg>(64);
     let workspace =
         prismagent::actors::workspace_actor::model::WorkspaceHandle { tx: workspace_tx };
-    WorkspaceActor::mock(
-        workspace_rx,
-        workspace_uuid,
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        vec![AgentSummary {
-            agent_uuid: agent_uuid.clone(),
-            agent_name: "agent-0".to_string(),
-        }],
-    )
-    .spawn();
-
+    let (storage_tx, storage_rx) = mpsc::channel::<StorageMsg>(64);
+    let storage = StorageHandle { tx: storage_tx };
+    let (context_tx, context_rx) = mpsc::channel::<ContextMsg>(64);
+    let context = ContextHandle { tx: context_tx };
+    let (profile_tx, profile_rx) = mpsc::channel::<ProfileMsg>(64);
+    let profile = ProfileHandle { tx: profile_tx };
+    let (llm_tx, llm_rx) = mpsc::channel::<LlmMsg>(64);
+    let llm = LlmHandle { tx: llm_tx };
+    let (tools_tx, tools_rx) = mpsc::channel::<ToolsMsg>(64);
+    let tools = ToolsHandle { tx: tools_tx };
+    let (workflow_tx, workflow_rx) = mpsc::channel::<WorkflowMsg>(64);
+    let workflow = WorkflowHandle { tx: workflow_tx };
     let (agent_tx, agent_rx) = mpsc::channel::<AgentMsg>(64);
     let agent = prismagent::actors::agent_actor::model::AgentHandle { tx: agent_tx };
-    AgentActor::mock(agent_rx, agent_uuid, "agent-0".to_string()).spawn();
-
     let (shell_tx, shell_rx) = mpsc::channel::<ShellMsg>(64);
-    ShellActor::load(shell_rx, workspace, agent).spawn();
-    Ok(ShellHandle { tx: shell_tx })
+    let shell = ShellHandle { tx: shell_tx };
+    let handles = AppHandles {
+        profile,
+        context,
+        storage,
+        workspace,
+        agent,
+        shell,
+        llm,
+        tools,
+        workflow,
+    };
+
+    ProfileActor::load(profile_rx)?.spawn();
+    StorageActor::load(storage_rx)?.spawn();
+    ContextActor::load(context_rx, handles.clone()).spawn();
+    WorkspaceActor::load(workspace_rx)?.spawn();
+    LlmActor::load(llm_rx).spawn();
+    ToolsActor::load(tools_rx, handles.clone()).spawn();
+    WorkflowActor::load(workflow_rx, handles.clone()).spawn();
+    AgentActor::load(agent_rx, handles.clone()).spawn();
+    ShellActor::load(shell_rx, handles.clone()).spawn();
+    Ok(handles.shell)
 }
 
 async fn index() -> Html<&'static str> {
@@ -96,6 +128,13 @@ async fn health() -> Json<Value> {
 
 async fn list_workspaces(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_workspaces().await?)))
+}
+
+async fn add_workspace(
+    State(state): State<AppState>,
+    Json(request): Json<WorkspaceCreateRequest>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.shell.create_workspace(request).await?)))
 }
 
 async fn acquire_lease(
@@ -113,49 +152,57 @@ async fn release_lease(
     Ok(Json(json!({ "released": true })))
 }
 
-#[derive(Deserialize)]
-struct AgentQuery {
-    agent_uuid: String,
+async fn list_profiles(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.shell.list_profiles().await?)))
+}
+
+async fn workflow_cancel(
+    State(state): State<AppState>,
+    Json(request): Json<AuthorizedWorkflowCancelRequest>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.shell.workflow_cancel(request).await?)))
+}
+
+async fn create_agent(
+    State(state): State<AppState>,
+    Json(request): Json<AuthorizedAgentCreateRequest>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.shell.create_agent(request).await?)))
+}
+
+async fn list_agents(
+    State(state): State<AppState>,
+    Query(query): Query<WorkspaceAccessRequest>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.shell.list_agents(query).await?)))
 }
 
 async fn agent_snapshot(
     State(state): State<AppState>,
-    Query(query): Query<AgentQuery>,
+    Query(query): Query<AgentAccessRequest>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(json!(
-        state.shell.agent_snapshot(query.agent_uuid).await?
-    )))
+    Ok(Json(json!(state.shell.agent_snapshot(query).await?)))
 }
 
 async fn agent_event_stream(
     State(state): State<AppState>,
-    Query(query): Query<AgentQuery>,
+    Query(query): Query<AgentAccessRequest>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    let receiver = state.shell.subscribe_agent(query.agent_uuid).await?;
+    let receiver = state.shell.subscribe_agent(query).await?;
     let events = stream::unfold(receiver, |mut receiver| async move {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    let event = Event::default()
-                        .event(event_name(&event))
-                        .json_data(event)
-                        .unwrap_or_else(|error| {
-                            Event::default()
-                                .event("error")
-                                .data(format!("failed to encode event: {error}"))
-                        });
-                    return Some((Ok(event), receiver));
-                }
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    return Some((
-                        Ok(Event::default()
+        match receiver.recv().await {
+            Some(event) => {
+                let event = Event::default()
+                    .event(event_name(&event))
+                    .json_data(event)
+                    .unwrap_or_else(|error| {
+                        Event::default()
                             .event("error")
-                            .data(format!("event stream lagged; skipped {skipped} events"))),
-                        receiver,
-                    ));
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
+                            .data(format!("failed to encode event: {error}"))
+                    });
+                Some((Ok(event), receiver))
             }
+            None => None,
         }
     });
     let connected = stream::once(async {
@@ -172,7 +219,7 @@ async fn agent_event_stream(
 
 async fn send_message(
     State(state): State<AppState>,
-    Json(request): Json<SendMessageRequest>,
+    Json(request): Json<AuthorizedSendMessageRequest>,
 ) -> ApiResult<Json<Value>> {
     state.shell.send_message(request).await?;
     Ok(Json(json!({ "accepted": true })))
@@ -180,7 +227,7 @@ async fn send_message(
 
 async fn approve_request(
     State(state): State<AppState>,
-    Json(request): Json<ApproveRequest>,
+    Json(request): Json<AuthorizedApproveRequest>,
 ) -> ApiResult<Json<Value>> {
     state.shell.approve_request(request).await?;
     Ok(Json(json!({ "accepted": true })))
@@ -188,9 +235,9 @@ async fn approve_request(
 
 async fn cancel(
     State(state): State<AppState>,
-    Json(query): Json<AgentQuery>,
+    Json(query): Json<AgentAccessRequest>,
 ) -> ApiResult<Json<Value>> {
-    state.shell.cancel(query.agent_uuid).await?;
+    state.shell.cancel(query).await?;
     Ok(Json(json!({ "cancelled": true })))
 }
 
@@ -198,6 +245,7 @@ fn event_name(event: &prismagent::actors::agent_actor::model::AgentEvent) -> &'s
     use prismagent::actors::agent_actor::model::AgentEvent;
     match event {
         AgentEvent::UnitAppend { .. } => "unit_append",
+        AgentEvent::StreamDelta { .. } => "stream_delta",
         AgentEvent::ApproveRequest { .. } => "approve_request",
         AgentEvent::StatusChanged { .. } => "status_changed",
         AgentEvent::Error { .. } => "error",
@@ -265,7 +313,11 @@ const INDEX_HTML: &str = r#"<!doctype html>
     const messages = document.getElementById('messages');
     const status = document.getElementById('status');
     const input = document.getElementById('input');
+    const clientId = crypto.randomUUID();
     let agentUuid = null;
+    let agentName = null;
+    let workspaceUuid = null;
+    let leaseToken = null;
     let stream = null;
 
     async function api(path, options = {}) {
@@ -274,26 +326,56 @@ const INDEX_HTML: &str = r#"<!doctype html>
       if (!response.ok) throw new Error(body.error || response.statusText);
       return body;
     }
+    function unitText(unit) {
+      return unit.content.content.map(part => part.Text || '[attachment]').join('\n');
+    }
     function append(unit) {
       const item = document.createElement('div');
       item.className = 'message';
       item.innerHTML = `<div class="role"></div><div class="content"></div>`;
-      item.querySelector('.role').textContent = unit.role;
-      item.querySelector('.content').textContent = unit.content;
+      item.querySelector('.role').textContent = unit.content.role.toLowerCase();
+      item.querySelector('.content').textContent = unitText(unit);
       messages.appendChild(item);
       item.scrollIntoView({ block: 'end' });
     }
-    async function openAgent(uuid) {
+    function workspaceAccess() {
+      return { workspace_uuid: workspaceUuid, client_id: clientId, lease_token: leaseToken };
+    }
+    function access(uuid) {
+      return { ...workspaceAccess(), agent_uuid: uuid };
+    }
+    async function openAgent(uuid, name) {
+      agentName = name;
       agentUuid = uuid;
-      const snapshot = await api(`/api/agents/snapshot?agent_uuid=${encodeURIComponent(uuid)}`);
+      const params = new URLSearchParams(access(uuid));
+      const snapshot = await api(`/api/agents/snapshot?${params}`);
       messages.textContent = '';
       snapshot.units.forEach(append);
-      status.textContent = `${snapshot.agent_name} · ${snapshot.status}`;
+      status.textContent = `${agentName} · ${snapshot.status}`;
       if (stream) stream.close();
-      stream = new EventSource(`/api/agents/event_stream?agent_uuid=${encodeURIComponent(uuid)}`);
+      stream = new EventSource(`/api/agents/event_stream?${params}`);
       stream.addEventListener('unit_append', event => append(JSON.parse(event.data).unit));
-      stream.addEventListener('status_changed', event => status.textContent = JSON.parse(event.data).status);
+      stream.addEventListener('status_changed', event => status.textContent = `${agentName} · ${JSON.parse(event.data).status}`);
       stream.addEventListener('approve_request', event => console.log('approve request', JSON.parse(event.data)));
+    }
+    async function openWorkspace(nextWorkspaceUuid) {
+      workspaceUuid = nextWorkspaceUuid;
+      const lease = await api('/api/workspaces/acquire_lease', {
+        method: 'POST',
+        body: JSON.stringify({ workspace_uuid: workspaceUuid, client_id: clientId, lease_token: leaseToken }),
+      });
+      leaseToken = lease.lease_token;
+      const params = new URLSearchParams(workspaceAccess());
+      const agents = await api(`/api/agents/list?${params}`);
+      agents.forEach(agent => {
+        const button = document.createElement('button');
+        button.className = 'agent';
+        button.textContent = agent.agent_name;
+        button.onclick = () => openAgent(agent.agent_uuid, agent.agent_name);
+        workspaces.appendChild(button);
+      });
+      const first = agents[0];
+      if (first) openAgent(first.agent_uuid, first.agent_name);
     }
     async function loadWorkspaces() {
       const list = await api('/api/workspaces/list');
@@ -303,16 +385,14 @@ const INDEX_HTML: &str = r#"<!doctype html>
         title.textContent = workspace.workspace_path;
         title.className = 'muted';
         workspaces.appendChild(title);
-        workspace.agents.forEach(agent => {
-          const button = document.createElement('button');
-          button.className = 'agent';
-          button.textContent = agent.agent_name;
-          button.onclick = () => openAgent(agent.agent_uuid);
-          workspaces.appendChild(button);
-        });
+        const button = document.createElement('button');
+        button.className = 'agent';
+        button.textContent = 'Open workspace';
+        button.onclick = () => openWorkspace(workspace.workspace_uuid);
+        workspaces.appendChild(button);
       });
-      const first = list[0]?.agents[0];
-      if (first) openAgent(first.agent_uuid);
+      const first = list[0];
+      if (first) openWorkspace(first.workspace_uuid);
     }
     document.getElementById('composer').onsubmit = async event => {
       event.preventDefault();
@@ -321,7 +401,7 @@ const INDEX_HTML: &str = r#"<!doctype html>
       input.value = '';
       await api('/api/agents/send_message', {
         method: 'POST',
-        body: JSON.stringify({ agent_uuid: agentUuid, message_body: { text, attachments: [] } }),
+        body: JSON.stringify({ ...access(agentUuid), message_body: { text, attachments: [] } }),
       });
     };
     loadWorkspaces().catch(error => status.textContent = error.message);

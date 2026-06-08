@@ -49,6 +49,8 @@ pub struct AgentCreateRequest {
     pub context_refs: Vec<String>,
     #[serde(default)]
     pub context_out: Vec<String>,
+    // cannot set auto_loop and auto_loop_message when creating an agent, because they are inherited from the profile.
+    // If you want to set them, please update the agent after creating it.
 }
 
 #[derive(Serialize, Deserialize, Debug)]
