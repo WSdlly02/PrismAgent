@@ -1,9 +1,9 @@
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::{
-        Html, IntoResponse,
+        IntoResponse,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
@@ -30,6 +30,7 @@ use prismagent::{
     },
     error::SubsystemError,
     handles::AppHandles,
+    web_assets,
 };
 use serde_json::{Value, json};
 use std::{convert::Infallible, net::SocketAddr, time::Duration};
@@ -51,7 +52,6 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let app = Router::new()
-        .route("/", get(index))
         .route("/health", get(health))
         .route("/api/workspaces/list", get(list_workspaces))
         .route("/api/workspaces/add", post(add_workspace))
@@ -66,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agents/send_message", post(send_message))
         .route("/api/agents/approve_request", post(approve_request))
         .route("/api/agents/cancel", post(cancel))
+        .fallback(get(web_asset))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -118,12 +119,12 @@ fn start_runtime() -> anyhow::Result<ShellHandle> {
     Ok(handles.shell)
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
-}
-
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+async fn web_asset(uri: Uri) -> impl IntoResponse {
+    web_assets::asset_response(uri.path())
 }
 
 async fn list_workspaces(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -274,138 +275,3 @@ impl IntoResponse for ApiError {
         (status, Json(json!({ "error": self.0.to_string() }))).into_response()
     }
 }
-
-const INDEX_HTML: &str = r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PrismAgent</title>
-  <style>
-    :root { font-family: system-ui, sans-serif; color: #182026; background: #f5f6f4; }
-    * { box-sizing: border-box; }
-    body { margin: 0; display: grid; grid-template-columns: 250px minmax(0, 1fr) 250px; min-height: 100vh; }
-    aside { padding: 16px; border-right: 1px solid #d7dcda; background: #fff; }
-    aside:last-child { border-right: 0; border-left: 1px solid #d7dcda; }
-    main { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
-    header, form { padding: 14px 18px; border-bottom: 1px solid #d7dcda; background: #fff; }
-    form { border-top: 1px solid #d7dcda; border-bottom: 0; display: flex; gap: 8px; }
-    textarea { flex: 1; min-height: 48px; resize: vertical; padding: 10px; }
-    button { padding: 8px 12px; cursor: pointer; }
-    #messages { overflow: auto; padding: 18px; }
-    .message { background: #fff; border: 1px solid #d7dcda; border-radius: 6px; padding: 10px; margin-bottom: 10px; white-space: pre-wrap; }
-    .role { color: #0f766e; font-weight: 700; font-size: 12px; margin-bottom: 4px; }
-    .agent { display: block; width: 100%; text-align: left; margin: 6px 0; }
-    .muted { color: #66737a; font-size: 13px; }
-    @media (max-width: 800px) { body { grid-template-columns: 180px minmax(0, 1fr); } aside:last-child { display: none; } }
-  </style>
-</head>
-<body>
-  <aside><h3>Workspaces</h3><div id="workspaces"></div></aside>
-  <main>
-    <header><strong>PrismAgent</strong> <span class="muted" id="status">loading</span></header>
-    <section id="messages"></section>
-    <form id="composer"><textarea id="input" placeholder="Send a message"></textarea><button>Send</button></form>
-  </main>
-  <aside><h3>Context</h3><p class="muted">Context and workflow views will appear here.</p></aside>
-  <script>
-    const workspaces = document.getElementById('workspaces');
-    const messages = document.getElementById('messages');
-    const status = document.getElementById('status');
-    const input = document.getElementById('input');
-    const clientId = crypto.randomUUID();
-    let agentUuid = null;
-    let agentName = null;
-    let workspaceUuid = null;
-    let leaseToken = null;
-    let stream = null;
-
-    async function api(path, options = {}) {
-      const response = await fetch(path, { headers: { 'content-type': 'application/json' }, ...options });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error || response.statusText);
-      return body;
-    }
-    function unitText(unit) {
-      return unit.content.content.map(part => part.Text || '[attachment]').join('\n');
-    }
-    function append(unit) {
-      const item = document.createElement('div');
-      item.className = 'message';
-      item.innerHTML = `<div class="role"></div><div class="content"></div>`;
-      item.querySelector('.role').textContent = unit.content.role.toLowerCase();
-      item.querySelector('.content').textContent = unitText(unit);
-      messages.appendChild(item);
-      item.scrollIntoView({ block: 'end' });
-    }
-    function workspaceAccess() {
-      return { workspace_uuid: workspaceUuid, client_id: clientId, lease_token: leaseToken };
-    }
-    function access(uuid) {
-      return { ...workspaceAccess(), agent_uuid: uuid };
-    }
-    async function openAgent(uuid, name) {
-      agentName = name;
-      agentUuid = uuid;
-      const params = new URLSearchParams(access(uuid));
-      const snapshot = await api(`/api/agents/snapshot?${params}`);
-      messages.textContent = '';
-      snapshot.units.forEach(append);
-      status.textContent = `${agentName} · ${snapshot.status}`;
-      if (stream) stream.close();
-      stream = new EventSource(`/api/agents/event_stream?${params}`);
-      stream.addEventListener('unit_append', event => append(JSON.parse(event.data).unit));
-      stream.addEventListener('status_changed', event => status.textContent = `${agentName} · ${JSON.parse(event.data).status}`);
-      stream.addEventListener('approve_request', event => console.log('approve request', JSON.parse(event.data)));
-    }
-    async function openWorkspace(nextWorkspaceUuid) {
-      workspaceUuid = nextWorkspaceUuid;
-      const lease = await api('/api/workspaces/acquire_lease', {
-        method: 'POST',
-        body: JSON.stringify({ workspace_uuid: workspaceUuid, client_id: clientId, lease_token: leaseToken }),
-      });
-      leaseToken = lease.lease_token;
-      const params = new URLSearchParams(workspaceAccess());
-      const agents = await api(`/api/agents/list?${params}`);
-      agents.forEach(agent => {
-        const button = document.createElement('button');
-        button.className = 'agent';
-        button.textContent = agent.agent_name;
-        button.onclick = () => openAgent(agent.agent_uuid, agent.agent_name);
-        workspaces.appendChild(button);
-      });
-      const first = agents[0];
-      if (first) openAgent(first.agent_uuid, first.agent_name);
-    }
-    async function loadWorkspaces() {
-      const list = await api('/api/workspaces/list');
-      workspaces.textContent = '';
-      list.forEach(workspace => {
-        const title = document.createElement('div');
-        title.textContent = workspace.workspace_path;
-        title.className = 'muted';
-        workspaces.appendChild(title);
-        const button = document.createElement('button');
-        button.className = 'agent';
-        button.textContent = 'Open workspace';
-        button.onclick = () => openWorkspace(workspace.workspace_uuid);
-        workspaces.appendChild(button);
-      });
-      const first = list[0];
-      if (first) openWorkspace(first.workspace_uuid);
-    }
-    document.getElementById('composer').onsubmit = async event => {
-      event.preventDefault();
-      const text = input.value.trim();
-      if (!text || !agentUuid) return;
-      input.value = '';
-      await api('/api/agents/send_message', {
-        method: 'POST',
-        body: JSON.stringify({ ...access(agentUuid), message_body: { text, attachments: [] } }),
-      });
-    };
-    loadWorkspaces().catch(error => status.textContent = error.message);
-  </script>
-</body>
-</html>
-"#;

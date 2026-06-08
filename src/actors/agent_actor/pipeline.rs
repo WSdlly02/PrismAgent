@@ -202,8 +202,12 @@ pub fn tool_batch_is_auto_approved(config: &ToolsConfigSection, tool_calls: &[To
     if tool_calls.is_empty() {
         return false;
     }
-    if config.yolo {
-        return true;
+    auto_approval_mask(config, tool_calls) == ApprovalMask::all_for(tool_calls.len()).bits()
+}
+
+pub fn auto_approval_mask(config: &ToolsConfigSection, tool_calls: &[ToolCall]) -> u64 {
+    if tool_calls.is_empty() {
+        return 0;
     }
     let auto_all = config.auto_approve.iter().any(|name| name == "*");
     let auto = config
@@ -211,11 +215,18 @@ pub fn tool_batch_is_auto_approved(config: &ToolsConfigSection, tool_calls: &[To
         .iter()
         .cloned()
         .collect::<std::collections::HashSet<_>>();
-    tool_calls.iter().all(|tool_call| {
-        let is_available = tool_is_available(config, &tool_call.fn_name);
-        let is_auto = auto_all || auto.contains(&tool_call.fn_name);
-        is_available && is_auto
-    })
+    tool_calls
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (index, tool_call)| {
+            let is_available = tool_is_available(config, &tool_call.fn_name);
+            let is_auto = config.yolo || auto_all || auto.contains(&tool_call.fn_name);
+            if index < 64 && is_available && is_auto {
+                mask | (1u64 << index)
+            } else {
+                mask
+            }
+        })
 }
 
 pub fn tool_response_units(tool_calls: &[ToolCall], status: &str, reason: &str) -> Vec<Unit> {
@@ -288,6 +299,7 @@ fn tool_is_available(config: &ToolsConfigSection, tool_name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::actors::agent_actor::model::Attachment;
+    use serde_json::json;
 
     #[test]
     fn user_message_supports_attachment_only_input() {
@@ -303,5 +315,44 @@ mod tests {
 
         assert!(message.content.contains_binary());
         assert!(!message.content.contains_text());
+    }
+
+    #[test]
+    fn auto_approval_mask_tracks_tool_call_indices() {
+        let config = ToolsConfigSection {
+            yolo: false,
+            available_tools: vec!["*".to_string()],
+            auto_approve: vec!["safe_tool".to_string()],
+        };
+        let tool_calls = vec![
+            tool_call("manual_a"),
+            tool_call("safe_tool"),
+            tool_call("manual_b"),
+        ];
+
+        assert_eq!(auto_approval_mask(&config, &tool_calls), 0b010);
+        assert!(!tool_batch_is_auto_approved(&config, &tool_calls));
+    }
+
+    #[test]
+    fn yolo_auto_approves_all_available_tools() {
+        let config = ToolsConfigSection {
+            yolo: true,
+            available_tools: vec!["safe_tool".to_string(), "other_tool".to_string()],
+            auto_approve: Vec::new(),
+        };
+        let tool_calls = vec![tool_call("safe_tool"), tool_call("other_tool")];
+
+        assert_eq!(auto_approval_mask(&config, &tool_calls), 0b11);
+        assert!(tool_batch_is_auto_approved(&config, &tool_calls));
+    }
+
+    fn tool_call(name: &str) -> ToolCall {
+        ToolCall {
+            call_id: format!("{name}-call"),
+            fn_name: name.to_string(),
+            fn_arguments: json!({}),
+            thought_signatures: None,
+        }
     }
 }

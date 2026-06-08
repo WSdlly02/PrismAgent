@@ -4,7 +4,7 @@ use crate::actors::agent_actor::model::{
     SendMessageRequest, ToolBatchOutput, UpdateMyselfRequest,
 };
 use crate::actors::agent_actor::pipeline::{
-    clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
+    auto_approval_mask, clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
     tool_batch_is_auto_approved, tool_response_units,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
@@ -475,7 +475,11 @@ impl AgentActor {
         self.spawn_tool_batch(
             request.agent_uuid,
             pending.tool_calls,
-            approval_mask_from_request(request.approval_mask),
+            effective_approval_mask(
+                pending.auto_approved_mask,
+                pending.manual_approval_mask,
+                request.approval_mask,
+            ),
             "user denied tool execution",
         )
         .await
@@ -495,7 +499,7 @@ impl AgentActor {
                     self.spawn_tool_batch(
                         agent_uuid.to_string(),
                         pending.tool_calls,
-                        ApprovalMask::None,
+                        ApprovalMask::none(),
                         "tool execution cancelled by user",
                     )
                     .await?;
@@ -509,7 +513,7 @@ impl AgentActor {
                     self.spawn_tool_batch(
                         agent_uuid.to_string(),
                         active.tool_calls,
-                        ApprovalMask::None,
+                        ApprovalMask::none(),
                         "tool execution cancelled by user",
                     )
                     .await?;
@@ -545,21 +549,33 @@ impl AgentActor {
             self.set_status(agent_uuid, AgentStatus::Idle)?;
             return Ok(());
         }
+        if tool_calls.len() > 64 {
+            return Err(SubsystemError::invalid_input(format!(
+                "tool batch cannot contain more than 64 calls: {}",
+                tool_calls.len()
+            )));
+        }
         let profile_name = self.agent(agent_uuid)?.profile.clone();
         let tools_config = self.handles.profile.tools(profile_name).await?;
+        let all_mask = ApprovalMask::all_for(tool_calls.len()).bits();
+        let auto_approved_mask = auto_approval_mask(&tools_config, &tool_calls) & all_mask;
         if tool_batch_is_auto_approved(&tools_config, &tool_calls) {
             self.spawn_tool_batch(
                 agent_uuid.to_string(),
                 tool_calls,
-                ApprovalMask::All,
+                ApprovalMask::from_bits(all_mask),
                 "tool execution was auto-approved",
             )
             .await
         } else {
             let request_uuid = Uuid::now_v7().to_string();
+            let tool_count = tool_calls.len();
+            let manual_approval_mask = all_mask & !auto_approved_mask;
             self.runtime_mut(agent_uuid)?.pending_tool_batch = Some(PendingToolBatch {
                 request_uuid: request_uuid.clone(),
                 tool_calls,
+                auto_approved_mask,
+                manual_approval_mask,
             });
             self.set_status(agent_uuid, AgentStatus::WaitingApproval)?;
             self.emit_event(
@@ -568,6 +584,9 @@ impl AgentActor {
                     request: PendingApproval {
                         request_uuid,
                         description: "model requested tool execution".to_string(),
+                        tool_count,
+                        auto_approved_mask,
+                        manual_approval_mask,
                     },
                 },
             );
@@ -586,9 +605,14 @@ impl AgentActor {
         let profile_name = self.agent(&agent_uuid)?.profile.clone();
         let job_uuid = Uuid::now_v7().to_string();
         self.runtime_mut(&agent_uuid)?.inference_uuid = Some(job_uuid.clone());
+        // Notice: auto_approved_mask&manual_approval_mask is useless since the approval result is already determined by approval_mask,
+        // but we still use PendingToolBatch to store the info of active_tool_batch
+        // so the value is set as 0 to avoid confusion.
         self.runtime_mut(&agent_uuid)?.active_tool_batch = Some(PendingToolBatch {
             request_uuid: job_uuid.clone(),
             tool_calls: tool_calls.clone(),
+            auto_approved_mask: 0,
+            manual_approval_mask: 0,
         });
         self.set_status(&agent_uuid, AgentStatus::RunningTool)?;
         let handles = self.handles.clone();
@@ -809,38 +833,48 @@ impl AgentHandle {
     }
 }
 
-#[derive(Clone)]
-pub enum ApprovalMask {
-    All,
-    None,
-    Selected(std::collections::HashSet<usize>),
-}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ApprovalMask(u64);
 
 impl ApprovalMask {
-    pub fn approves(&self, index: usize) -> bool {
-        match self {
-            Self::All => true,
-            Self::None => false,
-            Self::Selected(indices) => indices.contains(&index),
+    pub fn none() -> Self {
+        Self(0)
+    }
+
+    pub fn from_bits(mask: u64) -> Self {
+        Self(mask)
+    }
+
+    pub fn all_for(len: usize) -> Self {
+        debug_assert!(len <= 64);
+        if len == 64 {
+            Self(u64::MAX)
+        } else if len == 0 {
+            Self(0)
+        } else {
+            Self((1u64 << len) - 1)
         }
+    }
+
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+
+    pub fn approves(&self, index: usize) -> bool {
+        index < 64 && ((self.0 >> index) & 1) == 1
     }
 
     pub fn approves_all(&self, len: usize) -> bool {
-        match self {
-            Self::All => true,
-            Self::None => false,
-            Self::Selected(indices) => {
-                indices.len() == len && (0..len).all(|idx| indices.contains(&idx))
-            }
-        }
+        len <= 64 && self.0 == Self::all_for(len).0
     }
 }
 
-fn approval_mask_from_request(mask: u64) -> ApprovalMask {
-    if mask == 0 {
-        return ApprovalMask::None;
-    }
-    ApprovalMask::Selected((0..64).filter(|index| ((mask >> index) & 1) == 1).collect())
+fn effective_approval_mask(
+    auto_approved_mask: u64,
+    manual_approval_mask: u64,
+    user_approval_mask: u64,
+) -> ApprovalMask {
+    ApprovalMask::from_bits(auto_approved_mask | (user_approval_mask & manual_approval_mask))
 }
 
 async fn request<T>(
@@ -854,4 +888,45 @@ async fn request<T>(
     reply_rx
         .await
         .map_err(|_| SubsystemError::actor_dead(AGENT_ACTOR))?
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    #[test]
+    fn approval_mask_zero_denies_all() {
+        let mask = ApprovalMask::from_bits(0);
+
+        assert!(!mask.approves(0));
+        assert!(!mask.approves_all(1));
+    }
+
+    #[test]
+    fn approval_mask_uses_one_bit_per_tool_call() {
+        let mask = ApprovalMask::from_bits(0b111);
+
+        assert!(mask.approves(0));
+        assert!(mask.approves(1));
+        assert!(mask.approves(2));
+        assert!(mask.approves_all(3));
+        assert!(!mask.approves_all(4));
+    }
+
+    #[test]
+    fn user_approval_mask_is_limited_to_manual_bits() {
+        let mask = effective_approval_mask(0b010, 0b111, 0b001);
+
+        assert!(mask.approves(0));
+        assert!(mask.approves(1));
+        assert!(!mask.approves(2));
+        assert!(!mask.approves_all(3));
+    }
+
+    #[test]
+    fn effective_mask_continues_only_when_all_tools_are_approved() {
+        let mask = effective_approval_mask(0b010, 0b101, 0b101);
+
+        assert!(mask.approves_all(3));
+    }
 }

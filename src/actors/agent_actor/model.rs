@@ -156,6 +156,9 @@ pub struct ApproveRequest {
 pub struct PendingApproval {
     pub request_uuid: String,
     pub description: String,
+    pub tool_count: usize,
+    pub auto_approved_mask: u64,
+    pub manual_approval_mask: u64,
 }
 
 pub struct AgentInferenceOutput {
@@ -166,6 +169,8 @@ pub struct AgentInferenceOutput {
 pub struct PendingToolBatch {
     pub request_uuid: String,
     pub tool_calls: Vec<ToolCall>,
+    pub auto_approved_mask: u64,
+    pub manual_approval_mask: u64,
 }
 
 pub struct ToolBatchOutput {
