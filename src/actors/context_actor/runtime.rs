@@ -286,8 +286,8 @@ fn render_capabilities(request: RenderCapabilitiesRequest) -> SubsystemResult<St
     if !skills.is_empty() {
         sections.push(format!("Available skills:\n{}", skills.join("\n\n")));
         sections.push(
-            "Use prismagent_get_skill_dir to get the path of a skill directory, \
-             then read its files with fs_read/fs_ls_tree."
+            "Use prismagent_skill_dir_get to get the path of a skill directory, \
+             then read its files with fs_file_read/fs_tree_list."
                 .to_string(),
         );
     }

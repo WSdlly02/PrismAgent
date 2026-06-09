@@ -44,8 +44,8 @@ pub enum AgentMsg {
         request: SendMessageRequest,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
-    UpdateMyself {
-        request: UpdateMyselfRequest,
+    SelfUpdate {
+        request: SelfUpdateRequest,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     ApproveRequest {
@@ -130,7 +130,7 @@ pub struct MessageBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateMyselfRequest {
+pub struct SelfUpdateRequest {
     pub agent_uuid: String,
     pub context_refs: Option<Vec<String>>,
     pub context_out: Option<Vec<String>>,

@@ -41,42 +41,41 @@ macro_rules! register_tools {
 }
 
 register_tools! {
-    fs::ls_tree / execute_ls_tree,
-    fs::read / execute_read,
-    fs::list / execute_list,
-    fs::stat / execute_stat,
-    fs::write / execute_write,
-    fs::replace / execute_replace,
-    fs::mkdir / execute_mkdir,
-    fs::remove / execute_remove,
-    fs::rename / execute_rename,
-    fs::copy / execute_copy,
+    fs::dir_list / execute_dir_list,
+    fs::tree_list / execute_tree_list,
+    fs::path_stat / execute_path_stat,
+    fs::file_read / execute_file_read,
+    fs::file_write / execute_file_write,
+    fs::file_replace / execute_file_replace,
+    fs::dir_create / execute_dir_create,
+    fs::path_remove / execute_path_remove,
+    fs::path_rename / execute_path_rename,
+    fs::file_copy / execute_file_copy,
     shell::exec / execute,
     web::search / execute_search,
     web::fetch / execute_fetch,
-    prismagent::uuid_new / execute_uuid_new,
-    prismagent::get_skill_dir / execute_get_skill_dir,
-    prismagent::agent_new / execute_agent_new,
-    prismagent::agent_send_message / execute_agent_send_message,
+    prismagent::uuid_generate / execute_uuid_generate,
+    prismagent::agent_list / execute_agent_list,
+    prismagent::agent_create / execute_agent_create,
+    prismagent::agent_message_send / execute_agent_message_send,
     prismagent::agent_terminate / execute_agent_terminate,
     prismagent::agent_update / execute_agent_update,
-    prismagent::context_new / execute_context_new,
+    prismagent::context_create / execute_context_create,
     // context_read is not needed
     // the content of context file will be injected when creating the agent, using render_initial_prompts to render the context units
-    prismagent::workflow_new / execute_workflow_new,
+    prismagent::workflow_create / execute_workflow_create,
     // workflow_read is not needed
     // the content of workflow file will be injected when creating the coordinator agent
     // not using render_initial_prompts
-    prismagent::workflow_run / execute_workflow_run,
-    prismagent::trigger_new / execute_trigger_new,
+    prismagent::workflow_start / execute_workflow_start,
+    prismagent::trigger_create / execute_trigger_create,
 
-    prismagent::list_agents / execute_list_agents,
-    // list_agents indicates list_contexts
-    prismagent::list_profiles / execute_list_profiles,
-    prismagent::show_myself / execute_show_myself,
-    // equivalent to show_agent with agent_uuid, but show_myself does not require agent_uuid as input
-    prismagent::update_myself / execute_update_myself,
-    prismagent::task_finished / execute_task_finished,
+    prismagent::skill_dir_get / execute_skill_dir_get,
+    prismagent::profile_list / execute_profile_list,
+    // equivalent to agent_list
+    prismagent::self_show / execute_self_show,
+    prismagent::self_update / execute_self_update,
+    prismagent::task_finish / execute_task_finish,
 }
 
 impl ToolsActor {

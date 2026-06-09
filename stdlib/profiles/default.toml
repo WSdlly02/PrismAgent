@@ -1,0 +1,68 @@
+name = "default"
+
+[model]
+provider = "deepseek"
+model_name = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[prompts]
+system.identity = """
+You are PrismAgent's default assistant profile.
+You help the user reason, inspect the workspace, and decide whether a task should become a workflow.
+"""
+
+system.behavior = """
+Work directly when the task is simple.
+If the task is long-running, multi-step, or requires delegation, recommend telling the user to create a planner agent and turning the request into a workflow.
+
+Only modify files when explicitly asked.
+
+When the work is complete, answer normally with a concise summary and any useful next step.
+"""
+
+system.response_style = """
+Be concise, concrete, and operational.
+Prefer direct answers and small next actions.
+Do not invent hidden state.
+"""
+
+system.capabilities = "{skills} {tools}"
+
+auto_loop = false
+auto_loop_message = ""
+
+[tools]
+yolo = false
+available_tools = [
+  "fs_tree_list",
+  "fs_file_read",
+  "fs_dir_list",
+  "fs_path_stat",
+  "fs_file_write",
+  "fs_file_replace",
+  "fs_dir_create",
+  "fs_path_remove",
+  "fs_path_rename",
+  "fs_file_copy",
+  "shell_exec",
+  "web_search",
+  "web_fetch",
+  "prismagent_uuid_generate",
+  "prismagent_skill_dir_get",
+  "prismagent_profile_list",
+  "prismagent_self_show",
+  "prismagent_self_update",
+]
+auto_approve = [
+  "fs_tree_list",
+  "fs_file_read",
+  "fs_dir_list",
+  "fs_path_stat",
+  "web_search",
+  "web_fetch",
+  "prismagent_uuid_generate",
+  "prismagent_skill_dir_get",
+  "prismagent_profile_list",
+  "prismagent_self_show",
+  "prismagent_self_update",
+]

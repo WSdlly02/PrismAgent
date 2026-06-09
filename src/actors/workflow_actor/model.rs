@@ -22,37 +22,37 @@ pub struct WorkflowActor {
 }
 
 pub enum WorkflowMsg {
-    UuidNew {
+    UuidGenerate {
         count: usize,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
-    WorkflowNew {
+    WorkflowCreate {
         request: WorkflowCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Workflow>>,
     },
-    WorkflowRun {
-        request: WorkflowRunRequest,
+    WorkflowStart {
+        request: WorkflowStartRequest,
         reply: oneshot::Sender<SubsystemResult<WorkflowRuntime>>,
     },
     WorkflowCancel {
         request: WorkflowCancelRequest,
         reply: oneshot::Sender<SubsystemResult<WorkflowCancelResponse>>,
     },
-    ContextNew {
+    ContextCreate {
         request: ContextCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Context>>,
     },
-    TriggerNew {
+    TriggerCreate {
         request: WorkflowTriggerCreateRequest,
         reply: oneshot::Sender<SubsystemResult<WorkflowTrigger>>,
     },
-    TaskFinished {
-        request: TaskFinishedRequest,
-        reply: oneshot::Sender<SubsystemResult<TaskFinishedResponse>>,
+    TaskFinish {
+        request: TaskFinishRequest,
+        reply: oneshot::Sender<SubsystemResult<TaskFinishResponse>>,
     },
-    ShowMyself {
-        request: ShowMyselfRequest,
-        reply: oneshot::Sender<SubsystemResult<ShowMyselfResponse>>,
+    SelfShow {
+        request: SelfShowRequest,
+        reply: oneshot::Sender<SubsystemResult<SelfShowResponse>>,
     },
     ListAgents {
         request: ListAgentsRequest,
@@ -68,7 +68,7 @@ pub struct WorkflowRuntime {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowRunRequest {
+pub struct WorkflowStartRequest {
     pub workspace_uuid: String,
     pub workflow_uuid: String,
     pub coordinator_uuid: String,
@@ -114,7 +114,7 @@ pub struct WorkflowTriggerCreateRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskFinishedRequest {
+pub struct TaskFinishRequest {
     pub workspace_uuid: String,
     pub agent_uuid: String,
     pub summary: String,
@@ -123,7 +123,7 @@ pub struct TaskFinishedRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskFinishedResponse {
+pub struct TaskFinishResponse {
     pub agent_uuid: String,
     pub auto_loop: bool,
     pub summary: String,
@@ -131,7 +131,7 @@ pub struct TaskFinishedResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShowMyselfRequest {
+pub struct SelfShowRequest {
     pub workspace_uuid: String,
     pub agent_uuid: String,
 }
@@ -158,7 +158,7 @@ pub struct AgentView {
     pub context_out: Vec<ContextStatus>,
 }
 
-pub type ShowMyselfResponse = AgentView;
+pub type SelfShowResponse = AgentView;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListAgentsResponse {

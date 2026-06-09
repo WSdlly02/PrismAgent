@@ -1,7 +1,7 @@
 use crate::actors::agent_actor::model::{
     AGENT_ACTOR, AgentActor, AgentEvent, AgentHandle, AgentInferenceOutput, AgentMsg, AgentRuntime,
     AgentSnapshot, AgentStatus, AgentSummary, ApproveRequest, PendingApproval, PendingToolBatch,
-    SendMessageRequest, ToolBatchOutput, UpdateMyselfRequest,
+    SelfUpdateRequest, SendMessageRequest, ToolBatchOutput,
 };
 use crate::actors::agent_actor::pipeline::{
     auto_approval_mask, clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
@@ -59,8 +59,8 @@ impl AgentActor {
                 AgentMsg::SendMessage { request, reply } => {
                     let _ = reply.send(self.send_message(request).await);
                 }
-                AgentMsg::UpdateMyself { request, reply } => {
-                    let _ = reply.send(self.update_myself(request).await);
+                AgentMsg::SelfUpdate { request, reply } => {
+                    let _ = reply.send(self.self_update(request).await);
                 }
                 AgentMsg::ApproveRequest { request, reply } => {
                     let _ = reply.send(self.approve_request(request).await);
@@ -249,7 +249,7 @@ impl AgentActor {
             .await;
             let _ = handles
                 .agent
-                .inference_finished(task_agent_uuid, task_inference_uuid, result)
+                .inference_complete(task_agent_uuid, task_inference_uuid, result)
                 .await;
         });
         let runtime = self.runtime_mut(&agent_uuid)?;
@@ -257,7 +257,7 @@ impl AgentActor {
         Ok(())
     }
 
-    async fn update_myself(&mut self, request: UpdateMyselfRequest) -> SubsystemResult<Agent> {
+    async fn self_update(&mut self, request: SelfUpdateRequest) -> SubsystemResult<Agent> {
         self.agent(&request.agent_uuid)?;
         if request.context_refs.is_none()
             && request.context_out.is_none()
@@ -265,12 +265,12 @@ impl AgentActor {
             && request.auto_loop_message.is_none()
         {
             return Err(SubsystemError::invalid_input(
-                "update_myself requires at least one field",
+                "self_update requires at least one field",
             ));
         }
         if request.auto_loop == Some(true) {
             return Err(SubsystemError::invalid_input(
-                "update_myself only supports setting auto_loop to false; use prismagent_task_finished for normal task completion",
+                "self_update only supports setting auto_loop to false; use prismagent_task_finish for normal task completion",
             ));
         }
         let workspace_uuid = self.workspace_uuid(&request.agent_uuid)?.to_string();
@@ -631,7 +631,7 @@ impl AgentActor {
             .await;
             let _ = handles
                 .agent
-                .tool_batch_finished(agent_uuid, job_uuid, result)
+                .tool_batch_complete(agent_uuid, job_uuid, result)
                 .await;
         });
         Ok(())
@@ -661,7 +661,7 @@ impl AgentActor {
             .await;
             let _ = handles
                 .agent
-                .inference_finished(task_agent_uuid, task_inference_uuid, result)
+                .inference_complete(task_agent_uuid, task_inference_uuid, result)
                 .await;
         });
         Ok(())
@@ -763,8 +763,8 @@ impl AgentHandle {
         .await
     }
 
-    pub async fn update_myself(&self, request_body: UpdateMyselfRequest) -> SubsystemResult<Agent> {
-        request(&self.tx, |reply| AgentMsg::UpdateMyself {
+    pub async fn self_update(&self, request_body: SelfUpdateRequest) -> SubsystemResult<Agent> {
+        request(&self.tx, |reply| AgentMsg::SelfUpdate {
             request: request_body,
             reply,
         })
@@ -800,7 +800,7 @@ impl AgentHandle {
         .await
     }
 
-    pub async fn inference_finished(
+    pub async fn inference_complete(
         &self,
         agent_uuid: impl Into<String>,
         inference_uuid: impl Into<String>,
@@ -816,7 +816,7 @@ impl AgentHandle {
             .map_err(|_| SubsystemError::actor_dead(AGENT_ACTOR))
     }
 
-    pub async fn tool_batch_finished(
+    pub async fn tool_batch_complete(
         &self,
         agent_uuid: impl Into<String>,
         job_uuid: impl Into<String>,

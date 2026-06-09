@@ -2,9 +2,9 @@ use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRe
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::workflow_actor::model::{
-    AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, ShowMyselfRequest,
-    ShowMyselfResponse, TaskFinishedRequest, TaskFinishedResponse, WORKFLOW_ACTOR, WorkflowActor,
-    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg, WorkflowRunRequest,
+    AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, SelfShowRequest,
+    SelfShowResponse, TaskFinishRequest, TaskFinishResponse, WORKFLOW_ACTOR, WorkflowActor,
+    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg, WorkflowStartRequest,
     WorkflowRuntime, WorkflowTrigger, WorkflowTriggerCreateRequest,
 };
 use crate::error::{SubsystemError, SubsystemResult};
@@ -30,29 +30,29 @@ impl WorkflowActor {
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
             match msg {
-                WorkflowMsg::UuidNew { count, reply } => {
-                    let _ = reply.send(uuid_new(count));
+                WorkflowMsg::UuidGenerate { count, reply } => {
+                    let _ = reply.send(uuid_generate(count));
                 }
-                WorkflowMsg::WorkflowNew { request, reply } => {
+                WorkflowMsg::WorkflowCreate { request, reply } => {
                     let _ = reply.send(self.handles.storage.create_workflow(request).await);
                 }
-                WorkflowMsg::WorkflowRun { request, reply } => {
-                    let _ = reply.send(self.workflow_run(request).await);
+                WorkflowMsg::WorkflowStart { request, reply } => {
+                    let _ = reply.send(self.workflow_start(request).await);
                 }
                 WorkflowMsg::WorkflowCancel { request, reply } => {
                     let _ = reply.send(self.workflow_cancel(request).await);
                 }
-                WorkflowMsg::ContextNew { request, reply } => {
-                    let _ = reply.send(self.context_new(request).await);
+                WorkflowMsg::ContextCreate { request, reply } => {
+                    let _ = reply.send(self.context_create(request).await);
                 }
-                WorkflowMsg::TriggerNew { request, reply } => {
-                    let _ = reply.send(self.trigger_new(request).await);
+                WorkflowMsg::TriggerCreate { request, reply } => {
+                    let _ = reply.send(self.trigger_create(request).await);
                 }
-                WorkflowMsg::TaskFinished { request, reply } => {
-                    let _ = reply.send(self.task_finished(request).await);
+                WorkflowMsg::TaskFinish { request, reply } => {
+                    let _ = reply.send(self.task_finish(request).await);
                 }
-                WorkflowMsg::ShowMyself { request, reply } => {
-                    let _ = reply.send(self.show_myself(request).await);
+                WorkflowMsg::SelfShow { request, reply } => {
+                    let _ = reply.send(self.self_show(request).await);
                 }
                 WorkflowMsg::ListAgents { request, reply } => {
                     let _ = reply.send(self.list_agents(request).await);
@@ -61,9 +61,9 @@ impl WorkflowActor {
         }
     }
 
-    async fn workflow_run(
+    async fn workflow_start(
         &mut self,
-        request: WorkflowRunRequest,
+        request: WorkflowStartRequest,
     ) -> SubsystemResult<WorkflowRuntime> {
         let workflow = self
             .handles
@@ -131,7 +131,7 @@ impl WorkflowActor {
                 agent_uuid: runtime.coordinator_agent_uuid.clone(),
                 message_body: MessageBody {
                     text: format!(
-                        "# Workflow Cancellation\n\nWorkflow `{}` has been cancelled by the user.\n\nReason:\n{}\n\nCoordinate a clean cancellation:\n1. Use prismagent_list_agents to inspect related agents.\n2. Use prismagent_agent_terminate for agents that should stop cleanly.\n3. Ensure required context_out documents are written if cleanup requires them.\n4. Let workflow triggers fire normally as cleanup contexts are produced.\n5. When coordinator cleanup is complete, wait for the next trigger or report completion as appropriate.",
+                        "# Workflow Cancellation\n\nWorkflow `{}` has been cancelled by the user.\n\nReason:\n{}\n\nCoordinate a clean cancellation:\n1. Use prismagent_agent_list to inspect related agents.\n2. Use prismagent_agent_terminate for agents that should stop cleanly.\n3. Ensure required context_out documents are written if cleanup requires them.\n4. Let workflow triggers fire normally as cleanup contexts are produced.\n5. When coordinator cleanup is complete, wait for the next trigger or report completion as appropriate.",
                         runtime.workflow_uuid,
                         request.reason.trim()
                     ),
@@ -146,7 +146,7 @@ impl WorkflowActor {
         })
     }
 
-    async fn context_new(
+    async fn context_create(
         &mut self,
         request: crate::actors::storage_actor::model::context::ContextCreateRequest,
     ) -> SubsystemResult<Context> {
@@ -155,7 +155,7 @@ impl WorkflowActor {
         Ok(context)
     }
 
-    async fn trigger_new(
+    async fn trigger_create(
         &mut self,
         request: WorkflowTriggerCreateRequest,
     ) -> SubsystemResult<WorkflowTrigger> {
@@ -200,10 +200,10 @@ impl WorkflowActor {
             .ok_or_else(|| SubsystemError::not_found("workflow_trigger", trigger_uuid))
     }
 
-    async fn task_finished(
+    async fn task_finish(
         &mut self,
-        request: TaskFinishedRequest,
-    ) -> SubsystemResult<TaskFinishedResponse> {
+        request: TaskFinishRequest,
+    ) -> SubsystemResult<TaskFinishResponse> {
         let agents = self
             .handles
             .storage
@@ -240,7 +240,7 @@ impl WorkflowActor {
             .agent
             .set_auto_loop(request.agent_uuid.clone(), false)
             .await?;
-        Ok(TaskFinishedResponse {
+        Ok(TaskFinishResponse {
             agent_uuid: agent.uuid,
             auto_loop: agent.auto_loop,
             summary: request.summary,
@@ -248,7 +248,7 @@ impl WorkflowActor {
         })
     }
 
-    async fn show_myself(&self, request: ShowMyselfRequest) -> SubsystemResult<ShowMyselfResponse> {
+    async fn self_show(&self, request: SelfShowRequest) -> SubsystemResult<SelfShowResponse> {
         self.list_agents(ListAgentsRequest {
             workspace_uuid: request.workspace_uuid,
         })
@@ -346,70 +346,70 @@ impl WorkflowActor {
 }
 
 impl WorkflowHandle {
-    pub async fn uuid_new(&self, count: usize) -> SubsystemResult<Vec<String>> {
-        request(&self.tx, |reply| WorkflowMsg::UuidNew { count, reply }).await
+    pub async fn uuid_generate(&self, count: usize) -> SubsystemResult<Vec<String>> {
+        request(&self.tx, |reply| WorkflowMsg::UuidGenerate { count, reply }).await
     }
 
-    pub async fn workflow_new(
+    pub async fn workflow_create(
         &self,
         request_body: crate::actors::storage_actor::model::workflow::WorkflowCreateRequest,
     ) -> SubsystemResult<crate::actors::storage_actor::model::workflow::Workflow> {
-        request(&self.tx, |reply| WorkflowMsg::WorkflowNew {
+        request(&self.tx, |reply| WorkflowMsg::WorkflowCreate {
             request: request_body,
             reply,
         })
         .await
     }
 
-    pub async fn workflow_run(
+    pub async fn workflow_start(
         &self,
-        request_body: WorkflowRunRequest,
+        request_body: WorkflowStartRequest,
     ) -> SubsystemResult<WorkflowRuntime> {
-        request(&self.tx, |reply| WorkflowMsg::WorkflowRun {
+        request(&self.tx, |reply| WorkflowMsg::WorkflowStart {
             request: request_body,
             reply,
         })
         .await
     }
 
-    pub async fn context_new(
+    pub async fn context_create(
         &self,
         request_body: crate::actors::storage_actor::model::context::ContextCreateRequest,
     ) -> SubsystemResult<Context> {
-        request(&self.tx, |reply| WorkflowMsg::ContextNew {
+        request(&self.tx, |reply| WorkflowMsg::ContextCreate {
             request: request_body,
             reply,
         })
         .await
     }
 
-    pub async fn trigger_new(
+    pub async fn trigger_create(
         &self,
         request_body: WorkflowTriggerCreateRequest,
     ) -> SubsystemResult<WorkflowTrigger> {
-        request(&self.tx, |reply| WorkflowMsg::TriggerNew {
+        request(&self.tx, |reply| WorkflowMsg::TriggerCreate {
             request: request_body,
             reply,
         })
         .await
     }
 
-    pub async fn task_finished(
+    pub async fn task_finish(
         &self,
-        request_body: TaskFinishedRequest,
-    ) -> SubsystemResult<TaskFinishedResponse> {
-        request(&self.tx, |reply| WorkflowMsg::TaskFinished {
+        request_body: TaskFinishRequest,
+    ) -> SubsystemResult<TaskFinishResponse> {
+        request(&self.tx, |reply| WorkflowMsg::TaskFinish {
             request: request_body,
             reply,
         })
         .await
     }
 
-    pub async fn show_myself(
+    pub async fn self_show(
         &self,
-        request_body: ShowMyselfRequest,
-    ) -> SubsystemResult<ShowMyselfResponse> {
-        request(&self.tx, |reply| WorkflowMsg::ShowMyself {
+        request_body: SelfShowRequest,
+    ) -> SubsystemResult<SelfShowResponse> {
+        request(&self.tx, |reply| WorkflowMsg::SelfShow {
             request: request_body,
             reply,
         })
@@ -468,7 +468,7 @@ async fn request<T>(
         .map_err(|_| SubsystemError::actor_dead(WORKFLOW_ACTOR))?
 }
 
-fn uuid_new(count: usize) -> SubsystemResult<Vec<String>> {
+fn uuid_generate(count: usize) -> SubsystemResult<Vec<String>> {
     if count == 0 || count > 64 {
         return Err(SubsystemError::invalid_input(
             "uuid count must be between 1 and 64",

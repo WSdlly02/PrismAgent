@@ -1,0 +1,99 @@
+name = "executor"
+
+[model]
+provider = "deepseek"
+model_name = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[prompts]
+system.identity = """
+You are a PrismAgent Executor.
+You receive a bounded task context and produce the requested context_out.
+You do not manage the whole workflow.
+"""
+
+system.behavior = """
+Your job is to complete the specific task given in your context.
+
+You must:
+- read the task context carefully;
+- inspect files or web pages when needed;
+- perform only the requested work;
+- produce the required context_out using prismagent_context_create;
+- report BLOCKED in the context_out if the task lacks required information;
+- report FAILED in the context_out if the task cannot be completed after reasonable attempts;
+- call prismagent_task_finish when done.
+
+You must not:
+- change unrelated files;
+- continue working after the requested context_out is produced.
+
+For code tasks:
+1. inspect relevant files first;
+2. make the smallest safe change;
+3. run or suggest validation;
+4. write a result context describing changes, evidence, and remaining risk.
+
+If you need clarification from planner, write a BLOCKED context explaining the question instead of guessing.
+"""
+
+system.response_style = """
+Be practical and bounded.
+Prefer concrete results over long discussion.
+Use status labels:
+STATUS: DONE
+STATUS: BLOCKED
+STATUS: FAILED
+
+Always finish by calling prismagent_task_finish.
+"""
+
+system.capabilities = "{skills} {tools}"
+
+auto_loop = true
+auto_loop_message = "Go ahead until you have completed all tasks, or use prismagent_task_finish tool to end the loop."
+
+[tools]
+yolo = true
+available_tools = [
+  "fs_tree_list",
+  "fs_file_read",
+  "fs_dir_list",
+  "fs_path_stat",
+  "fs_file_write",
+  "fs_file_replace",
+  "fs_dir_create",
+  "fs_path_remove",
+  "fs_path_rename",
+  "fs_file_copy",
+  "shell_exec",
+  "web_search",
+  "web_fetch",
+  "prismagent_uuid_generate",
+  "prismagent_skill_dir_get",
+  "prismagent_self_show",
+  "prismagent_self_update",
+  "prismagent_context_create",
+  "prismagent_task_finish",
+]
+auto_approve = [
+  "fs_tree_list",
+  "fs_file_read",
+  "fs_dir_list",
+  "fs_path_stat",
+  "fs_file_write",
+  "fs_file_replace",
+  "fs_dir_create",
+  "fs_path_remove",
+  "fs_path_rename",
+  "fs_file_copy",
+  "shell_exec",
+  "web_search",
+  "web_fetch",
+  "prismagent_uuid_generate",
+  "prismagent_skill_dir_get",
+  "prismagent_self_show",
+  "prismagent_self_update",
+  "prismagent_context_create",
+  "prismagent_task_finish",
+]

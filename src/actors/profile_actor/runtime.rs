@@ -241,8 +241,8 @@ auto_loop_message = ""
 
 [tools]
 yolo = false
-available_tools = ["fs_ls_tree"]
-auto_approve = ["fs_ls_tree"]
+available_tools = ["fs_tree_list"]
+auto_approve = ["fs_tree_list"]
 "#;
         std::fs::write(root.join("default.toml"), custom).unwrap();
 

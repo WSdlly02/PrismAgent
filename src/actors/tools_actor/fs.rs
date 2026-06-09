@@ -10,9 +10,9 @@ use tokio::process::Command;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-pub fn ls_tree() -> Tool {
+pub fn tree_list() -> Tool {
     tool_template(
-        "fs_ls_tree",
+        "fs_tree_list",
         "List the directory tree of a given path.",
         json!({
             "type": "object",
@@ -25,9 +25,9 @@ pub fn ls_tree() -> Tool {
     )
 }
 
-pub fn read() -> Tool {
+pub fn file_read() -> Tool {
     tool_template(
-        "fs_read",
+        "fs_file_read",
         "Read a UTF-8 text file from the filesystem.",
         json!({
             "type": "object",
@@ -39,9 +39,9 @@ pub fn read() -> Tool {
     )
 }
 
-pub fn list() -> Tool {
+pub fn dir_list() -> Tool {
     tool_template(
-        "fs_list",
+        "fs_dir_list",
         "List direct children of a directory.",
         json!({
             "type": "object",
@@ -53,9 +53,9 @@ pub fn list() -> Tool {
     )
 }
 
-pub fn stat() -> Tool {
+pub fn path_stat() -> Tool {
     tool_template(
-        "fs_stat",
+        "fs_path_stat",
         "Return metadata for a file or directory.",
         json!({
             "type": "object",
@@ -67,9 +67,9 @@ pub fn stat() -> Tool {
     )
 }
 
-pub fn write() -> Tool {
+pub fn file_write() -> Tool {
     tool_template(
-        "fs_write",
+        "fs_file_write",
         "Write a UTF-8 text file. Creates the file if it does not exist.",
         json!({
             "type": "object",
@@ -83,9 +83,9 @@ pub fn write() -> Tool {
     )
 }
 
-pub fn replace() -> Tool {
+pub fn file_replace() -> Tool {
     tool_template(
-        "fs_replace",
+        "fs_file_replace",
         "Replace one exact text occurrence in a UTF-8 text file.",
         json!({
             "type": "object",
@@ -99,9 +99,9 @@ pub fn replace() -> Tool {
     )
 }
 
-pub fn mkdir() -> Tool {
+pub fn dir_create() -> Tool {
     tool_template(
-        "fs_mkdir",
+        "fs_dir_create",
         "Create a directory and any missing parent directories.",
         json!({
             "type": "object",
@@ -113,9 +113,9 @@ pub fn mkdir() -> Tool {
     )
 }
 
-pub fn remove() -> Tool {
+pub fn path_remove() -> Tool {
     tool_template(
-        "fs_remove",
+        "fs_path_remove",
         "Remove a file or an empty directory. Recursive removal requires recursive=true.",
         json!({
             "type": "object",
@@ -128,9 +128,9 @@ pub fn remove() -> Tool {
     )
 }
 
-pub fn rename() -> Tool {
+pub fn path_rename() -> Tool {
     tool_template(
-        "fs_rename",
+        "fs_path_rename",
         "Rename or move a file or directory.",
         json!({
             "type": "object",
@@ -143,9 +143,9 @@ pub fn rename() -> Tool {
     )
 }
 
-pub fn copy() -> Tool {
+pub fn file_copy() -> Tool {
     tool_template(
-        "fs_copy",
+        "fs_file_copy",
         "Copy a file.",
         json!({
             "type": "object",
@@ -158,7 +158,7 @@ pub fn copy() -> Tool {
     )
 }
 
-pub async fn execute_read(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_read(ctx: ToolExecutionContext, args: Value) -> String {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -169,7 +169,7 @@ pub async fn execute_read(ctx: ToolExecutionContext, args: Value) -> String {
     .await
 }
 
-pub async fn execute_ls_tree(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_tree_list(ctx: ToolExecutionContext, args: Value) -> String {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2);
     run_rtk_json(
@@ -181,7 +181,7 @@ pub async fn execute_ls_tree(ctx: ToolExecutionContext, args: Value) -> String {
     .await
 }
 
-pub async fn execute_list(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_dir_list(ctx: ToolExecutionContext, args: Value) -> String {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -192,7 +192,7 @@ pub async fn execute_list(ctx: ToolExecutionContext, args: Value) -> String {
     .await
 }
 
-pub async fn execute_stat(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_path_stat(ctx: ToolExecutionContext, args: Value) -> String {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -203,7 +203,7 @@ pub async fn execute_stat(ctx: ToolExecutionContext, args: Value) -> String {
     .await
 }
 
-pub async fn execute_write(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_write(ctx: ToolExecutionContext, args: Value) -> String {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(&ctx.workspace_path, path_arg);
     let content = args.get("content").and_then(Value::as_str).unwrap_or("");
@@ -238,7 +238,7 @@ pub async fn execute_write(ctx: ToolExecutionContext, args: Value) -> String {
     }
 }
 
-pub async fn execute_replace(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_replace(ctx: ToolExecutionContext, args: Value) -> String {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(&ctx.workspace_path, path_arg);
     let old = args.get("old").and_then(Value::as_str).unwrap_or("");
@@ -289,7 +289,7 @@ pub async fn execute_replace(ctx: ToolExecutionContext, args: Value) -> String {
     }
 }
 
-pub async fn execute_mkdir(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_dir_create(ctx: ToolExecutionContext, args: Value) -> String {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -300,7 +300,7 @@ pub async fn execute_mkdir(ctx: ToolExecutionContext, args: Value) -> String {
     .await
 }
 
-pub async fn execute_remove(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_path_remove(ctx: ToolExecutionContext, args: Value) -> String {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     let recursive = args
         .get("recursive")
@@ -316,7 +316,7 @@ pub async fn execute_remove(ctx: ToolExecutionContext, args: Value) -> String {
     run_rtk_json(&ctx.workspace_path, command, None, DEFAULT_TIMEOUT_SECS).await
 }
 
-pub async fn execute_rename(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_path_rename(ctx: ToolExecutionContext, args: Value) -> String {
     let from = tool_arg(args.get("from").and_then(Value::as_str));
     let to = tool_arg(args.get("to").and_then(Value::as_str));
     run_rtk_json(
@@ -328,7 +328,7 @@ pub async fn execute_rename(ctx: ToolExecutionContext, args: Value) -> String {
     .await
 }
 
-pub async fn execute_copy(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_copy(ctx: ToolExecutionContext, args: Value) -> String {
     let from = tool_arg(args.get("from").and_then(Value::as_str));
     let to = tool_arg(args.get("to").and_then(Value::as_str));
     run_rtk_json(
