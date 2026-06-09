@@ -81,27 +81,3 @@ pub struct ToolsConfigSection {
     pub available_tools: Vec<String>, // list of tool names that the agent can use, e.g. ["search", "calculator"]
     pub auto_approve: Vec<String>, // list of tool names that can be auto-approved without user confirmation
 }
-
-pub const DEFAULT_PROFILE_NAME: &str = "default";
-
-pub const DEFAULT_PROFILE: &str = r#"name = "default"
-
-[model]
-provider = "deepseek"
-model_name = "deepseek-v4-flash"
-api_key_env = "DEEPSEEK_API_KEY"
-
-[prompts]
-system.identity = "You are a helpful assistant."
-system.behavior = "If the task requires using any of the above skills or tools, use them. If not, answer directly. If the task is complete, call the finish tool with the final answer."
-system.response_style = "concise and informative"
-system.capabilities = "{skills} {tools}"
-
-auto_loop = false
-auto_loop_message = "Go ahead until you have completed all tasks, or use prismagent_task_finished tool to end the loop."
-
-[tools]
-yolo = false
-available_tools = ["*"]
-auto_approve = ["fs_ls_tree", "fs_read", "fs_list", "fs_stat", "prismagent_task_finished"]
-"#;

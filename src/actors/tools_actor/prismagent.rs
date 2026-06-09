@@ -1,6 +1,5 @@
 use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest, UpdateMyselfRequest};
 use crate::actors::context_actor::model::ReadSkillRequest;
-use crate::actors::profile_actor::model::DEFAULT_PROFILE_NAME;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::ContextCreateRequest;
 use crate::actors::storage_actor::model::workflow::WorkflowCreateRequest;
@@ -10,6 +9,7 @@ use crate::actors::workflow_actor::model::{
     ListAgentsRequest, ShowMyselfRequest, TaskFinishedRequest, WorkflowRunRequest,
     WorkflowTriggerCreateRequest,
 };
+use crate::stdlib_assets::DEFAULT_PROFILE_NAME;
 use genai::chat::Tool;
 use serde_json::{Value, json};
 use std::collections::HashMap;

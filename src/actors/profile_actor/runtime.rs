@@ -1,8 +1,9 @@
 use crate::actors::profile_actor::model::{
-    DEFAULT_PROFILE, DEFAULT_PROFILE_NAME, FinalModelConfig, PROFILE_ACTOR, Profile, ProfileActor,
-    ProfileHandle, ProfileMsg, PromptsConfigSection, ToolsConfigSection,
+    FinalModelConfig, PROFILE_ACTOR, Profile, ProfileActor, ProfileHandle, ProfileMsg,
+    PromptsConfigSection, ToolsConfigSection,
 };
 use crate::error::{SubsystemError, SubsystemResult};
+use crate::stdlib_assets;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -15,6 +16,10 @@ impl ProfileActor {
 
     pub fn from_root(rx: mpsc::Receiver<ProfileMsg>, root: PathBuf) -> SubsystemResult<Self> {
         std::fs::create_dir_all(&root)?;
+        // 将缺失的嵌入 profile 写出到文件系统
+        stdlib_assets::bootstrap_profiles(&root).map_err(|error| {
+            SubsystemError::io(format!("failed to bootstrap profiles: {error}"))
+        })?;
         let profiles = load_profiles(&root)?;
         Ok(Self { rx, root, profiles })
     }
@@ -154,6 +159,11 @@ fn default_profiles_root() -> SubsystemResult<PathBuf> {
         .join("profiles"))
 }
 
+/// 从文件系统加载所有 profile。
+/// bootstrap_profiles() 已保证目录中存在所有嵌入的 profile，
+/// 因此这里只管读磁盘，不需要 fallback 逻辑。
+/// 用户可自由编辑或删除文件系统的 profile，
+/// 下次启动时被删除的嵌入 profile 会重新写出。
 fn load_profiles(root: &Path) -> SubsystemResult<HashMap<String, Profile>> {
     let mut profiles = HashMap::new();
     if root.exists() {
@@ -165,12 +175,6 @@ fn load_profiles(root: &Path) -> SubsystemResult<HashMap<String, Profile>> {
             let profile = read_profile(&path)?;
             profiles.insert(profile.name.clone(), profile);
         }
-    }
-    if !profiles.contains_key(DEFAULT_PROFILE_NAME) {
-        let profile: Profile = toml::from_str(DEFAULT_PROFILE).map_err(|error| {
-            SubsystemError::invalid_input(format!("default profile is invalid: {error}"))
-        })?;
-        profiles.insert(profile.name.clone(), profile);
     }
     Ok(profiles)
 }
@@ -198,16 +202,59 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
-    async fn loads_default_profile_when_directory_is_empty() {
+    async fn loads_all_embedded_profiles_when_directory_is_empty() {
         let root = std::env::temp_dir().join(format!("prismagent-profiles-{}", Uuid::now_v7()));
         let (tx, rx) = mpsc::channel::<ProfileMsg>(8);
         ProfileActor::from_root(rx, root).unwrap().spawn();
         let handle = ProfileHandle { tx };
 
         let names = handle.list_profiles().await.unwrap();
-        assert_eq!(names, vec!["default".to_string()]);
+        // 应该包含所有的嵌入 profile
+        for embedded in stdlib_assets::EMBEDDED_PROFILES {
+            assert!(
+                names.contains(&embedded.name.to_string()),
+                "missing: {}",
+                embedded.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn filesystem_profile_overrides_embedded() {
+        let root = std::env::temp_dir().join(format!("prismagent-profiles-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        // 写一个自定义的 default.toml
+        let custom = r#"name = "default"
+
+[model]
+provider = "deepseek"
+model_name = "custom-model"
+api_key_env = "CUSTOM_KEY"
+
+[prompts]
+system.identity = "custom"
+system.behavior = "custom"
+system.response_style = "custom"
+system.capabilities = "{skills} {tools}"
+auto_loop = false
+auto_loop_message = ""
+
+[tools]
+yolo = false
+available_tools = ["fs_ls_tree"]
+auto_approve = ["fs_ls_tree"]
+"#;
+        std::fs::write(root.join("default.toml"), custom).unwrap();
+
+        let (tx, rx) = mpsc::channel::<ProfileMsg>(8);
+        ProfileActor::from_root(rx, root).unwrap().spawn();
+        let handle = ProfileHandle { tx };
+
         let profile = handle.profile("default").await.unwrap();
-        assert_eq!(profile.name, "default");
-        assert!(!profile.tools.yolo);
+        assert_eq!(profile.model.model_name, "custom-model");
+        assert_eq!(profile.model.api_key_env, "CUSTOM_KEY");
+        // coordinator 等仍来自嵌入
+        let names = handle.list_profiles().await.unwrap();
+        assert!(names.contains(&"coordinator".to_string()));
     }
 }

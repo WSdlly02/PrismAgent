@@ -191,12 +191,14 @@ fn read_skill(request: ReadSkillRequest) -> SubsystemResult<SkillDescriptor> {
 }
 
 fn list_skills(workspace_uuid: &str) -> SubsystemResult<Vec<SkillDescriptor>> {
+    let global_skills_root = prismagent_root()?.join("skills");
+    // 确保嵌入的全局 skill 已写出到文件系统
+    crate::stdlib_assets::bootstrap_skills(&global_skills_root).map_err(|error| {
+        SubsystemError::io(format!("failed to bootstrap skills: {error}"))
+    })?;
+
     let mut skills = Vec::new();
-    collect_skills(
-        SkillScope::Global,
-        prismagent_root()?.join("skills"),
-        &mut skills,
-    )?;
+    collect_skills(SkillScope::Global, global_skills_root, &mut skills)?;
     collect_skills(
         SkillScope::Workspace,
         workspaces_root()?.join(workspace_uuid).join("skills"),
