@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { AgentSummary, PendingApproval, Unit } from "../../api/types";
 import { approvalMaskForManual } from "../../state/approval";
 import { ApprovalCard } from "./ApprovalCard";
@@ -30,16 +30,32 @@ export function ChatPane({
   onApprove
 }: ChatPaneProps) {
   const [draft, setDraft] = useState("");
-  const isRunning = statusLabel === "running_llm" || statusLabel === "running_tool";
+  const lastSentRef = useRef("");
+  const isRunningLlm = statusLabel === "running_llm";
+  const canCancel = isRunningLlm || statusLabel === "running_tool" || statusLabel === "waiting_approval";
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (canCancel) {
+      await onCancel();
+      if (isRunningLlm) {
+        setDraft(lastSentRef.current);
+      }
+      lastSentRef.current = "";
+      return;
+    }
     const text = draft.trim();
     if (!text || !agent) {
       return;
     }
+    lastSentRef.current = text;
     setDraft("");
-    await onSend(text);
+    try {
+      await onSend(text);
+    } catch {
+      setDraft(text);
+      lastSentRef.current = "";
+    }
   }
 
   return (
@@ -53,11 +69,6 @@ export function ChatPane({
           <span className={`status-dot status-${statusLabel}`} />
           <span>{statusLabel}</span>
           <span className="connection-pill">{connectionStatus}</span>
-          {isRunning ? (
-            <button className="secondary-button" onClick={() => void onCancel()} type="button">
-              Cancel
-            </button>
-          ) : null}
         </div>
       </header>
 
@@ -68,7 +79,6 @@ export function ChatPane({
       {pendingApproval ? (
         <ApprovalCard
           request={pendingApproval}
-          // Notice: we are using the manual approval mask directly here, which means only providing binary approve/deny options. In the future, we could enhance this to allow more granular approvals if needed.
           onApprove={() => void onApprove(approvalMaskForManual(pendingApproval.manual_approval_mask))}
           onDeny={() => void onApprove(0)}
         />
@@ -76,14 +86,18 @@ export function ChatPane({
 
       <form className="composer" onSubmit={submit}>
         <textarea
-          disabled={!agent}
+          disabled={!agent || canCancel}
           onChange={(event) => setDraft(event.target.value)}
           placeholder="Send a message"
           rows={3}
           value={draft}
         />
-        <button className="primary-button" disabled={!agent || !draft.trim()} type="submit">
-          Send
+        <button
+          className={canCancel ? "secondary-button" : "primary-button"}
+          disabled={!canCancel && (!agent || !draft.trim())}
+          type="submit"
+        >
+          {canCancel ? "Cancel" : "Send"}
         </button>
       </form>
     </div>

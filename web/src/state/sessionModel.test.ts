@@ -33,6 +33,46 @@ describe("session model", () => {
     expect(next.streamingText).toBe("");
   });
 
+  it("replaces only the active pending user unit when the backend user unit arrives", () => {
+    const pending: Unit = {
+      ...unit,
+      uuid: "__pending-1",
+      content: { role: "user", content: "hello" },
+    };
+    const otherPending: Unit = {
+      ...pending,
+      uuid: "__pending-2",
+    };
+    const backendUser: Unit = {
+      ...pending,
+      uuid: "unit-user-1",
+    };
+
+    const next = applyAgentEvent(
+      { ...initialChatState(), units: [pending, otherPending], pendingUserUuid: pending.uuid },
+      { type: "unit_append", unit: backendUser },
+    );
+
+    expect(next.units).toEqual([otherPending, backendUser]);
+    expect(next.pendingUserUuid).toBeNull();
+  });
+
+  it("keeps pending user units when non-user units arrive", () => {
+    const pending: Unit = {
+      ...unit,
+      uuid: "__pending-1",
+      content: { role: "user", content: "hello" },
+    };
+
+    const next = applyAgentEvent(
+      { ...initialChatState(), units: [pending], pendingUserUuid: pending.uuid },
+      { type: "unit_append", unit },
+    );
+
+    expect(next.units).toEqual([pending, unit]);
+    expect(next.pendingUserUuid).toBe(pending.uuid);
+  });
+
   it("stores pending approval requests", () => {
     const next = applyAgentEvent(initialChatState(), {
       type: "approve_request",

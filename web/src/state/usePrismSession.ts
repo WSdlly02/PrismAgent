@@ -34,6 +34,8 @@ const AGENT_EVENT_NAMES = [
   "error",
 ];
 
+const PENDING_UUID_PREFIX = "__pending-";
+
 function createClientId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
@@ -96,13 +98,13 @@ export function usePrismSession(): PrismSession {
     useState<PrismSession["connectionStatus"]>("idle");
   const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<EventSource | null>(null);
+  const ignoreStreamUntilNextStatusRef = useRef(false);
 
   // 当前选中 agent 所属 workspace 的 lease（操作目标），不从 expandWorkspace 改变
   const activeLease = useMemo<Lease | null>(() => {
     if (!selectedAgent) {
       return null;
     }
-    // 找到 agent 所属的 workspace uuid
     const wsUuid = Object.entries(workspaceAgents).find(
       ([, agents]) => agents.some((a) => a.agent_uuid === selectedAgent.agent_uuid),
     )?.[0];
@@ -128,6 +130,7 @@ export function usePrismSession(): PrismSession {
       setSelectedAgent(agent);
       setConnectionStatus("connecting");
       setError(null);
+      ignoreStreamUntilNextStatusRef.current = false;
       const agentAccess = { ...access, agent_uuid: agent.agent_uuid };
       const snapshot = await agentSnapshot(agentAccess);
       setChat({
@@ -143,6 +146,12 @@ export function usePrismSession(): PrismSession {
         if (normalized.type === "connected") {
           setConnectionStatus("connected");
           return;
+        }
+        if (normalized.type === "stream_delta" && ignoreStreamUntilNextStatusRef.current) {
+          return;
+        }
+        if (normalized.type === "status_changed") {
+          ignoreStreamUntilNextStatusRef.current = false;
         }
         setChat((current) => applyAgentEvent(current, normalized));
       };
@@ -160,14 +169,12 @@ export function usePrismSession(): PrismSession {
 
   const selectAgent = useCallback(
     async (agent: AgentSummary) => {
-      // 找到 agent 所属的 workspace
       const wsUuid = Object.entries(workspaceAgents).find(
         ([, agents]) => agents.some((a) => a.agent_uuid === agent.agent_uuid),
       )?.[0];
       if (!wsUuid) {
         return;
       }
-      // 确保该 workspace 的 lease 有效（续租）
       const lease = await ensureWsLease(wsUuid, clientId, workspaceLeases, setWorkspaceLeases);
       if (!lease) {
         return;
@@ -185,14 +192,12 @@ export function usePrismSession(): PrismSession {
   const expandWorkspace = useCallback(
     async (workspace: WorkspaceSummary) => {
       if (expandedWorkspaceUuids.includes(workspace.workspace_uuid)) {
-        // 已展开 → 折叠
         setExpandedWorkspaceUuids((prev) => prev.filter((id) => id !== workspace.workspace_uuid));
         setWorkspaceAgents((prev) => {
           const next = { ...prev };
           delete next[workspace.workspace_uuid];
           return next;
         });
-        // 如果当前选中的 agent 属于这个 workspace，取消选中
         if (selectedAgent && workspaceAgents[workspace.workspace_uuid]?.some(
           (a) => a.agent_uuid === selectedAgent.agent_uuid,
         )) {
@@ -203,7 +208,6 @@ export function usePrismSession(): PrismSession {
         return;
       }
 
-      // 展开：acquire lease（不影响 activeLease）
       const lease = await ensureWsLease(workspace.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
       if (!lease) {
         return;
@@ -211,7 +215,6 @@ export function usePrismSession(): PrismSession {
       setExpandedWorkspaceUuids((prev) => [...prev, workspace.workspace_uuid]);
       setError(null);
 
-      // list agents
       const access: WorkspaceAccess = {
         workspace_uuid: workspace.workspace_uuid,
         client_id: clientId,
@@ -245,7 +248,6 @@ export function usePrismSession(): PrismSession {
 
   const createAgent = useCallback(
     async (wsUuid: string, input: AgentCreateInput) => {
-      // 确保目标 workspace 的 lease 有效
       const lease = await ensureWsLease(wsUuid, clientId, workspaceLeases, setWorkspaceLeases);
       if (!lease) {
         return;
@@ -256,7 +258,6 @@ export function usePrismSession(): PrismSession {
         lease_token: lease.lease_token,
       };
       const createdAgent = await createAgentApi(access, input);
-      // 刷新该 workspace 的 agent 列表
       const updatedAgents = await listAgents(access);
       setWorkspaceAgents((prev) => ({ ...prev, [wsUuid]: updatedAgents }));
       const created = updatedAgents.find((a) => a.agent_uuid === createdAgent.uuid);
@@ -270,39 +271,48 @@ export function usePrismSession(): PrismSession {
   const send = useCallback(
     async (text: string) => {
       if (!selectedAgent || !activeLease) {
-        return;
+        throw new Error("No agent selected");
       }
-      // 发送前续租
-      const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
-      if (!lease) {
-        return;
-      }
-      const access: WorkspaceAccess = {
-        workspace_uuid: lease.workspace_uuid,
-        client_id: clientId,
-        lease_token: lease.lease_token,
+
+      // 乐观添加用户消息
+      const optimisticUuid = `${PENDING_UUID_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimisticUnit: Unit = {
+        uuid: optimisticUuid,
+        visibility: "public",
+        content: { role: "user", content: text },
+        token_usage: null,
+        metadata: {},
+        created_at: Math.floor(Date.now() / 1000),
       };
-      await sendMessage({ ...access, agent_uuid: selectedAgent.agent_uuid }, text);
+      setChat((current) => ({
+        ...current,
+        units: [...current.units, optimisticUnit],
+        pendingUserUuid: optimisticUuid,
+      }));
+
+      try {
+        const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
+        if (!lease) {
+          throw new Error("Failed to acquire lease");
+        }
+        const access: WorkspaceAccess = {
+          workspace_uuid: lease.workspace_uuid,
+          client_id: clientId,
+          lease_token: lease.lease_token,
+        };
+        await sendMessage({ ...access, agent_uuid: selectedAgent.agent_uuid }, text);
+      } catch (err) {
+        // 发送失败 → 移除乐观消息，让 ChatPane 恢复输入框
+        setChat((current) => ({
+          ...current,
+          units: current.units.filter((u) => u.uuid !== optimisticUuid),
+          pendingUserUuid: current.pendingUserUuid === optimisticUuid ? null : current.pendingUserUuid,
+        }));
+        throw err;
+      }
     },
     [clientId, selectedAgent, activeLease, workspaceLeases],
   );
-
-  const cancel = useCallback(async () => {
-    if (!selectedAgent || !activeLease) {
-      return;
-    }
-    const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
-    if (!lease) {
-      return;
-    }
-    const access: AgentAccess = {
-      workspace_uuid: lease.workspace_uuid,
-      client_id: clientId,
-      lease_token: lease.lease_token,
-      agent_uuid: selectedAgent.agent_uuid,
-    };
-    await cancelAgent(access);
-  }, [clientId, selectedAgent, activeLease, workspaceLeases]);
 
   const approve = useCallback(
     async (approvalMask: number) => {
@@ -320,10 +330,55 @@ export function usePrismSession(): PrismSession {
         agent_uuid: selectedAgent.agent_uuid,
       };
       await approveRequest(access, chat.pendingApproval.request_uuid, approvalMask);
-      setChat((current) => ({ ...current, pendingApproval: null }));
+      setChat((current) => ({ ...current, pendingApproval: null, streamingText: "" }));
     },
     [chat.pendingApproval, clientId, selectedAgent, activeLease, workspaceLeases],
   );
+
+  const cancel = useCallback(async () => {
+    if (!selectedAgent || !activeLease) {
+      return;
+    }
+    const status = chat.status ?? selectedAgent.status;
+    if (status === "waiting_approval") {
+      await approve(0);
+      return;
+    }
+    const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
+    if (!lease) {
+      return;
+    }
+    const access: AgentAccess = {
+      workspace_uuid: lease.workspace_uuid,
+      client_id: clientId,
+      lease_token: lease.lease_token,
+      agent_uuid: selectedAgent.agent_uuid,
+    };
+
+    if (status === "running_llm") {
+      ignoreStreamUntilNextStatusRef.current = true;
+      setChat((current) => ({
+        ...current,
+        units: current.pendingUserUuid
+          ? current.units.filter((u) => u.uuid !== current.pendingUserUuid)
+          : current.units,
+        pendingUserUuid: null,
+        streamingText: "",
+      }));
+      try {
+        await cancelAgent(access);
+      } catch (err) {
+        ignoreStreamUntilNextStatusRef.current = false;
+        throw err;
+      }
+      return;
+    }
+
+    setChat((current) => {
+      return { ...current, streamingText: "" };
+    });
+    await cancelAgent(access);
+  }, [approve, chat.status, clientId, selectedAgent, activeLease, workspaceLeases]);
 
   useEffect(() => closeStream, [closeStream]);
 
