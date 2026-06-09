@@ -55,7 +55,7 @@ register_tools! {
     web::search / execute_search,
     web::fetch / execute_fetch,
     prismagent::uuid_new / execute_uuid_new,
-    prismagent::read_skill / execute_read_skill,
+    prismagent::get_skill_dir / execute_get_skill_dir,
     prismagent::agent_new / execute_agent_new,
     prismagent::agent_send_message / execute_agent_send_message,
     prismagent::agent_terminate / execute_agent_terminate,

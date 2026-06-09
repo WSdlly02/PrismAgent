@@ -1,5 +1,5 @@
 use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest, UpdateMyselfRequest};
-use crate::actors::context_actor::model::ReadSkillRequest;
+use crate::actors::context_actor::model::GetSkillDirRequest;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::ContextCreateRequest;
 use crate::actors::storage_actor::model::workflow::WorkflowCreateRequest;
@@ -40,14 +40,14 @@ pub fn list_profiles() -> Tool {
     )
 }
 
-pub fn read_skill() -> Tool {
+pub fn get_skill_dir() -> Tool {
     tool_template(
-        "prismagent_read_skill",
-        "Read the full SKILL.md body for a workspace or global skill. System prompts only include skill frontmatter; use this tool when detailed skill instructions are needed.",
+        "prismagent_get_skill_dir",
+        "Get the filesystem path to a skill directory. Use this together with fs_read/fs_ls_tree to read skill files (SKILL.md and any supporting files). Returns an error if the skill is not found.",
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Skill name to read"}
+                "name": {"type": "string", "description": "Skill name to locate"}
             },
             "required": ["name"]
         }),
@@ -328,13 +328,13 @@ pub async fn execute_list_profiles(ctx: ToolExecutionContext, _args: Value) -> S
     }
 }
 
-pub async fn execute_read_skill(ctx: ToolExecutionContext, args: Value) -> String {
-    let request = ReadSkillRequest {
+pub async fn execute_get_skill_dir(ctx: ToolExecutionContext, args: Value) -> String {
+    let request = GetSkillDirRequest {
         workspace_uuid: ctx.workspace_uuid.clone(),
         name: string_arg(&args, "name").unwrap_or_default(),
     };
-    match ctx.handles.context.read_skill(request).await {
-        Ok(skill) => json!({"status": "ok", "skill": skill}).to_string(),
+    match ctx.handles.context.get_skill_dir(request).await {
+        Ok(path) => json!({"status": "ok", "path": path}).to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }

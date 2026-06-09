@@ -3,7 +3,6 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
 pub const CONTEXT_ACTOR: &str = "context";
@@ -19,20 +18,14 @@ pub struct ContextActor {
 }
 
 pub enum ContextMsg {
-    ReadSkill {
-        request: ReadSkillRequest,
-        reply: oneshot::Sender<SubsystemResult<SkillDescriptor>>,
+    GetSkillDir {
+        request: GetSkillDirRequest,
+        reply: oneshot::Sender<SubsystemResult<String>>,
     },
     RenderInitialPrompts {
-        request: RenderInitialPromptsRequest,
+        request: Box<RenderInitialPromptsRequest>,
         reply: oneshot::Sender<SubsystemResult<Vec<Unit>>>,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResolveContextRefsRequest {
-    pub workspace_uuid: String,
-    pub context_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,18 +43,25 @@ pub struct RenderCapabilitiesRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadSkillRequest {
+pub struct ResolveContextRefsRequest {
+    pub workspace_uuid: String,
+    pub context_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSkillDirRequest {
     pub workspace_uuid: String,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 描述一个已发现的 skill，用于在 agent 的 prompt 中列出可用技能。
+/// `content`（SKILL.md 正文）不再由系统读取，agent 可通过 get_skill_dir 获取路径后用 FS 工具自行阅读。
+#[derive(Debug, Clone)]
 pub struct SkillDescriptor {
     pub name: String,
     pub scope: SkillScope,
-    pub path: PathBuf,
+    /// SKILL.md 的 YAML frontmatter，简洁描述该技能的用途
     pub frontmatter: String,
-    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

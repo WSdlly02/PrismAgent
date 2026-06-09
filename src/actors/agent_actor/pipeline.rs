@@ -11,6 +11,7 @@ use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use genai::chat::{ChatMessage, ContentPart, ToolCall, ToolResponse};
 use serde_json::json;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 pub fn input_pipeline(
@@ -210,11 +211,7 @@ pub fn auto_approval_mask(config: &ToolsConfigSection, tool_calls: &[ToolCall]) 
         return 0;
     }
     let auto_all = config.auto_approve.iter().any(|name| name == "*");
-    let auto = config
-        .auto_approve
-        .iter()
-        .cloned()
-        .collect::<std::collections::HashSet<_>>();
+    let auto = config.auto_approve.iter().cloned().collect::<HashSet<_>>();
     tool_calls
         .iter()
         .enumerate()

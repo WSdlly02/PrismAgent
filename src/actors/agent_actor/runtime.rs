@@ -156,12 +156,12 @@ impl AgentActor {
         let initial_units = self
             .handles
             .context
-            .render_initial_prompts(RenderInitialPromptsRequest {
+            .render_initial_prompts(Box::new(RenderInitialPromptsRequest {
                 workspace_uuid: workspace_uuid.clone(),
                 agent_uuid: request.uuid.clone(),
                 context_refs,
                 profile,
-            })
+            }))
             .await?;
         let mut agent = self
             .handles

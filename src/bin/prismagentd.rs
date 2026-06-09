@@ -109,7 +109,7 @@ fn start_runtime() -> anyhow::Result<ShellHandle> {
 
     ProfileActor::load(profile_rx)?.spawn();
     StorageActor::load(storage_rx)?.spawn();
-    ContextActor::load(context_rx, handles.clone()).spawn();
+    ContextActor::load(context_rx, handles.clone())?.spawn();
     WorkspaceActor::load(workspace_rx)?.spawn();
     LlmActor::load(llm_rx).spawn();
     ToolsActor::load(tools_rx, handles.clone()).spawn();

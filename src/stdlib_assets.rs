@@ -2,11 +2,9 @@ use std::path::Path;
 
 /// 编译时嵌入 stdlib/profiles 和 stdlib/skills 目录下的文件。
 /// 启动时，缺失的嵌入文件会被写出到文件系统，保证磁盘上始终有完整的基础配置。
-
 // ---------------------------------------------------------------------------
 // 嵌入的数据
 // ---------------------------------------------------------------------------
-
 pub struct EmbeddedProfile {
     pub name: &'static str,
     pub filename: &'static str,
@@ -29,11 +27,31 @@ pub struct EmbeddedSkill {
 pub const DEFAULT_PROFILE_NAME: &str = "default";
 
 pub const EMBEDDED_PROFILES: &[EmbeddedProfile] = &[
-    EmbeddedProfile { name: "default",     filename: "default.toml",     content: include_str!("../stdlib/profiles/default.toml") },
-    EmbeddedProfile { name: "coordinator", filename: "coordinator.toml", content: include_str!("../stdlib/profiles/coordinator.toml") },
-    EmbeddedProfile { name: "planner",     filename: "planner.toml",     content: include_str!("../stdlib/profiles/planner.toml") },
-    EmbeddedProfile { name: "executor",    filename: "executor.toml",    content: include_str!("../stdlib/profiles/executor.toml") },
-    EmbeddedProfile { name: "verifier",    filename: "verifier.toml",    content: include_str!("../stdlib/profiles/verifier.toml") },
+    EmbeddedProfile {
+        name: "default",
+        filename: "default.toml",
+        content: include_str!("../stdlib/profiles/default.toml"),
+    },
+    EmbeddedProfile {
+        name: "coordinator",
+        filename: "coordinator.toml",
+        content: include_str!("../stdlib/profiles/coordinator.toml"),
+    },
+    EmbeddedProfile {
+        name: "planner",
+        filename: "planner.toml",
+        content: include_str!("../stdlib/profiles/planner.toml"),
+    },
+    EmbeddedProfile {
+        name: "executor",
+        filename: "executor.toml",
+        content: include_str!("../stdlib/profiles/executor.toml"),
+    },
+    EmbeddedProfile {
+        name: "verifier",
+        filename: "verifier.toml",
+        content: include_str!("../stdlib/profiles/verifier.toml"),
+    },
 ];
 
 pub const EMBEDDED_SKILLS: &[EmbeddedSkill] = &[EmbeddedSkill {
