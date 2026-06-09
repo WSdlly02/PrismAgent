@@ -13,6 +13,14 @@ type WorkspaceSidebarProps = {
   onCreateAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
 };
 
+const PROFILE_HINTS: Record<string, string> = {
+  default: "通用助手，可读文件、搜索网页、调用工具",
+  coordinator: "协调者，管理工作流执行与agent调度",
+  planner: "规划者，将目标拆解为工作流",
+  executor: "执行者，执行具体任务（自动循环）",
+  verifier: "验证者，审查执行结果（自动循环）",
+};
+
 export function WorkspaceSidebar({
   workspaces,
   profiles,
@@ -28,6 +36,8 @@ export function WorkspaceSidebar({
   const [creatingInWs, setCreatingInWs] = useState<string | null>(null);
   const [agentName, setAgentName] = useState("");
   const [profile, setProfile] = useState("");
+  const [contextRefs, setContextRefs] = useState("");
+  const [contextOut, setContextOut] = useState("");
 
   async function submitWorkspace(event: React.FormEvent) {
     event.preventDefault();
@@ -45,13 +55,22 @@ export function WorkspaceSidebar({
     if (!name) {
       return;
     }
+    const selectedProfile = profile || profiles[0] || "default";
     await onCreateAgent(wsUuid, {
       name,
-      profile: profile || profiles[0] || "default",
-      context_refs: [],
-      context_out: [],
+      profile: selectedProfile,
+      context_refs: contextRefs
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      context_out: contextOut
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
     });
     setAgentName("");
+    setContextRefs("");
+    setContextOut("");
     setCreatingInWs(null);
   }
 
@@ -59,6 +78,8 @@ export function WorkspaceSidebar({
     setCreatingInWs(wsUuid);
     setAgentName("");
     setProfile("");
+    setContextRefs("");
+    setContextOut("");
   }
 
   return (
@@ -98,24 +119,47 @@ export function WorkspaceSidebar({
               {/* 展开后显示 agents */}
               {isExpanded ? (
                 <div className="ws-children">
-                  {/* Create Agent 按钮 — 在 agent 列表顶部 */}
+                  {/* Create Agent 顶部按钮 */}
                   {isCreating ? (
                     <form className="ws-agent-form" onSubmit={(e) => submitAgent(e, workspace.workspace_uuid)}>
                       <input
                         aria-label="Agent name"
                         onChange={(e) => setAgentName(e.target.value)}
-                        placeholder="Agent name"
+                        placeholder="Agent name (required)"
                         value={agentName}
                       />
-                      <select
-                        aria-label="Agent profile"
-                        onChange={(e) => setProfile(e.target.value)}
-                        value={profile || profiles[0] || "default"}
-                      >
-                        {(profiles.length ? profiles : ["default"]).map((name) => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
+                      <div className="ws-field-with-hint">
+                        <select
+                          aria-label="Agent profile"
+                          onChange={(e) => setProfile(e.target.value)}
+                          value={profile || profiles[0] || "default"}
+                        >
+                          {(profiles.length ? profiles : ["default"]).map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        <span className="ws-field-hint">
+                          {PROFILE_HINTS[profile || profiles[0] || "default"] ?? ""}
+                        </span>
+                      </div>
+
+                      {/* 可选高级字段 */}
+                      <details className="ws-advanced-fields">
+                        <summary>Advanced (optional)</summary>
+                        <input
+                          aria-label="Context refs"
+                          onChange={(e) => setContextRefs(e.target.value)}
+                          placeholder="context_refs: uuid1, uuid2 (optional)"
+                          value={contextRefs}
+                        />
+                        <input
+                          aria-label="Context out"
+                          onChange={(e) => setContextOut(e.target.value)}
+                          placeholder="context_out: uuid1, uuid2 (optional)"
+                          value={contextOut}
+                        />
+                      </details>
+
                       <div className="ws-agent-form-actions">
                         <button className="secondary-button" onClick={() => setCreatingInWs(null)} type="button">Cancel</button>
                         <button className="primary-button" type="submit">Create</button>
