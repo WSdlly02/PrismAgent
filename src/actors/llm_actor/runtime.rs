@@ -4,8 +4,10 @@ use crate::actors::llm_actor::model::{
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use futures_util::StreamExt;
+use genai::ServiceTarget;
+use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent};
-use genai::resolver::{AuthData, AuthResolver};
+use genai::resolver::{AuthData, AuthResolver, Endpoint};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -63,12 +65,24 @@ impl LlmActor {
                     .with_capture_usage(true)
                     .with_capture_reasoning_content(true)
                     .with_capture_tool_calls(true);
+
+                // Mimo token plan 特殊支持
+                let mimo_use_token_plan =
+                    std::env::var("MIMO_USE_TOKEN_PLAN").unwrap_or_else(|_| "0".to_string()) == "1";
+
                 genai::Client::builder()
                     // 注入provider对应的api key到认证解析器
                     // 每个provider对应一个client实例，因此不会冲突
                     .with_auth_resolver(AuthResolver::from_resolver_fn(move |_| {
                         Ok(Some(AuthData::from_single(api_key.clone())))
                     }))
+                    .with_service_target_resolver_fn(move |mut target: ServiceTarget| {
+                        if mimo_use_token_plan && target.model.adapter_kind == AdapterKind::Mimo {
+                            target.endpoint =
+                                Endpoint::from_static("https://token-plan-cn.xiaomimimo.com/v1/");
+                        }
+                        Ok(target)
+                    })
                     .with_chat_options(options)
                     .build()
             })
