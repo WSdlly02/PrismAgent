@@ -89,6 +89,7 @@ pub struct AgentRuntime {
 pub struct AgentSnapshot {
     pub units: Vec<Unit>,
     pub status: AgentStatus,
+    pub pending_approval: Option<PendingApproval>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

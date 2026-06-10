@@ -59,6 +59,7 @@ export type Unit = {
 export type AgentSnapshot = {
   units: Unit[];
   status: AgentStatus;
+  pending_approval: PendingApproval | null;
 };
 
 export type AgentCreateInput = {

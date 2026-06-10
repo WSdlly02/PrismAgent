@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  agentSnapshot,
   createAgent,
   deleteAgent,
   listAgents,
@@ -86,6 +87,30 @@ describe("api client", () => {
       "/api/agents/list?workspace_uuid=workspace-1&client_id=client-1",
       { headers: { "content-type": "application/json" } },
     );
+  });
+
+  it("preserves pending approval data in agent snapshots", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        units: [],
+        status: "waiting_approval",
+        pending_approval: {
+          request_uuid: "approval-1",
+          description: "model requested tool execution",
+          tool_count: 2,
+          auto_approved_mask: 1,
+          manual_approval_mask: 2,
+        },
+      }),
+    );
+
+    const snapshot = await agentSnapshot({ ...access, agent_uuid: "agent-1" });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/agents/snapshot?workspace_uuid=workspace-1&client_id=client-1&agent_uuid=agent-1",
+      { headers: { "content-type": "application/json" } },
+    );
+    expect(snapshot.pending_approval?.request_uuid).toBe("approval-1");
   });
 
   it("sends message bodies with attachments array by default", async () => {

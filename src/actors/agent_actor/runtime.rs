@@ -240,9 +240,11 @@ impl AgentActor {
                 .read_units(workspace_uuid, agent.unit_chain.clone())
                 .await?
         };
+        let runtime = self.runtime(agent_uuid)?;
         Ok(AgentSnapshot {
             units,
-            status: self.runtime(agent_uuid)?.status.clone(),
+            status: runtime.status.clone(),
+            pending_approval: pending_approval_from_runtime(runtime),
         })
     }
 
@@ -965,6 +967,20 @@ fn effective_approval_mask(
     user_approval_mask: u64,
 ) -> ApprovalMask {
     ApprovalMask::from_bits(auto_approved_mask | (user_approval_mask & manual_approval_mask))
+}
+
+fn pending_approval_from_runtime(runtime: &AgentRuntime) -> Option<PendingApproval> {
+    if runtime.status != AgentStatus::WaitingApproval {
+        return None;
+    }
+    let pending = runtime.pending_tool_batch.as_ref()?;
+    Some(PendingApproval {
+        request_uuid: pending.request_uuid.clone(),
+        description: "model requested tool execution".to_string(),
+        tool_count: pending.tool_calls.len(),
+        auto_approved_mask: pending.auto_approved_mask,
+        manual_approval_mask: pending.manual_approval_mask,
+    })
 }
 
 async fn request<T>(

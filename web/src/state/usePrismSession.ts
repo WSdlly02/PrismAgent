@@ -269,6 +269,7 @@ export function usePrismSession(): PrismSession {
         ...initialChatState(),
         units: snapshot.units,
         status: snapshot.status,
+        pendingApproval: snapshot.pending_approval,
       });
 
       const stream = new EventSource(agentEventStreamUrl(agentAccess));
