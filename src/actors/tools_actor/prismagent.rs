@@ -1,7 +1,7 @@
 use crate::actors::agent_actor::model::{MessageBody, SelfUpdateRequest, SendMessageRequest};
 use crate::actors::context_actor::model::GetSkillDirRequest;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
-use crate::actors::storage_actor::model::context::ContextCreateRequest;
+use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::workflow::WorkflowCreateRequest;
 use crate::actors::tools_actor::model::ToolExecutionContext;
 use crate::actors::tools_actor::runtime::tool_template;
@@ -187,7 +187,12 @@ pub fn agent_message_send() -> Tool {
             "type": "object",
             "properties": {
                 "agent_uuid": {"type": "string", "description": "Target agent UUID"},
-                "message": {"type": "string", "description": "Text message to send to the target agent"}
+                "message": {"type": "string", "description": "Text message to send to the target agent"},
+                "piped_context_out": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Context UUIDs whose full text should be appended to the message before sending. Coordinators use this to forward completed context_out results."
+                }
             },
             "required": ["agent_uuid", "message"]
         }),
@@ -437,10 +442,26 @@ pub async fn execute_self_show(ctx: ToolExecutionContext, _args: Value) -> Strin
 }
 
 pub async fn execute_agent_message_send(ctx: ToolExecutionContext, args: Value) -> String {
+    let mut message = string_arg(&args, "message").unwrap_or_default();
+    let piped_context_out = string_array_arg(&args, "piped_context_out");
+    if !piped_context_out.is_empty() {
+        let contexts = match ctx
+            .handles
+            .storage
+            .read_contexts(ctx.workspace_uuid.clone(), piped_context_out)
+            .await
+        {
+            Ok(contexts) => contexts,
+            Err(error) => {
+                return json!({"status": "error", "error": error.to_string()}).to_string();
+            }
+        };
+        message = append_piped_contexts(message, contexts);
+    }
     let request = SendMessageRequest {
         agent_uuid: string_arg(&args, "agent_uuid").unwrap_or_default(),
         message_body: MessageBody {
-            text: string_arg(&args, "message").unwrap_or_default(),
+            text: message,
             attachments: Vec::new(),
         },
     };
@@ -585,4 +606,46 @@ fn metadata_arg(args: &Value) -> HashMap<String, String> {
         .flat_map(|object| object.iter())
         .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
         .collect()
+}
+
+fn append_piped_contexts(mut message: String, contexts: Vec<Context>) -> String {
+    if contexts.is_empty() {
+        return message;
+    }
+    if !message.trim().is_empty() {
+        message.push_str("\n\n");
+    }
+    message.push_str("## Piped context outputs\n\n");
+    for context in contexts {
+        message.push_str("### ");
+        message.push_str(&context.title);
+        message.push_str(" (");
+        message.push_str(&context.uuid);
+        message.push_str(")\n\n");
+        message.push_str(&context.content);
+        message.push_str("\n\n");
+    }
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appends_piped_contexts_with_source_headers() {
+        let message = append_piped_contexts(
+            "Workflow finished.".to_string(),
+            vec![Context {
+                uuid: "context-1".to_string(),
+                title: "Final result".to_string(),
+                content: "STATUS: DONE\nChanged verifier profile.".to_string(),
+                created_at: 1,
+            }],
+        );
+
+        assert!(message.starts_with("Workflow finished.\n\n## Piped context outputs"));
+        assert!(message.contains("### Final result (context-1)"));
+        assert!(message.contains("STATUS: DONE"));
+    }
 }
