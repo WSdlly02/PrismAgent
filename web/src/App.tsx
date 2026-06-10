@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell } from "./components/AppShell";
 import { ChatPane } from "./features/chat/ChatPane";
 import { InspectorPane } from "./features/inspector/InspectorPane";
@@ -8,6 +8,7 @@ import { usePrismSession } from "./state/usePrismSession";
 export function App() {
   const session = usePrismSession();
   const didLoadInitialData = useRef(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     if (didLoadInitialData.current) {
@@ -19,6 +20,7 @@ export function App() {
 
   return (
     <AppShell
+      sidebarCollapsed={sidebarCollapsed}
       sidebar={
         <WorkspaceSidebar
           workspaces={session.workspaces}
@@ -31,6 +33,8 @@ export function App() {
           onAddWorkspace={session.addWorkspace}
           onCreateAgent={session.createAgent}
           onDeleteAgent={session.deleteAgent}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
         />
       }
       chat={

@@ -12,6 +12,8 @@ type WorkspaceSidebarProps = {
   onAddWorkspace: (path: string) => Promise<void>;
   onCreateAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
   onDeleteAgent: (agent: AgentSummary) => Promise<void>;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 };
 
 const PROFILE_HINTS: Record<string, string> = {
@@ -21,6 +23,13 @@ const PROFILE_HINTS: Record<string, string> = {
   executor: "执行者，执行具体任务（自动循环）",
   verifier: "验证者，审查执行结果（自动循环）",
 };
+
+/** Extract the last segment of a path for display. */
+function shortPath(p: string): string {
+  const segments = p.split("/").filter(Boolean);
+  if (segments.length <= 1) return p;
+  return segments[segments.length - 1];
+}
 
 export function WorkspaceSidebar({
   workspaces,
@@ -33,6 +42,8 @@ export function WorkspaceSidebar({
   onAddWorkspace,
   onCreateAgent,
   onDeleteAgent,
+  collapsed,
+  onToggleCollapse,
 }: WorkspaceSidebarProps) {
   const [workspacePath, setWorkspacePath] = useState("");
   const [creatingInWs, setCreatingInWs] = useState<string | null>(null);
@@ -85,148 +96,181 @@ export function WorkspaceSidebar({
   }
 
   return (
-    <div className="sidebar">
+    <div className={`sidebar${collapsed ? " sidebar-collapsed-state" : ""}`}>
       <div className="sidebar-header">
-        <div>
-          <h1>PrismAgent</h1>
-          <span className="muted-label">Shell</span>
-        </div>
+        {!collapsed ? (
+          <div>
+            <h1>PrismAgent</h1>
+            <span className="muted-label">Shell</span>
+          </div>
+        ) : null}
+        {onToggleCollapse ? (
+          <button
+            className="sidebar-toggle-btn"
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            type="button"
+          >
+            {collapsed ? "»" : "«"}
+          </button>
+        ) : null}
       </div>
 
       {/* Workspace tree */}
-      <div className="workspace-tree">
-        {workspaces.map((workspace) => {
-          const isExpanded = expandedWorkspaceUuids.includes(workspace.workspace_uuid);
-          const children = workspaceAgents[workspace.workspace_uuid] ?? [];
-          const isCreating = creatingInWs === workspace.workspace_uuid;
+      {!collapsed ? (
+        <div className="workspace-tree">
+          {workspaces.map((workspace) => {
+            const isExpanded = expandedWorkspaceUuids.includes(workspace.workspace_uuid);
+            const children = workspaceAgents[workspace.workspace_uuid] ?? [];
+            const isCreating = creatingInWs === workspace.workspace_uuid;
 
-          return (
-            <div className="ws-folder" key={workspace.workspace_uuid}>
-              {/* 文件夹行：双击展开/折叠 */}
-              <button
-                className="ws-folder-row"
-                onDoubleClick={() => void onSelectWorkspace(workspace)}
-                type="button"
-              >
-                <span className="ws-folder-icon">{isExpanded ? "📂" : "📁"}</span>
-                <span className="resource-main">
-                  <span className="resource-name">{workspace.workspace_path}</span>
-                  <span className="resource-meta">
-                    {workspace.locked_by ? `locked by ${workspace.locked_by}` : "available"}
+            return (
+              <div className="ws-folder" key={workspace.workspace_uuid}>
+                {/* 文件夹行：双击展开/折叠 */}
+                <button
+                  className="ws-folder-row"
+                  onDoubleClick={() => void onSelectWorkspace(workspace)}
+                  type="button"
+                >
+                  <span className="ws-folder-icon">{isExpanded ? "📂" : "📁"}</span>
+                  <span className="resource-main">
+                    <span className="resource-name" title={workspace.workspace_path}>
+                      {shortPath(workspace.workspace_path)}
+                    </span>
+                    <span className="resource-meta">
+                      {workspace.locked_by ? `locked by ${workspace.locked_by}` : "available"}
+                    </span>
                   </span>
-                </span>
-                <span className="ws-count">{children.length}</span>
-              </button>
+                  <span className="ws-count">{children.length}</span>
+                </button>
 
-              {/* 展开后显示 agents */}
-              {isExpanded ? (
-                <div className="ws-children">
-                  {/* Create Agent 顶部按钮 */}
-                  {isCreating ? (
-                    <form className="ws-agent-form" onSubmit={(e) => submitAgent(e, workspace.workspace_uuid)}>
-                      <input
-                        aria-label="Agent name"
-                        onChange={(e) => setAgentName(e.target.value)}
-                        placeholder="Agent name (required)"
-                        value={agentName}
-                      />
-                      <div className="ws-field-with-hint">
-                        <select
-                          aria-label="Agent profile"
-                          onChange={(e) => setProfile(e.target.value)}
-                          value={profile || profiles[0] || "default"}
+                {/* 展开后显示 agents */}
+                {isExpanded ? (
+                  <div className="ws-children">
+                    {/* Create Agent 顶部按钮 */}
+                    {isCreating ? (
+                      <form className="ws-agent-form" onSubmit={(e) => submitAgent(e, workspace.workspace_uuid)}>
+                        <input
+                          aria-label="Agent name"
+                          onChange={(e) => setAgentName(e.target.value)}
+                          placeholder="Agent name (required)"
+                          value={agentName}
+                        />
+                        <div className="ws-field-with-hint">
+                          <select
+                            aria-label="Agent profile"
+                            onChange={(e) => setProfile(e.target.value)}
+                            value={profile || profiles[0] || "default"}
+                          >
+                            {(profiles.length ? profiles : ["default"]).map((name) => (
+                              <option key={name} value={name}>{name}</option>
+                            ))}
+                          </select>
+                          <span className="ws-field-hint">
+                            {PROFILE_HINTS[profile || profiles[0] || "default"] ?? ""}
+                          </span>
+                        </div>
+
+                        {/* 可选高级字段 */}
+                        <details className="ws-advanced-fields">
+                          <summary>Advanced (optional)</summary>
+                          <input
+                            aria-label="Context refs"
+                            onChange={(e) => setContextRefs(e.target.value)}
+                            placeholder="context_refs: uuid1, uuid2 (optional)"
+                            value={contextRefs}
+                          />
+                          <input
+                            aria-label="Context out"
+                            onChange={(e) => setContextOut(e.target.value)}
+                            placeholder="context_out: uuid1, uuid2 (optional)"
+                            value={contextOut}
+                          />
+                        </details>
+
+                        <div className="ws-agent-form-actions">
+                          <button className="secondary-button" onClick={() => setCreatingInWs(null)} type="button">Cancel</button>
+                          <button className="primary-button" type="submit">Create</button>
+                        </div>
+                      </form>
+                    ) : (
+                      <button className="ws-create-btn" onClick={() => startCreate(workspace.workspace_uuid)} type="button">
+                        + Create Agent
+                      </button>
+                    )}
+
+                    {/* Agent 列表 */}
+                    {children.map((agent) => (
+                      <div
+                        className="ws-agent-row"
+                        data-active={agent.agent_uuid === selectedAgentUuid}
+                        key={agent.agent_uuid}
+                      >
+                        <button
+                          className="ws-agent-select"
+                          onClick={() => void onSelectAgent(agent)}
+                          type="button"
                         >
-                          {(profiles.length ? profiles : ["default"]).map((name) => (
-                            <option key={name} value={name}>{name}</option>
-                          ))}
-                        </select>
-                        <span className="ws-field-hint">
-                          {PROFILE_HINTS[profile || profiles[0] || "default"] ?? ""}
-                        </span>
+                          <span className="ws-agent-icon">🤖</span>
+                          <span className="resource-main">
+                            <span className="resource-name">{agent.agent_name}</span>
+                            <span className="resource-meta">{agent.profile}</span>
+                          </span>
+                          <span className={`status-dot status-${agent.status}`} aria-label={agent.status} />
+                        </button>
+                        <button
+                          aria-label={`Delete agent ${agent.agent_name}`}
+                          className="ws-agent-delete"
+                          disabled={agent.status !== "idle"}
+                          onClick={() => void onDeleteAgent(agent)}
+                          title={agent.status === "idle" ? "Delete agent" : "Agent must be idle"}
+                          type="button"
+                        >
+                          ×
+                        </button>
                       </div>
+                    ))}
 
-                      {/* 可选高级字段 */}
-                      <details className="ws-advanced-fields">
-                        <summary>Advanced (optional)</summary>
-                        <input
-                          aria-label="Context refs"
-                          onChange={(e) => setContextRefs(e.target.value)}
-                          placeholder="context_refs: uuid1, uuid2 (optional)"
-                          value={contextRefs}
-                        />
-                        <input
-                          aria-label="Context out"
-                          onChange={(e) => setContextOut(e.target.value)}
-                          placeholder="context_out: uuid1, uuid2 (optional)"
-                          value={contextOut}
-                        />
-                      </details>
-
-                      <div className="ws-agent-form-actions">
-                        <button className="secondary-button" onClick={() => setCreatingInWs(null)} type="button">Cancel</button>
-                        <button className="primary-button" type="submit">Create</button>
-                      </div>
-                    </form>
-                  ) : (
-                    <button className="ws-create-btn" onClick={() => startCreate(workspace.workspace_uuid)} type="button">
-                      + Create Agent
-                    </button>
-                  )}
-
-                  {/* Agent 列表 */}
-                  {children.map((agent) => (
-                    <div
-                      className="ws-agent-row"
-                      data-active={agent.agent_uuid === selectedAgentUuid}
-                      key={agent.agent_uuid}
-                    >
-                      <button
-                        className="ws-agent-select"
-                        onClick={() => void onSelectAgent(agent)}
-                        type="button"
-                      >
-                        <span className="ws-agent-icon">🤖</span>
-                        <span className="resource-main">
-                          <span className="resource-name">{agent.agent_name}</span>
-                          <span className="resource-meta">{agent.profile}</span>
-                        </span>
-                        <span className={`status-dot status-${agent.status}`} aria-label={agent.status} />
-                      </button>
-                      <button
-                        aria-label={`Delete agent ${agent.agent_name}`}
-                        className="ws-agent-delete"
-                        disabled={agent.status !== "idle"}
-                        onClick={() => void onDeleteAgent(agent)}
-                        title={agent.status === "idle" ? "Delete agent" : "Agent must be idle"}
-                        type="button"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ))}
-
-                  {children.length === 0 && !isCreating ? (
-                    <p className="empty-copy">No agents</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
+                    {children.length === 0 && !isCreating ? (
+                      <p className="empty-copy">No agents</p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        /* Collapsed: only show workspace icons */
+        <div className="workspace-tree workspace-tree-collapsed">
+          {workspaces.map((workspace) => (
+            <button
+              className="ws-folder-row ws-folder-row-collapsed"
+              key={workspace.workspace_uuid}
+              onClick={() => void onSelectWorkspace(workspace)}
+              title={workspace.workspace_path}
+              type="button"
+            >
+              <span className="ws-folder-icon">📁</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* 底部：添加 workspace */}
-      <div className="sidebar-footer-form">
-        <form className="compact-form" onSubmit={submitWorkspace}>
-          <input
-            aria-label="Workspace path"
-            onChange={(event) => setWorkspacePath(event.target.value)}
-            placeholder="/home/user/project"
-            value={workspacePath}
-          />
-          <button type="submit">Add</button>
-        </form>
-      </div>
+      {!collapsed ? (
+        <div className="sidebar-footer-form">
+          <form className="compact-form" onSubmit={submitWorkspace}>
+            <input
+              aria-label="Workspace path"
+              onChange={(event) => setWorkspacePath(event.target.value)}
+              placeholder="/home/user/project"
+              value={workspacePath}
+            />
+            <button type="submit">Add</button>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
 }
