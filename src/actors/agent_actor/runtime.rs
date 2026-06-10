@@ -47,6 +47,13 @@ impl AgentActor {
                 AgentMsg::Create { request, reply } => {
                     let _ = reply.send(self.create(request).await);
                 }
+                AgentMsg::Delete {
+                    workspace_uuid,
+                    agent_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.delete(&workspace_uuid, &agent_uuid).await);
+                }
                 AgentMsg::Contains {
                     workspace_uuid,
                     agent_uuid,
@@ -186,6 +193,32 @@ impl AgentActor {
             self.spawn_llm_continuation(&agent.uuid).await?;
         }
         Ok(agent)
+    }
+
+    async fn delete(&mut self, workspace_uuid: &str, agent_uuid: &str) -> SubsystemResult<()> {
+        if !self.contains(workspace_uuid, agent_uuid) {
+            return Err(SubsystemError::not_found("agent", agent_uuid));
+        }
+        if self.runtime(agent_uuid)?.status != AgentStatus::Idle {
+            return Err(SubsystemError::Conflict {
+                resource: "agent_runtime",
+                id: agent_uuid.to_string(),
+            });
+        }
+        self.handles
+            .storage
+            .delete_agent(workspace_uuid.to_string(), agent_uuid.to_string())
+            .await?;
+        self.agents.remove(agent_uuid);
+        self.agent_workspace.remove(agent_uuid);
+        self.runtimes.remove(agent_uuid);
+        self.emit_workspace_event(
+            workspace_uuid,
+            WorkspaceEvent::AgentDeleted {
+                agent_uuid: agent_uuid.to_string(),
+            },
+        );
+        Ok(())
     }
 
     fn contains(&self, workspace_uuid: &str, agent_uuid: &str) -> bool {
@@ -773,6 +806,19 @@ impl AgentHandle {
     pub async fn create(&self, request_body: AgentCreateRequest) -> SubsystemResult<Agent> {
         request(&self.tx, |reply| AgentMsg::Create {
             request: request_body,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn delete(
+        &self,
+        workspace_uuid: impl Into<String>,
+        agent_uuid: impl Into<String>,
+    ) -> SubsystemResult<()> {
+        request(&self.tx, |reply| AgentMsg::Delete {
+            workspace_uuid: workspace_uuid.into(),
+            agent_uuid: agent_uuid.into(),
             reply,
         })
         .await

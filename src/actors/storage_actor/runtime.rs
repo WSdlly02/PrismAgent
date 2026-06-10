@@ -61,6 +61,13 @@ impl StorageActor {
                 } => {
                     let _ = reply.send(self.create_agent(request, auto_loop, auto_loop_message));
                 }
+                StorageMsg::DeleteAgent {
+                    workspace_uuid,
+                    agent_uuid,
+                    reply,
+                } => {
+                    let _ = reply.send(self.delete_agent(&workspace_uuid, &agent_uuid));
+                }
                 StorageMsg::SetAgentAutoLoop {
                     workspace_uuid,
                     agent_uuid,
@@ -218,6 +225,15 @@ impl StorageActor {
             &agent,
         )?;
         Ok(agent)
+    }
+
+    fn delete_agent(&self, workspace_uuid: &str, agent_uuid: &str) -> SubsystemResult<()> {
+        let path = self.agent_path(workspace_uuid, agent_uuid)?;
+        if !path.exists() {
+            return Err(SubsystemError::not_found("agent", agent_uuid));
+        }
+        std::fs::remove_file(path)?;
+        Ok(())
     }
 
     fn set_agent_auto_loop(
@@ -549,6 +565,25 @@ impl StorageHandle {
                 request,
                 auto_loop,
                 auto_loop_message,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
+        reply_rx
+            .await
+            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+    }
+
+    pub async fn delete_agent(
+        &self,
+        workspace_uuid: impl Into<String>,
+        agent_uuid: impl Into<String>,
+    ) -> SubsystemResult<()> {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(StorageMsg::DeleteAgent {
+                workspace_uuid: workspace_uuid.into(),
+                agent_uuid: agent_uuid.into(),
                 reply: reply_tx,
             })
             .await

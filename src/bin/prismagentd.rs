@@ -95,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/workflows/cancel", post(workflow_cancel))
         .route("/api/agents/list", get(list_agents))
         .route("/api/agents/create", post(create_agent))
+        .route("/api/agents/delete", post(delete_agent))
         .route("/api/agents/snapshot", get(agent_snapshot))
         .route("/api/agents/event_stream", get(agent_event_stream))
         .route("/api/agents/send_message", post(send_message))
@@ -194,6 +195,14 @@ async fn create_agent(
 ) -> ApiResult<Json<Value>> {
     state.shell.create_agent(request).await?;
     Ok(Json(json!({ "created": true })))
+}
+
+async fn delete_agent(
+    State(state): State<AppState>,
+    Json(request): Json<AgentAccessRequest>,
+) -> ApiResult<Json<Value>> {
+    state.shell.delete_agent(request).await?;
+    Ok(Json(json!({ "deleted": true })))
 }
 
 async fn workspace_event_stream(

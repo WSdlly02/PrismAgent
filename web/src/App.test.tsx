@@ -29,6 +29,7 @@ function session(loadFn: () => Promise<void>): PrismSession {
     selectAgent: vi.fn(),
     addWorkspace: vi.fn(),
     createAgent: vi.fn(),
+    deleteAgent: vi.fn(),
     send: vi.fn(),
     cancel: vi.fn(),
     approve: vi.fn(),

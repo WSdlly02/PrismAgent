@@ -30,6 +30,7 @@ export function App() {
           onSelectAgent={session.selectAgent}
           onAddWorkspace={session.addWorkspace}
           onCreateAgent={session.createAgent}
+          onDeleteAgent={session.deleteAgent}
         />
       }
       chat={

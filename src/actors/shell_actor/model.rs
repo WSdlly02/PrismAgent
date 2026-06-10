@@ -53,6 +53,10 @@ pub enum ShellMsg {
         request: AuthorizedAgentCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
+    DeleteAgent {
+        request: AgentAccessRequest,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
     AgentSnapshot {
         request: AgentAccessRequest,
         reply: oneshot::Sender<SubsystemResult<AgentSnapshot>>,

@@ -50,6 +50,11 @@ pub enum StorageMsg {
         auto_loop_message: String,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
+    DeleteAgent {
+        workspace_uuid: String,
+        agent_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
     SetAgentAutoLoop {
         workspace_uuid: String,
         agent_uuid: String,

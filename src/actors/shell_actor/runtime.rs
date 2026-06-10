@@ -54,6 +54,9 @@ impl ShellActor {
                 ShellMsg::CreateAgent { request, reply } => {
                     let _ = reply.send(self.create_agent(request).await);
                 }
+                ShellMsg::DeleteAgent { request, reply } => {
+                    let _ = reply.send(self.delete_agent(request).await);
+                }
                 ShellMsg::AgentSnapshot { request, reply } => {
                     let _ = reply.send(self.agent_snapshot(request).await);
                 }
@@ -131,6 +134,14 @@ impl ShellActor {
                 context_refs: request.agent.context_refs,
                 context_out: request.agent.context_out,
             })
+            .await
+    }
+
+    async fn delete_agent(&self, request: AgentAccessRequest) -> SubsystemResult<()> {
+        self.authorize_agent(&request).await?;
+        self.handles
+            .agent
+            .delete(request.workspace.workspace_uuid, request.agent_uuid)
             .await
     }
 
@@ -320,6 +331,14 @@ impl ShellHandle {
         request_body: AuthorizedAgentCreateRequest,
     ) -> SubsystemResult<Agent> {
         request(&self.tx, |reply| ShellMsg::CreateAgent {
+            request: request_body,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn delete_agent(&self, request_body: AgentAccessRequest) -> SubsystemResult<()> {
+        request(&self.tx, |reply| ShellMsg::DeleteAgent {
             request: request_body,
             reply,
         })

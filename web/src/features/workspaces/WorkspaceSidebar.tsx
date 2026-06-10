@@ -11,6 +11,7 @@ type WorkspaceSidebarProps = {
   onSelectAgent: (agent: AgentSummary) => Promise<void>;
   onAddWorkspace: (path: string) => Promise<void>;
   onCreateAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
+  onDeleteAgent: (agent: AgentSummary) => Promise<void>;
 };
 
 const PROFILE_HINTS: Record<string, string> = {
@@ -31,6 +32,7 @@ export function WorkspaceSidebar({
   onSelectAgent,
   onAddWorkspace,
   onCreateAgent,
+  onDeleteAgent,
 }: WorkspaceSidebarProps) {
   const [workspacePath, setWorkspacePath] = useState("");
   const [creatingInWs, setCreatingInWs] = useState<string | null>(null);
@@ -173,20 +175,34 @@ export function WorkspaceSidebar({
 
                   {/* Agent 列表 */}
                   {children.map((agent) => (
-                    <button
+                    <div
                       className="ws-agent-row"
                       data-active={agent.agent_uuid === selectedAgentUuid}
                       key={agent.agent_uuid}
-                      onClick={() => void onSelectAgent(agent)}
-                      type="button"
                     >
-                      <span className="ws-agent-icon">🤖</span>
-                      <span className="resource-main">
-                        <span className="resource-name">{agent.agent_name}</span>
-                        <span className="resource-meta">{agent.profile}</span>
-                      </span>
-                      <span className={`status-dot status-${agent.status}`} aria-label={agent.status} />
-                    </button>
+                      <button
+                        className="ws-agent-select"
+                        onClick={() => void onSelectAgent(agent)}
+                        type="button"
+                      >
+                        <span className="ws-agent-icon">🤖</span>
+                        <span className="resource-main">
+                          <span className="resource-name">{agent.agent_name}</span>
+                          <span className="resource-meta">{agent.profile}</span>
+                        </span>
+                        <span className={`status-dot status-${agent.status}`} aria-label={agent.status} />
+                      </button>
+                      <button
+                        aria-label={`Delete agent ${agent.agent_name}`}
+                        className="ws-agent-delete"
+                        disabled={agent.status !== "idle"}
+                        onClick={() => void onDeleteAgent(agent)}
+                        title={agent.status === "idle" ? "Delete agent" : "Agent must be idle"}
+                        type="button"
+                      >
+                        ×
+                      </button>
+                    </div>
                   ))}
 
                   {children.length === 0 && !isCreating ? (

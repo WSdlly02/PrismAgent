@@ -66,6 +66,13 @@ export function createAgent(access: WorkspaceAccess, agent: AgentCreateInput) {
   });
 }
 
+export function deleteAgent(access: AgentAccess) {
+  return apiJson<{ deleted: true }>("/api/agents/delete", {
+    method: "POST",
+    body: JSON.stringify(access),
+  });
+}
+
 export function agentSnapshot(access: AgentAccess) {
   return apiJson<AgentSnapshot>(
     `/api/agents/snapshot?${agentAccessQuery(access)}`,

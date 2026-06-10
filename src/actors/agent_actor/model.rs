@@ -31,6 +31,11 @@ pub enum AgentMsg {
         request: AgentCreateRequest,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
+    Delete {
+        workspace_uuid: String,
+        agent_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
     Contains {
         workspace_uuid: String,
         agent_uuid: String,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAgent,
+  deleteAgent,
   listAgents,
   listProfiles,
   sendMessage,
@@ -61,6 +62,18 @@ describe("api client", () => {
         context_refs: ["ctx-in"],
         context_out: ["ctx-out"],
       }),
+    });
+  });
+
+  it("deletes agents through /api/agents/delete", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ deleted: true }));
+
+    await deleteAgent({ ...access, agent_uuid: "agent-1" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/agents/delete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...access, agent_uuid: "agent-1" }),
     });
   });
 

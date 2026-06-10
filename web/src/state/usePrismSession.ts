@@ -5,6 +5,7 @@ import {
   approveRequest,
   cancelAgent,
   createAgent as createAgentApi,
+  deleteAgent as deleteAgentApi,
   listAgents,
   listProfiles,
   listWorkspaces,
@@ -87,6 +88,7 @@ export type PrismSession = {
   selectAgent: (agent: AgentSummary) => Promise<void>;
   addWorkspace: (path: string) => Promise<void>;
   createAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
+  deleteAgent: (agent: AgentSummary) => Promise<void>;
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
   approve: (approvalMask: number) => Promise<void>;
@@ -107,6 +109,11 @@ export function usePrismSession(): PrismSession {
   const agentStreamRef = useRef<EventSource | null>(null);
   const workspaceStreamsRef = useRef<Record<string, EventSource>>({});
   const ignoreStreamUntilNextStatusRef = useRef(false);
+  const selectedAgentUuidRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    selectedAgentUuidRef.current = selectedAgent?.agent_uuid ?? null;
+  }, [selectedAgent?.agent_uuid]);
 
   const activeSession = useMemo<WorkspaceSession | null>(() => {
     if (!selectedAgent) {
@@ -211,11 +218,18 @@ export function usePrismSession(): PrismSession {
             setSelectedAgent((current) =>
               current?.agent_uuid === normalized.agent_uuid ? null : current,
             );
+            if (selectedAgentUuidRef.current === normalized.agent_uuid) {
+              closeAgentStream();
+              setChat(initialChatState());
+              setConnectionStatus("idle");
+            }
             return;
           }
           if (normalized.type === "error") {
             setError(normalized.message);
           }
+          // TODO: handle context_created / workflow_created / workflow_started / workflow_cancel_requested
+          // when frontend has UI for resources and workflows
         };
 
         for (const eventName of WORKSPACE_EVENT_NAMES) {
@@ -239,7 +253,7 @@ export function usePrismSession(): PrismSession {
 
       return access;
     },
-    [clientId],
+    [clientId, closeAgentStream],
   );
 
   const openAgentStream = useCallback(
@@ -364,6 +378,20 @@ export function usePrismSession(): PrismSession {
       await createAgentApi(access, input);
     },
     [openWorkspaceStream],
+  );
+
+  const deleteAgent = useCallback(
+    async (agent: AgentSummary) => {
+      const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
+        agents.some((candidate) => candidate.agent_uuid === agent.agent_uuid),
+      )?.[0];
+      if (!wsUuid) {
+        return;
+      }
+      const access = await openWorkspaceStream(wsUuid);
+      await deleteAgentApi({ ...access, agent_uuid: agent.agent_uuid });
+    },
+    [openWorkspaceStream, workspaceAgents],
   );
 
   const send = useCallback(
@@ -497,6 +525,7 @@ export function usePrismSession(): PrismSession {
     selectAgent,
     addWorkspace,
     createAgent,
+    deleteAgent,
     send,
     cancel,
     approve,
