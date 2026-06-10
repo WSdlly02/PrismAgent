@@ -56,10 +56,32 @@ pub const EMBEDDED_PROFILES: &[EmbeddedProfile] = &[
 
 pub const EMBEDDED_SKILLS: &[EmbeddedSkill] = &[EmbeddedSkill {
     dirname: "multi-agent-collaboration",
-    files: &[EmbeddedSkillFile {
-        relative_path: "SKILL.md",
-        content: include_str!("../stdlib/skills/multi-agent-collaboration/SKILL.md"),
-    }],
+    files: &[
+        EmbeddedSkillFile {
+            relative_path: "SKILL.md",
+            content: include_str!("../stdlib/skills/multi-agent-collaboration/SKILL.md"),
+        },
+        EmbeddedSkillFile {
+            relative_path: "reference/default.md",
+            content: include_str!("../stdlib/skills/multi-agent-collaboration/reference/default.md"),
+        },
+        EmbeddedSkillFile {
+            relative_path: "reference/coordinator.md",
+            content: include_str!("../stdlib/skills/multi-agent-collaboration/reference/coordinator.md"),
+        },
+        EmbeddedSkillFile {
+            relative_path: "reference/planner.md",
+            content: include_str!("../stdlib/skills/multi-agent-collaboration/reference/planner.md"),
+        },
+        EmbeddedSkillFile {
+            relative_path: "reference/executor.md",
+            content: include_str!("../stdlib/skills/multi-agent-collaboration/reference/executor.md"),
+        },
+        EmbeddedSkillFile {
+            relative_path: "reference/verifier.md",
+            content: include_str!("../stdlib/skills/multi-agent-collaboration/reference/verifier.md"),
+        },
+    ],
 }];
 
 // ---------------------------------------------------------------------------

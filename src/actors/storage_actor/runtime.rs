@@ -193,7 +193,11 @@ impl StorageActor {
     ) -> SubsystemResult<Agent> {
         let name = non_empty_string(request.name, "agent name")?;
         let profile = non_empty_string(request.profile, "agent profile")?;
-        let auto_loop_message = non_empty_string(auto_loop_message, "auto_loop_message")?;
+        let auto_loop_message = if auto_loop {
+            non_empty_string(auto_loop_message, "auto_loop_message")?
+        } else {
+            auto_loop_message
+        };
         let now = chrono::Utc::now().timestamp();
         let agent = Agent {
             uuid: safe_object_name(request.uuid, "agent uuid")?,
@@ -962,4 +966,55 @@ fn validate_object_names(values: &[String], field: &'static str) -> SubsystemRes
         validate_object_name(value, field)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn test_actor() -> StorageActor {
+        let (_tx, rx) = mpsc::channel(1);
+        let root = std::env::temp_dir().join(format!("prismagent-storage-{}", Uuid::now_v7()));
+        let actor = StorageActor::from_root(rx, root).unwrap();
+        std::fs::create_dir_all(actor.root.join("workspace-1").join("agents")).unwrap();
+        actor
+    }
+
+    fn create_request(uuid: &str) -> AgentCreateRequest {
+        AgentCreateRequest {
+            workspace_uuid: "workspace-1".to_string(),
+            uuid: uuid.to_string(),
+            name: "Test agent".to_string(),
+            profile: "default".to_string(),
+            context_refs: Vec::new(),
+            context_out: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn create_agent_allows_empty_auto_loop_message_when_auto_loop_is_false() {
+        let actor = test_actor();
+        let agent = actor
+            .create_agent(create_request("agent-1"), false, String::new())
+            .unwrap();
+
+        assert!(!agent.auto_loop);
+        assert_eq!(agent.auto_loop_message, "");
+    }
+
+    #[test]
+    fn create_agent_rejects_empty_auto_loop_message_when_auto_loop_is_true() {
+        let actor = test_actor();
+        let error = actor
+            .create_agent(create_request("agent-1"), true, String::new())
+            .unwrap_err();
+
+        match error {
+            SubsystemError::InvalidInput { message } => {
+                assert_eq!(message, "auto_loop_message must not be empty");
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
 }

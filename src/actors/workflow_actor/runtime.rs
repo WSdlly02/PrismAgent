@@ -1,16 +1,18 @@
+use crate::actors::agent_actor::model::AgentHandle;
 use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRequest};
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::workflow_actor::model::{
     AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, SelfShowRequest,
     SelfShowResponse, TaskFinishRequest, TaskFinishResponse, WORKFLOW_ACTOR, WorkflowActor,
-    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg, WorkflowStartRequest,
-    WorkflowRuntime, WorkflowTrigger, WorkflowTriggerCreateRequest,
+    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg, WorkflowRuntime,
+    WorkflowStartRequest, WorkflowTrigger, WorkflowTriggerCreateRequest,
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
 use std::collections::HashSet;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 impl WorkflowActor {
@@ -325,22 +327,46 @@ impl WorkflowActor {
             .message
             .replace("{context_uuid}", context_uuid)
             .replace("{workflow_uuid}", &trigger.workflow_uuid);
-        let delivered = self
-            .handles
-            .agent
+        if let Some(trigger) = self.triggers.get_mut(trigger_uuid) {
+            trigger.fired_context_uuids.insert(context_uuid.to_string());
+        }
+        let agent = self.handles.agent.clone();
+        let context_uuid = context_uuid.to_string();
+        tokio::spawn(async move {
+            deliver_trigger_message(agent, agent_uuid, context_uuid, message).await;
+        });
+    }
+}
+
+async fn deliver_trigger_message(
+    agent: AgentHandle,
+    agent_uuid: String,
+    context_uuid: String,
+    message: String,
+) {
+    let mut delay = Duration::from_secs(1);
+    loop {
+        let result = agent
             .send_message(SendMessageRequest {
-                agent_uuid,
+                agent_uuid: agent_uuid.clone(),
                 message_body: MessageBody {
                     text: format!(
-                        "Workflow trigger fired for context {context_uuid}.\n\n{message}"
+                        "Workflow trigger fired for context {context_uuid}.\n\n{message}\nNotice: The trigger message may be delayed"
                     ),
                     attachments: Vec::new(),
                 },
             })
-            .await
-            .is_ok();
-        if delivered && let Some(trigger) = self.triggers.get_mut(trigger_uuid) {
-            trigger.fired_context_uuids.insert(context_uuid.to_string());
+            .await;
+        match result {
+            Ok(()) => return,
+            Err(SubsystemError::Conflict { .. }) | Err(SubsystemError::Timeout { .. }) => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(10));
+                eprintln!(
+                    "Failed to deliver trigger message for context {context_uuid} to agent {agent_uuid}\nretrying in {delay:?}... (error: {result:?})"
+                );
+            }
+            Err(_) => return,
         }
     }
 }

@@ -1,14 +1,17 @@
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::{StatusCode, Uri},
+    body::Body,
+    extract::{ConnectInfo, Query, State},
+    http::{Request, StatusCode, Uri},
+    middleware,
     response::{
-        IntoResponse,
+        IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
     routing::{get, post},
 };
 use futures_util::stream::{self, Stream, StreamExt};
+use ipnetwork::IpNetwork;
 use prismagent::{
     actors::{
         agent_actor::model::{AgentActor, AgentMsg},
@@ -33,10 +36,43 @@ use prismagent::{
     web_assets,
 };
 use serde_json::{Value, json};
-use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use std::{convert::Infallible, net::SocketAddr, sync::OnceLock, time::Duration};
 use tokio::sync::mpsc;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:7618";
+
+const ALLOWED_NETS: &[&str] = &[
+    "127.0.0.0/8",
+    "::1/128",
+    "192.168.0.0/16",
+    "10.144.144.0/24",
+];
+
+fn allowed_nets() -> &'static [IpNetwork] {
+    static ALLOWED_NETS_CACHE: OnceLock<Vec<IpNetwork>> = OnceLock::new();
+    ALLOWED_NETS_CACHE
+        .get_or_init(|| {
+            ALLOWED_NETS
+                .iter()
+                .map(|s| s.parse().expect("invalid CIDR in ALLOWED_NETS"))
+                .collect()
+        })
+        .as_slice()
+}
+
+async fn ip_filter(request: Request<Body>, next: middleware::Next) -> Result<Response, StatusCode> {
+    let addr = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip())
+        .ok_or(StatusCode::FORBIDDEN)?;
+
+    if allowed_nets().iter().any(|net| net.contains(addr)) {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -67,11 +103,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/agents/approve_request", post(approve_request))
         .route("/api/agents/cancel", post(cancel))
         .fallback(get(web_asset))
+        .layer(middleware::from_fn(ip_filter))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("PrismAgent daemon listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
