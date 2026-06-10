@@ -154,13 +154,19 @@ pub struct AuthorizedAgentCreateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkspaceEvent {
-    AgentCreated { agent: AgentSummary },
-    AgentUpdated { agent: AgentSummary },
+    AgentCreated {
+        agent: AgentSummary,
+    },
+    AgentUpdated {
+        agent: AgentSummary,
+    },
     AgentStatusChanged {
         agent_uuid: String,
         status: crate::actors::agent_actor::model::AgentStatus,
     },
-    AgentDeleted { agent_uuid: String },
+    AgentDeleted {
+        agent_uuid: String,
+    },
     ContextCreated {
         context_uuid: String,
         title: String,

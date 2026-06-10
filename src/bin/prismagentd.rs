@@ -26,9 +26,7 @@ use prismagent::{
         storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
         tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
         workflow_actor::model::{WorkflowActor, WorkflowHandle, WorkflowMsg},
-        workspace_actor::model::{
-            WorkspaceActor, WorkspaceCreateRequest, WorkspaceMsg,
-        },
+        workspace_actor::model::{WorkspaceActor, WorkspaceCreateRequest, WorkspaceMsg},
     },
     error::SubsystemError,
     handles::AppHandles,

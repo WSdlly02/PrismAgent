@@ -1,4 +1,4 @@
-use crate::actors::agent_actor::model::{MessageBody, SendMessageRequest, SelfUpdateRequest};
+use crate::actors::agent_actor::model::{MessageBody, SelfUpdateRequest, SendMessageRequest};
 use crate::actors::context_actor::model::GetSkillDirRequest;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::ContextCreateRequest;
@@ -292,7 +292,16 @@ pub async fn execute_agent_create(ctx: ToolExecutionContext, args: Value) -> Str
         context_out: string_array_arg(&args, "context_out"),
     };
     match ctx.handles.agent.create(request).await {
-        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Ok(agent) => json!({
+            "status": "ok",
+            "agent_uuid": agent.uuid,
+            "agent_name": agent.name,
+            "profile": agent.profile,
+            "auto_loop": agent.auto_loop,
+            "context_refs": agent.context_refs,
+            "context_out": agent.context_out,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -337,7 +346,12 @@ pub async fn execute_context_create(ctx: ToolExecutionContext, args: Value) -> S
         content: string_arg(&args, "content").unwrap_or_default(),
     };
     match ctx.handles.workflow.context_create(request).await {
-        Ok(context) => json!({"status": "ok", "context": context}).to_string(),
+        Ok(context) => json!({
+            "status": "ok",
+            "context_uuid": context.uuid,
+            "title": context.title,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -351,7 +365,12 @@ pub async fn execute_workflow_create(ctx: ToolExecutionContext, args: Value) -> 
         metadata: metadata_arg(&args),
     };
     match ctx.handles.workflow.workflow_create(request).await {
-        Ok(workflow) => json!({"status": "ok", "workflow": workflow}).to_string(),
+        Ok(workflow) => json!({
+            "status": "ok",
+            "workflow_uuid": workflow.uuid,
+            "title": workflow.title,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -390,7 +409,14 @@ pub async fn execute_trigger_create(ctx: ToolExecutionContext, args: Value) -> S
         message: string_arg(&args, "message").unwrap_or_default(),
     };
     match ctx.handles.workflow.trigger_create(request).await {
-        Ok(trigger) => json!({"status": "ok", "trigger": trigger}).to_string(),
+        Ok(trigger) => json!({
+            "status": "ok",
+            "trigger_uuid": trigger.uuid,
+            "workflow_uuid": trigger.workflow_uuid,
+            "coordinator_agent_uuid": trigger.coordinator_agent_uuid,
+            "context_uuids": trigger.context_uuids,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -401,7 +427,11 @@ pub async fn execute_self_show(ctx: ToolExecutionContext, _args: Value) -> Strin
         agent_uuid: ctx.caller_agent_uuid.clone(),
     };
     match ctx.handles.workflow.self_show(request).await {
-        Ok(response) => json!({"status": "ok", "agent": response}).to_string(),
+        Ok(response) => json!({
+            "status": "ok",
+            "agent": response,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -440,7 +470,12 @@ pub async fn execute_agent_terminate(ctx: ToolExecutionContext, args: Value) -> 
         auto_loop_message: Some(cleanup_message),
     };
     match ctx.handles.agent.self_update(request).await {
-        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Ok(agent) => json!({
+            "status": "ok",
+            "agent_uuid": agent.uuid,
+            "auto_loop": agent.auto_loop,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -454,7 +489,16 @@ pub async fn execute_agent_update(ctx: ToolExecutionContext, args: Value) -> Str
         auto_loop_message: string_arg(&args, "auto_loop_message"),
     };
     match ctx.handles.agent.self_update(request).await {
-        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Ok(agent) => json!({
+            "status": "ok",
+            "agent_uuid": agent.uuid,
+            "agent_name": agent.name,
+            "profile": agent.profile,
+            "auto_loop": agent.auto_loop,
+            "context_refs": agent.context_refs,
+            "context_out": agent.context_out,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -475,7 +519,12 @@ pub async fn execute_self_update(ctx: ToolExecutionContext, args: Value) -> Stri
         auto_loop_message: string_arg(&args, "auto_loop_message"),
     };
     match ctx.handles.agent.self_update(request).await {
-        Ok(agent) => json!({"status": "ok", "agent": agent}).to_string(),
+        Ok(agent) => json!({
+            "status": "ok",
+            "agent_uuid": agent.uuid,
+            "auto_loop": agent.auto_loop,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
@@ -494,7 +543,13 @@ pub async fn execute_task_finish(ctx: ToolExecutionContext, args: Value) -> Stri
         })
         .await
     {
-        Ok(response) => json!({"status": "ok", "result": response}).to_string(),
+        Ok(response) => json!({
+            "status": "ok",
+            "agent_uuid": response.agent_uuid,
+            "auto_loop": response.auto_loop,
+            "context_outputs": response.context_outputs,
+        })
+        .to_string(),
         Err(error) => json!({"status": "error", "error": error.to_string()}).to_string(),
     }
 }
