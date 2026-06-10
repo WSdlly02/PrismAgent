@@ -3,3 +3,5 @@
 /.codex
 /.env
 target/
+node_modules/
+dist/

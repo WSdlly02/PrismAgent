@@ -1,4 +1,6 @@
-pub mod kernel;
-pub mod model;
-pub mod store;
-pub mod tools;
+pub mod actors;
+pub mod error;
+pub mod handles;
+pub mod id;
+pub mod stdlib_assets;
+pub mod web_assets;
