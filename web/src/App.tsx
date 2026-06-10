@@ -49,7 +49,7 @@ export function App() {
       inspector={
         <InspectorPane
           agent={session.selectedAgent}
-          lease={session.lease}
+          session={session.session}
           workspace={session.selectedWorkspace}
         />
       }

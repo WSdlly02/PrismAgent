@@ -8,6 +8,7 @@ use crate::actors::agent_actor::pipeline::{
     tool_batch_is_auto_approved, tool_response_units,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
+use crate::actors::shell_actor::model::WorkspaceEvent;
 use crate::actors::storage_actor::model::agent::{
     Agent, AgentCreateRequest, AgentUpdateRequest as StorageAgentUpdateRequest,
 };
@@ -127,19 +128,7 @@ impl AgentActor {
                     .get(&agent.uuid)
                     .is_some_and(|candidate| candidate == workspace_uuid)
             })
-            .map(|agent| AgentSummary {
-                agent_uuid: agent.uuid.clone(),
-                agent_name: agent.name.clone(),
-                profile: agent.profile.clone(),
-                auto_loop: agent.auto_loop,
-                context_refs: agent.context_refs.clone(),
-                context_out: agent.context_out.clone(),
-                status: self
-                    .runtimes
-                    .get(&agent.uuid)
-                    .map(|runtime| runtime.status.clone())
-                    .unwrap_or(AgentStatus::Idle),
-            })
+            .map(|agent| self.agent_summary(agent))
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| left.agent_name.cmp(&right.agent_name));
         Ok(agents)
@@ -187,6 +176,12 @@ impl AgentActor {
             },
         );
         self.agents.insert(agent.uuid.clone(), agent.clone());
+        self.emit_workspace_event(
+            &workspace_uuid,
+            WorkspaceEvent::AgentCreated {
+                agent: self.agent_summary(&agent),
+            },
+        );
         if has_initial_task && auto_loop {
             self.spawn_llm_continuation(&agent.uuid).await?;
         }
@@ -278,7 +273,7 @@ impl AgentActor {
             .handles
             .storage
             .update_agent(StorageAgentUpdateRequest {
-                workspace_uuid,
+                workspace_uuid: workspace_uuid.clone(),
                 agent_uuid: request.agent_uuid.clone(),
                 context_refs: request.context_refs,
                 context_out: request.context_out,
@@ -287,6 +282,12 @@ impl AgentActor {
             })
             .await?;
         self.agents.insert(agent.uuid.clone(), agent.clone());
+        self.emit_workspace_event(
+            &workspace_uuid,
+            WorkspaceEvent::AgentUpdated {
+                agent: self.agent_summary(&agent),
+            },
+        );
         Ok(agent)
     }
 
@@ -320,7 +321,7 @@ impl AgentActor {
                 match self.commit_units(agent_uuid, output.units).await {
                     Ok(()) if is_tool_calls => {
                         if let Err(error) = self.handle_tool_calls(agent_uuid, tool_calls).await {
-                            self.emit_event(
+                            self.emit_agent_event(
                                 agent_uuid,
                                 AgentEvent::Error {
                                     message: error.to_string(),
@@ -334,7 +335,7 @@ impl AgentActor {
                         if self.agent(agent_uuid).is_ok_and(|agent| agent.auto_loop) {
                             if let Err(error) = self.spawn_auto_loop_continuation(agent_uuid).await
                             {
-                                self.emit_event(
+                                self.emit_agent_event(
                                     agent_uuid,
                                     AgentEvent::Error {
                                         message: error.to_string(),
@@ -346,7 +347,7 @@ impl AgentActor {
                         }
                     }
                     Err(error) => {
-                        self.emit_event(
+                        self.emit_agent_event(
                             agent_uuid,
                             AgentEvent::Error {
                                 message: error.to_string(),
@@ -356,7 +357,7 @@ impl AgentActor {
                 }
             }
             Err(error) => {
-                self.emit_event(
+                self.emit_agent_event(
                     agent_uuid,
                     AgentEvent::Error {
                         message: error.to_string(),
@@ -389,7 +390,7 @@ impl AgentActor {
             Ok(output) => {
                 let continue_loop = output.continue_loop;
                 if let Err(error) = self.commit_units(agent_uuid, output.units).await {
-                    self.emit_event(
+                    self.emit_agent_event(
                         agent_uuid,
                         AgentEvent::Error {
                             message: error.to_string(),
@@ -400,7 +401,7 @@ impl AgentActor {
                 }
                 if continue_loop {
                     if let Err(error) = self.spawn_llm_continuation(agent_uuid).await {
-                        self.emit_event(
+                        self.emit_agent_event(
                             agent_uuid,
                             AgentEvent::Error {
                                 message: error.to_string(),
@@ -420,7 +421,7 @@ impl AgentActor {
                         &format!("tool batch failed: {error}"),
                     );
                     if let Err(commit_error) = self.commit_units(agent_uuid, units).await {
-                        self.emit_event(
+                        self.emit_agent_event(
                             agent_uuid,
                             AgentEvent::Error {
                                 message: commit_error.to_string(),
@@ -428,7 +429,7 @@ impl AgentActor {
                         );
                     }
                 }
-                self.emit_event(
+                self.emit_agent_event(
                     agent_uuid,
                     AgentEvent::Error {
                         message: error.to_string(),
@@ -451,7 +452,7 @@ impl AgentActor {
             .await?;
         self.agents.insert(agent_uuid.to_string(), updated_agent);
         for unit in units {
-            self.emit_event(agent_uuid, AgentEvent::UnitAppend { unit });
+            self.emit_agent_event(agent_uuid, AgentEvent::UnitAppend { unit });
         }
         Ok(())
     }
@@ -534,9 +535,15 @@ impl AgentActor {
         let agent = self
             .handles
             .storage
-            .set_agent_auto_loop(workspace_uuid, agent_uuid.to_string(), enabled)
+            .set_agent_auto_loop(workspace_uuid.clone(), agent_uuid.to_string(), enabled)
             .await?;
         self.agents.insert(agent_uuid.to_string(), agent.clone());
+        self.emit_workspace_event(
+            &workspace_uuid,
+            WorkspaceEvent::AgentUpdated {
+                agent: self.agent_summary(&agent),
+            },
+        );
         Ok(agent)
     }
 
@@ -578,7 +585,7 @@ impl AgentActor {
                 manual_approval_mask,
             });
             self.set_status(agent_uuid, AgentStatus::WaitingApproval)?;
-            self.emit_event(
+            self.emit_agent_event(
                 agent_uuid,
                 AgentEvent::ApproveRequest {
                     request: PendingApproval {
@@ -677,15 +684,52 @@ impl AgentActor {
 
     fn set_status(&mut self, agent_uuid: &str, status: AgentStatus) -> SubsystemResult<()> {
         self.runtime_mut(agent_uuid)?.status = status.clone();
-        self.emit_event(agent_uuid, AgentEvent::StatusChanged { status });
+        self.emit_agent_event(
+            agent_uuid,
+            AgentEvent::StatusChanged {
+                status: status.clone(),
+            },
+        );
+        if let Ok(workspace_uuid) = self.workspace_uuid(agent_uuid) {
+            self.emit_workspace_event(
+                workspace_uuid,
+                WorkspaceEvent::AgentStatusChanged {
+                    agent_uuid: agent_uuid.to_string(),
+                    status,
+                },
+            );
+        }
         Ok(())
     }
 
-    fn emit_event(&self, agent_uuid: &str, event: AgentEvent) {
+    fn emit_agent_event(&self, agent_uuid: &str, event: AgentEvent) {
         let _ = self
             .handles
             .shell
             .emit_agent_event(agent_uuid.to_string(), event);
+    }
+
+    fn emit_workspace_event(&self, workspace_uuid: &str, event: WorkspaceEvent) {
+        let _ = self
+            .handles
+            .shell
+            .emit_workspace_event(workspace_uuid.to_string(), event);
+    }
+
+    fn agent_summary(&self, agent: &Agent) -> AgentSummary {
+        AgentSummary {
+            agent_uuid: agent.uuid.clone(),
+            agent_name: agent.name.clone(),
+            profile: agent.profile.clone(),
+            auto_loop: agent.auto_loop,
+            context_refs: agent.context_refs.clone(),
+            context_out: agent.context_out.clone(),
+            status: self
+                .runtimes
+                .get(&agent.uuid)
+                .map(|runtime| runtime.status.clone())
+                .unwrap_or(AgentStatus::Idle),
+        }
     }
 
     fn agent(&self, agent_uuid: &str) -> SubsystemResult<&Agent> {

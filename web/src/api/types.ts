@@ -4,17 +4,15 @@ export type WorkspaceSummary = {
   locked_by: string | null;
 };
 
-export type Lease = {
-  lease_token: string;
+export type WorkspaceSession = {
   workspace_uuid: string;
   client_id: string;
-  expires_at: number;
+  connected: boolean;
 };
 
 export type WorkspaceAccess = {
   workspace_uuid: string;
   client_id: string;
-  lease_token: string;
 };
 
 export type AgentAccess = WorkspaceAccess & {
@@ -98,4 +96,31 @@ export type AgentEvent =
   | { type: "stream_delta"; text: string }
   | { type: "approve_request"; request: PendingApproval }
   | { type: "status_changed"; status: AgentStatus }
+  | { type: "error"; message: string };
+
+export type WorkspaceEvent =
+  | { type: "agent_created"; agent: AgentSummary }
+  | { type: "agent_updated"; agent: AgentSummary }
+  | { type: "agent_status_changed"; agent_uuid: string; status: AgentStatus }
+  | { type: "agent_deleted"; agent_uuid: string }
+  | {
+      type: "context_created";
+      context_uuid: string;
+      title: string;
+    }
+  | {
+      type: "workflow_created";
+      workflow_uuid: string;
+      title: string;
+    }
+  | {
+      type: "workflow_started";
+      workflow_uuid: string;
+      coordinator_agent_uuid: string;
+    }
+  | {
+      type: "workflow_cancel_requested";
+      workflow_uuid: string;
+      coordinator_agent_uuid: string;
+    }
   | { type: "error"; message: string };

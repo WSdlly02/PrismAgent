@@ -21,14 +21,13 @@ use prismagent::{
         shell_actor::model::{
             AgentAccessRequest, AuthorizedAgentCreateRequest, AuthorizedApproveRequest,
             AuthorizedSendMessageRequest, AuthorizedWorkflowCancelRequest, ShellActor, ShellHandle,
-            ShellMsg, WorkspaceAccessRequest,
+            ShellMsg, WorkspaceAccessRequest, WorkspaceEvent, WorkspaceSubscribeRequest,
         },
         storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
         tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
         workflow_actor::model::{WorkflowActor, WorkflowHandle, WorkflowMsg},
         workspace_actor::model::{
-            AcquireLeaseRequest, ReleaseLeaseRequest, WorkspaceActor, WorkspaceCreateRequest,
-            WorkspaceMsg,
+            WorkspaceActor, WorkspaceCreateRequest, WorkspaceMsg,
         },
     },
     error::SubsystemError,
@@ -91,8 +90,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/api/workspaces/list", get(list_workspaces))
         .route("/api/workspaces/add", post(add_workspace))
-        .route("/api/workspaces/acquire_lease", post(acquire_lease))
-        .route("/api/workspaces/release_lease", post(release_lease))
+        .route("/api/workspaces/event_stream", get(workspace_event_stream))
         .route("/api/profiles/list", get(list_profiles))
         .route("/api/workflows/cancel", post(workflow_cancel))
         .route("/api/agents/list", get(list_agents))
@@ -179,21 +177,6 @@ async fn add_workspace(
     Ok(Json(json!(state.shell.create_workspace(request).await?)))
 }
 
-async fn acquire_lease(
-    State(state): State<AppState>,
-    Json(request): Json<AcquireLeaseRequest>,
-) -> ApiResult<Json<Value>> {
-    Ok(Json(json!(state.shell.acquire_lease(request).await?)))
-}
-
-async fn release_lease(
-    State(state): State<AppState>,
-    Json(request): Json<ReleaseLeaseRequest>,
-) -> ApiResult<Json<Value>> {
-    state.shell.release_lease(request).await?;
-    Ok(Json(json!({ "released": true })))
-}
-
 async fn list_profiles(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_profiles().await?)))
 }
@@ -209,7 +192,48 @@ async fn create_agent(
     State(state): State<AppState>,
     Json(request): Json<AuthorizedAgentCreateRequest>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(json!(state.shell.create_agent(request).await?)))
+    state.shell.create_agent(request).await?;
+    Ok(Json(json!({ "created": true })))
+}
+
+async fn workspace_event_stream(
+    State(state): State<AppState>,
+    Query(query): Query<WorkspaceSubscribeRequest>,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    let receiver = state.shell.subscribe_workspace(query.clone()).await?;
+    let events = stream::unfold(
+        WorkspaceStreamState {
+            receiver,
+            shell: state.shell.clone(),
+            request: query,
+        },
+        |mut state| async move {
+            match state.receiver.recv().await {
+                Some(event) => {
+                    let event = Event::default()
+                        .event(workspace_event_name(&event))
+                        .json_data(event)
+                        .unwrap_or_else(|error| {
+                            Event::default()
+                                .event("error")
+                                .data(format!("failed to encode event: {error}"))
+                        });
+                    Some((Ok(event), state))
+                }
+                None => None,
+            }
+        },
+    );
+    let connected = stream::once(async {
+        Ok(Event::default()
+            .event("connected")
+            .data(r#"{"status":"connected"}"#))
+    });
+    Ok(Sse::new(connected.chain(events)).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(10))
+            .text("keep-alive"),
+    ))
 }
 
 async fn list_agents(
@@ -291,6 +315,31 @@ fn event_name(event: &prismagent::actors::agent_actor::model::AgentEvent) -> &'s
         AgentEvent::ApproveRequest { .. } => "approve_request",
         AgentEvent::StatusChanged { .. } => "status_changed",
         AgentEvent::Error { .. } => "error",
+    }
+}
+
+struct WorkspaceStreamState {
+    receiver: mpsc::Receiver<WorkspaceEvent>,
+    shell: ShellHandle,
+    request: WorkspaceSubscribeRequest,
+}
+
+impl Drop for WorkspaceStreamState {
+    fn drop(&mut self) {
+        self.shell.unsubscribe_workspace(self.request.clone());
+    }
+}
+
+fn workspace_event_name(event: &WorkspaceEvent) -> &'static str {
+    match event {
+        WorkspaceEvent::AgentCreated { .. } => "agent_created",
+        WorkspaceEvent::AgentUpdated { .. } => "agent_updated",
+        WorkspaceEvent::AgentStatusChanged { .. } => "agent_status_changed",
+        WorkspaceEvent::AgentDeleted { .. } => "agent_deleted",
+        WorkspaceEvent::ContextCreated { .. } => "context_created",
+        WorkspaceEvent::WorkflowCreated { .. } => "workflow_created",
+        WorkspaceEvent::WorkflowStarted { .. } => "workflow_started",
+        WorkspaceEvent::WorkflowCancelRequested { .. } => "workflow_cancel_requested",
     }
 }
 

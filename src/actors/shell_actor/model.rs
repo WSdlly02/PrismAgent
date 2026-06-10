@@ -1,9 +1,7 @@
 use crate::actors::agent_actor::model::{AgentEvent, AgentSnapshot, AgentSummary, MessageBody};
 use crate::actors::storage_actor::model::agent::Agent;
 use crate::actors::workflow_actor::model::WorkflowCancelResponse;
-use crate::actors::workspace_actor::model::{
-    AcquireLeaseRequest, Lease, ReleaseLeaseRequest, WorkspaceCreateRequest, WorkspaceSummary,
-};
+use crate::actors::workspace_actor::model::{WorkspaceCreateRequest, WorkspaceSummary};
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
 use serde::{Deserialize, Serialize};
@@ -20,8 +18,13 @@ pub struct ShellHandle {
 pub struct ShellActor {
     pub(super) rx: mpsc::Receiver<ShellMsg>,
     pub(super) handles: AppHandles,
-    pub(super) leases: HashMap<String, Lease>, // workspace_uuid -> Lease
+    pub(super) workspace_subscribers: HashMap<String, WorkspaceSubscription>, // workspace_uuid -> subscription
     pub(super) subscribers: HashMap<String, mpsc::Sender<AgentEvent>>, // subscriber_id -> Sender<AgentEvent>
+}
+
+pub struct WorkspaceSubscription {
+    pub client_id: String,
+    pub tx: mpsc::Sender<WorkspaceEvent>,
 }
 
 pub enum ShellMsg {
@@ -35,13 +38,12 @@ pub enum ShellMsg {
         request: WorkspaceCreateRequest,
         reply: oneshot::Sender<SubsystemResult<WorkspaceSummary>>,
     },
-    AcquireLease {
-        request: AcquireLeaseRequest,
-        reply: oneshot::Sender<SubsystemResult<Lease>>,
+    SubscribeWorkspace {
+        request: WorkspaceSubscribeRequest,
+        reply: oneshot::Sender<SubsystemResult<mpsc::Receiver<WorkspaceEvent>>>,
     },
-    ReleaseLease {
-        request: ReleaseLeaseRequest,
-        reply: oneshot::Sender<SubsystemResult<()>>,
+    UnsubscribeWorkspace {
+        request: WorkspaceSubscribeRequest,
     },
     ListAgents {
         request: WorkspaceAccessRequest,
@@ -79,6 +81,16 @@ pub enum ShellMsg {
         agent_uuid: String,
         event: AgentEvent,
     },
+    EmitWorkspaceEvent {
+        workspace_uuid: String,
+        event: WorkspaceEvent,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSubscribeRequest {
+    pub workspace_uuid: String,
+    pub client_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,7 +104,6 @@ pub struct AgentAccessRequest {
 pub struct WorkspaceAccessRequest {
     pub workspace_uuid: String,
     pub client_id: String,
-    pub lease_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,4 +145,32 @@ pub struct AuthorizedAgentCreateRequest {
     pub workspace: WorkspaceAccessRequest,
     #[serde(flatten)]
     pub agent: AgentCreateBody,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkspaceEvent {
+    AgentCreated { agent: AgentSummary },
+    AgentUpdated { agent: AgentSummary },
+    AgentStatusChanged {
+        agent_uuid: String,
+        status: crate::actors::agent_actor::model::AgentStatus,
+    },
+    AgentDeleted { agent_uuid: String },
+    ContextCreated {
+        context_uuid: String,
+        title: String,
+    },
+    WorkflowCreated {
+        workflow_uuid: String,
+        title: String,
+    },
+    WorkflowStarted {
+        workflow_uuid: String,
+        coordinator_agent_uuid: String,
+    },
+    WorkflowCancelRequested {
+        workflow_uuid: String,
+        coordinator_agent_uuid: String,
+    },
 }

@@ -1,12 +1,12 @@
-import type { AgentSummary, Lease, WorkspaceSummary } from "../../api/types";
+import type { AgentSummary, WorkspaceSession, WorkspaceSummary } from "../../api/types";
 
 type InspectorPaneProps = {
   workspace: WorkspaceSummary | null;
   agent: AgentSummary | null;
-  lease: Lease | null;
+  session: WorkspaceSession | null;
 };
 
-export function InspectorPane({ workspace, agent, lease }: InspectorPaneProps) {
+export function InspectorPane({ workspace, agent, session }: InspectorPaneProps) {
   return (
     <div className="inspector-pane">
       <header>
@@ -23,8 +23,8 @@ export function InspectorPane({ workspace, agent, lease }: InspectorPaneProps) {
           <dd>{agent?.agent_name ?? "None"}</dd>
         </div>
         <div>
-          <dt>Lease</dt>
-          <dd>{lease ? `expires ${new Date(lease.expires_at * 1000).toLocaleTimeString()}` : "None"}</dd>
+          <dt>Workspace session</dt>
+          <dd>{session ? `held by ${session.client_id}` : "None"}</dd>
         </div>
       </dl>
       <div className="inspector-empty">

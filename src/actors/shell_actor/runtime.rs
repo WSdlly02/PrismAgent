@@ -4,20 +4,16 @@ use crate::actors::agent_actor::model::{
 use crate::actors::shell_actor::model::{
     AgentAccessRequest, AuthorizedAgentCreateRequest, AuthorizedApproveRequest,
     AuthorizedSendMessageRequest, AuthorizedWorkflowCancelRequest, SHELL_ACTOR, ShellActor,
-    ShellHandle, ShellMsg, WorkspaceAccessRequest,
+    ShellHandle, ShellMsg, WorkspaceAccessRequest, WorkspaceEvent, WorkspaceSubscribeRequest,
+    WorkspaceSubscription,
 };
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::workflow_actor::model::{WorkflowCancelRequest, WorkflowCancelResponse};
-use crate::actors::workspace_actor::model::{
-    AcquireLeaseRequest, Lease, ReleaseLeaseRequest, WorkspaceCreateRequest, WorkspaceSummary,
-};
+use crate::actors::workspace_actor::model::{WorkspaceCreateRequest, WorkspaceSummary};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
 use tokio::sync::{mpsc, oneshot};
-use uuid::Uuid;
-
-const LEASE_SECONDS: i64 = 15;
 const SUBSCRIBER_BUFFER: usize = 128;
 
 impl ShellActor {
@@ -25,7 +21,7 @@ impl ShellActor {
         Self {
             rx,
             handles,
-            leases: Default::default(),
+            workspace_subscribers: Default::default(),
             subscribers: Default::default(),
         }
     }
@@ -46,11 +42,11 @@ impl ShellActor {
                 ShellMsg::CreateWorkspace { request, reply } => {
                     let _ = reply.send(self.create_workspace(request).await);
                 }
-                ShellMsg::AcquireLease { request, reply } => {
-                    let _ = reply.send(self.acquire_lease(request).await);
+                ShellMsg::SubscribeWorkspace { request, reply } => {
+                    let _ = reply.send(self.subscribe_workspace(request).await);
                 }
-                ShellMsg::ReleaseLease { request, reply } => {
-                    let _ = reply.send(self.release_lease(request));
+                ShellMsg::UnsubscribeWorkspace { request } => {
+                    self.unsubscribe_workspace(request);
                 }
                 ShellMsg::ListAgents { request, reply } => {
                     let _ = reply.send(self.list_agents(request).await);
@@ -79,19 +75,23 @@ impl ShellActor {
                 ShellMsg::EmitAgentEvent { agent_uuid, event } => {
                     self.emit_agent_event(&agent_uuid, event);
                 }
+                ShellMsg::EmitWorkspaceEvent {
+                    workspace_uuid,
+                    event,
+                } => {
+                    self.emit_workspace_event(&workspace_uuid, event);
+                }
             }
         }
     }
 
     async fn list_workspaces(&mut self) -> SubsystemResult<Vec<WorkspaceSummary>> {
-        let now = chrono::Utc::now().timestamp();
-        self.leases.retain(|_, lease| lease.expires_at > now);
         let mut workspaces = self.handles.workspace.list().await?;
         for workspace in &mut workspaces {
             workspace.locked_by = self
-                .leases
+                .workspace_subscribers
                 .get(&workspace.workspace_uuid)
-                .map(|lease| lease.client_id.clone());
+                .map(|subscription| subscription.client_id.clone());
         }
         Ok(workspaces)
     }
@@ -101,46 +101,6 @@ impl ShellActor {
         request: WorkspaceCreateRequest,
     ) -> SubsystemResult<WorkspaceSummary> {
         self.handles.workspace.create(request).await
-    }
-
-    async fn acquire_lease(&mut self, request: AcquireLeaseRequest) -> SubsystemResult<Lease> {
-        if request.client_id.trim().is_empty() {
-            return Err(SubsystemError::invalid_input("client_id must not be empty"));
-        }
-        if !self
-            .handles
-            .workspace
-            .contains(&request.workspace_uuid)
-            .await?
-        {
-            return Err(SubsystemError::not_found(
-                "workspace",
-                request.workspace_uuid,
-            ));
-        }
-        let now = chrono::Utc::now().timestamp();
-        if let Some(lease) = self.leases.get_mut(&request.workspace_uuid)
-            && lease.expires_at > now
-        {
-            let may_renew = lease.client_id == request.client_id
-                && request.lease_token.as_deref() == Some(lease.lease_token.as_str());
-            if !may_renew {
-                return Err(SubsystemError::Conflict {
-                    resource: "workspace_lease",
-                    id: request.workspace_uuid,
-                });
-            }
-            lease.expires_at = now + LEASE_SECONDS;
-            return Ok(lease.clone());
-        }
-        let lease = Lease {
-            lease_token: Uuid::now_v7().to_string(),
-            workspace_uuid: request.workspace_uuid.clone(),
-            client_id: request.client_id,
-            expires_at: now + LEASE_SECONDS,
-        };
-        self.leases.insert(request.workspace_uuid, lease.clone());
-        Ok(lease)
     }
 
     async fn list_agents(
@@ -174,18 +134,53 @@ impl ShellActor {
             .await
     }
 
-    fn release_lease(&mut self, request: ReleaseLeaseRequest) -> SubsystemResult<()> {
-        let lease = self
-            .leases
-            .get(&request.workspace_uuid)
-            .ok_or_else(|| SubsystemError::not_found("workspace_lease", &request.workspace_uuid))?;
-        if lease.lease_token != request.lease_token {
-            return Err(SubsystemError::PermissionDenied {
-                action: "release workspace lease",
+    async fn subscribe_workspace(
+        &mut self,
+        request: WorkspaceSubscribeRequest,
+    ) -> SubsystemResult<mpsc::Receiver<WorkspaceEvent>> {
+        if request.client_id.trim().is_empty() {
+            return Err(SubsystemError::invalid_input("client_id must not be empty"));
+        }
+        if !self
+            .handles
+            .workspace
+            .contains(&request.workspace_uuid)
+            .await?
+        {
+            return Err(SubsystemError::not_found(
+                "workspace",
+                request.workspace_uuid,
+            ));
+        }
+        if self
+            .workspace_subscribers
+            .contains_key(&request.workspace_uuid)
+        {
+            return Err(SubsystemError::Conflict {
+                resource: "workspace_subscription",
+                id: request.workspace_uuid,
             });
         }
-        self.leases.remove(&request.workspace_uuid);
-        Ok(())
+
+        let (tx, rx) = mpsc::channel(SUBSCRIBER_BUFFER);
+        self.workspace_subscribers.insert(
+            request.workspace_uuid,
+            WorkspaceSubscription {
+                client_id: request.client_id,
+                tx,
+            },
+        );
+        Ok(rx)
+    }
+
+    fn unsubscribe_workspace(&mut self, request: WorkspaceSubscribeRequest) {
+        let should_remove = self
+            .workspace_subscribers
+            .get(&request.workspace_uuid)
+            .is_some_and(|subscription| subscription.client_id == request.client_id);
+        if should_remove {
+            self.workspace_subscribers.remove(&request.workspace_uuid);
+        }
     }
 
     async fn agent_snapshot(&self, request: AgentAccessRequest) -> SubsystemResult<AgentSnapshot> {
@@ -260,16 +255,15 @@ impl ShellActor {
     }
 
     fn authorize_workspace(&self, request: &WorkspaceAccessRequest) -> SubsystemResult<()> {
-        let lease = self
-            .leases
+        let subscription = self
+            .workspace_subscribers
             .get(&request.workspace_uuid)
-            .filter(|lease| lease.expires_at > chrono::Utc::now().timestamp())
             .ok_or(SubsystemError::PermissionDenied {
-                action: "access workspace without active lease",
-            })?; // no heap-allocating so we use ok_or instead of ok_or_else
-        if lease.client_id != request.client_id || lease.lease_token != request.lease_token {
+                action: "access workspace without active subscription",
+            })?;
+        if subscription.client_id != request.client_id {
             return Err(SubsystemError::PermissionDenied {
-                action: "access workspace with invalid lease",
+                action: "access workspace with invalid subscription",
             });
         }
         Ok(())
@@ -281,6 +275,15 @@ impl ShellActor {
         };
         if subscriber.try_send(event).is_err() {
             self.subscribers.remove(agent_uuid);
+        }
+    }
+
+    fn emit_workspace_event(&mut self, workspace_uuid: &str, event: WorkspaceEvent) {
+        let Some(subscription) = self.workspace_subscribers.get(workspace_uuid) else {
+            return;
+        };
+        if subscription.tx.try_send(event).is_err() {
+            self.workspace_subscribers.remove(workspace_uuid);
         }
     }
 }
@@ -327,20 +330,21 @@ impl ShellHandle {
         request(&self.tx, |reply| ShellMsg::ListProfiles { reply }).await
     }
 
-    pub async fn acquire_lease(&self, request_body: AcquireLeaseRequest) -> SubsystemResult<Lease> {
-        request(&self.tx, |reply| ShellMsg::AcquireLease {
+    pub async fn subscribe_workspace(
+        &self,
+        request_body: WorkspaceSubscribeRequest,
+    ) -> SubsystemResult<mpsc::Receiver<WorkspaceEvent>> {
+        request(&self.tx, |reply| ShellMsg::SubscribeWorkspace {
             request: request_body,
             reply,
         })
         .await
     }
 
-    pub async fn release_lease(&self, request_body: ReleaseLeaseRequest) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::ReleaseLease {
+    pub fn unsubscribe_workspace(&self, request_body: WorkspaceSubscribeRequest) {
+        let _ = self.tx.try_send(ShellMsg::UnsubscribeWorkspace {
             request: request_body,
-            reply,
-        })
-        .await
+        });
     }
 
     pub async fn agent_snapshot(
@@ -420,6 +424,21 @@ impl ShellHandle {
                 SubsystemError::internal(format!("failed to enqueue shell event: {error}"))
             })
     }
+
+    pub fn emit_workspace_event(
+        &self,
+        workspace_uuid: impl Into<String>,
+        event: WorkspaceEvent,
+    ) -> SubsystemResult<()> {
+        self.tx
+            .try_send(ShellMsg::EmitWorkspaceEvent {
+                workspace_uuid: workspace_uuid.into(),
+                event,
+            })
+            .map_err(|error| {
+                SubsystemError::internal(format!("failed to enqueue workspace event: {error}"))
+            })
+    }
 }
 
 async fn request<T>(
@@ -439,9 +458,10 @@ async fn request<T>(
 mod tests {
     use super::*;
     use crate::actors::workspace_actor::model::{WorkspaceActor, WorkspaceHandle, WorkspaceMsg};
+    use uuid::Uuid;
 
     #[tokio::test]
-    async fn lease_requires_matching_client_and_token_for_renewal() {
+    async fn workspace_subscription_is_exclusive_per_workspace() {
         let root = std::env::temp_dir().join(format!("prismagent-test-{}", Uuid::now_v7()));
         let workspace_root = root.join("workspace");
         std::fs::create_dir_all(&workspace_root).unwrap();
@@ -459,34 +479,46 @@ mod tests {
         handles.workspace.list().await.unwrap();
         let (_shell_tx, shell_rx) = mpsc::channel(8);
         let mut shell = ShellActor::load(shell_rx, handles);
-        let lease = shell
-            .acquire_lease(AcquireLeaseRequest {
-                workspace_uuid: "workspace".to_string(),
-                client_id: "client".to_string(),
-                lease_token: None,
-            })
-            .await
-            .unwrap();
+        let first = WorkspaceSubscribeRequest {
+            workspace_uuid: "workspace".to_string(),
+            client_id: "client".to_string(),
+        };
+        shell.subscribe_workspace(first.clone()).await.unwrap();
 
         assert!(
             shell
-                .acquire_lease(AcquireLeaseRequest {
+                .subscribe_workspace(WorkspaceSubscribeRequest {
                     workspace_uuid: "workspace".to_string(),
-                    client_id: "client".to_string(),
-                    lease_token: None,
+                    client_id: "other-client".to_string(),
                 })
                 .await
                 .is_err()
         );
+        assert!(shell.subscribe_workspace(first.clone()).await.is_err());
+
+        shell.unsubscribe_workspace(first);
         assert!(
             shell
-                .acquire_lease(AcquireLeaseRequest {
+                .subscribe_workspace(WorkspaceSubscribeRequest {
                     workspace_uuid: "workspace".to_string(),
-                    client_id: "client".to_string(),
-                    lease_token: Some(lease.lease_token),
+                    client_id: "other-client".to_string(),
                 })
                 .await
                 .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_access_requires_active_subscription() {
+        let (_shell_tx, shell_rx) = mpsc::channel(8);
+        let shell = ShellActor::load(shell_rx, crate::handles::test_handles());
+        assert!(
+            shell
+                .authorize_workspace(&WorkspaceAccessRequest {
+                    workspace_uuid: "workspace".to_string(),
+                    client_id: "client".to_string(),
+                })
+                .is_err()
         );
     }
 }

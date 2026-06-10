@@ -245,20 +245,10 @@ pub fn agent_update() -> Tool {
 pub fn self_update() -> Tool {
     tool_template(
         "prismagent_self_update",
-        "Update mutable metadata for the current caller agent. Usually only use auto_loop=false for self-rescue; coordinators should use prismagent_agent_update when changing context_refs/context_out and workflow topology.",
+        "Update safe mutable metadata for the current caller agent. Use auto_loop=false for self-rescue or auto_loop_message for cleanup behavior. This tool cannot modify context_refs/context_out; coordinators must use prismagent_agent_update for workflow topology changes.",
         json!({
             "type": "object",
             "properties": {
-                "context_refs": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Replacement context UUIDs this agent depends on"
-                },
-                "context_out": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Replacement context UUIDs this agent is expected to produce"
-                },
                 "auto_loop": {
                     "type": "boolean",
                     "description": "Only false is allowed. Use only to stop accidental infinite loops; normal task completion must use prismagent_task_finish."
@@ -470,10 +460,17 @@ pub async fn execute_agent_update(ctx: ToolExecutionContext, args: Value) -> Str
 }
 
 pub async fn execute_self_update(ctx: ToolExecutionContext, args: Value) -> String {
+    if args.get("context_refs").is_some() || args.get("context_out").is_some() {
+        return json!({
+            "status": "error",
+            "error": "prismagent_self_update cannot modify context_refs/context_out; ask the coordinator to use prismagent_agent_update"
+        })
+        .to_string();
+    }
     let request = SelfUpdateRequest {
         agent_uuid: ctx.caller_agent_uuid.clone(),
-        context_refs: optional_string_array_arg(&args, "context_refs"),
-        context_out: optional_string_array_arg(&args, "context_out"),
+        context_refs: None,
+        context_out: None,
         auto_loop: args.get("auto_loop").and_then(Value::as_bool),
         auto_loop_message: string_arg(&args, "auto_loop_message"),
     };

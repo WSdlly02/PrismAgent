@@ -1,7 +1,9 @@
 use crate::actors::agent_actor::model::AgentHandle;
 use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRequest};
+use crate::actors::shell_actor::model::WorkspaceEvent;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::Context;
+use crate::actors::storage_actor::model::workflow::Workflow;
 use crate::actors::workflow_actor::model::{
     AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, SelfShowRequest,
     SelfShowResponse, TaskFinishRequest, TaskFinishResponse, WORKFLOW_ACTOR, WorkflowActor,
@@ -36,7 +38,7 @@ impl WorkflowActor {
                     let _ = reply.send(uuid_generate(count));
                 }
                 WorkflowMsg::WorkflowCreate { request, reply } => {
-                    let _ = reply.send(self.handles.storage.create_workflow(request).await);
+                    let _ = reply.send(self.workflow_create(request).await);
                 }
                 WorkflowMsg::WorkflowStart { request, reply } => {
                     let _ = reply.send(self.workflow_start(request).await);
@@ -112,6 +114,13 @@ impl WorkflowActor {
                 },
             })
             .await?;
+        self.emit_workspace_event(
+            &runtime.workspace_uuid,
+            WorkspaceEvent::WorkflowStarted {
+                workflow_uuid: runtime.workflow_uuid.clone(),
+                coordinator_agent_uuid: runtime.coordinator_agent_uuid.clone(),
+            },
+        );
         Ok(runtime)
     }
 
@@ -141,6 +150,13 @@ impl WorkflowActor {
                 },
             })
             .await?;
+        self.emit_workspace_event(
+            &runtime.workspace_uuid,
+            WorkspaceEvent::WorkflowCancelRequested {
+                workflow_uuid: runtime.workflow_uuid.clone(),
+                coordinator_agent_uuid: runtime.coordinator_agent_uuid.clone(),
+            },
+        );
         Ok(WorkflowCancelResponse {
             workspace_uuid: runtime.workspace_uuid,
             workflow_uuid: runtime.workflow_uuid,
@@ -148,11 +164,35 @@ impl WorkflowActor {
         })
     }
 
+    async fn workflow_create(
+        &mut self,
+        request: crate::actors::storage_actor::model::workflow::WorkflowCreateRequest,
+    ) -> SubsystemResult<Workflow> {
+        let workspace_uuid = request.workspace_uuid.clone();
+        let workflow = self.handles.storage.create_workflow(request).await?;
+        self.emit_workspace_event(
+            &workspace_uuid,
+            WorkspaceEvent::WorkflowCreated {
+                workflow_uuid: workflow.uuid.clone(),
+                title: workflow.title.clone(),
+            },
+        );
+        Ok(workflow)
+    }
+
     async fn context_create(
         &mut self,
         request: crate::actors::storage_actor::model::context::ContextCreateRequest,
     ) -> SubsystemResult<Context> {
+        let workspace_uuid = request.workspace_uuid.clone();
         let context = self.handles.storage.create_context(request).await?;
+        self.emit_workspace_event(
+            &workspace_uuid,
+            WorkspaceEvent::ContextCreated {
+                context_uuid: context.uuid.clone(),
+                title: context.title.clone(),
+            },
+        );
         self.check_context_triggers(&context.uuid).await;
         Ok(context)
     }
@@ -335,6 +375,13 @@ impl WorkflowActor {
         tokio::spawn(async move {
             deliver_trigger_message(agent, agent_uuid, context_uuid, message).await;
         });
+    }
+
+    fn emit_workspace_event(&self, workspace_uuid: &str, event: WorkspaceEvent) {
+        let _ = self
+            .handles
+            .shell
+            .emit_workspace_event(workspace_uuid.to_string(), event);
     }
 }
 

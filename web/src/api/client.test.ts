@@ -11,7 +11,6 @@ import type { WorkspaceAccess } from "./types";
 const access: WorkspaceAccess = {
   workspace_uuid: "workspace-1",
   client_id: "client-1",
-  lease_token: "lease with space",
 };
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
@@ -43,7 +42,7 @@ describe("api client", () => {
   });
 
   it("creates agents through /api/agents/create with flattened access fields", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ uuid: "agent-1" }));
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ created: true }));
 
     await createAgent(access, {
       name: "Planner",
@@ -71,7 +70,7 @@ describe("api client", () => {
     await listAgents(access);
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/agents/list?workspace_uuid=workspace-1&client_id=client-1&lease_token=lease+with+space",
+      "/api/agents/list?workspace_uuid=workspace-1&client_id=client-1",
       { headers: { "content-type": "application/json" } },
     );
   });
@@ -100,7 +99,7 @@ describe("api client", () => {
 
   it("builds query strings from workspace access", () => {
     expect(workspaceAccessQuery(access).toString()).toBe(
-      "workspace_uuid=workspace-1&client_id=client-1&lease_token=lease+with+space",
+      "workspace_uuid=workspace-1&client_id=client-1",
     );
   });
 });

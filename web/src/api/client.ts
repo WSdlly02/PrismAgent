@@ -1,10 +1,8 @@
 import type {
-  Agent,
   AgentAccess,
   AgentCreateInput,
   AgentSnapshot,
   AgentSummary,
-  Lease,
   WorkspaceAccess,
   WorkspaceSummary,
 } from "./types";
@@ -15,7 +13,6 @@ export function workspaceAccessQuery(access: WorkspaceAccess) {
   return new URLSearchParams({
     workspace_uuid: access.workspace_uuid,
     client_id: access.client_id,
-    lease_token: access.lease_token,
   });
 }
 
@@ -52,24 +49,6 @@ export function addWorkspace(path: string) {
   });
 }
 
-export function acquireLease(
-  workspace_uuid: string,
-  client_id: string,
-  lease_token?: string | null,
-) {
-  return apiJson<Lease>("/api/workspaces/acquire_lease", {
-    method: "POST",
-    body: JSON.stringify({ workspace_uuid, client_id, lease_token }),
-  });
-}
-
-export function releaseLease(workspace_uuid: string, lease_token: string) {
-  return apiJson<{ released: true }>("/api/workspaces/release_lease", {
-    method: "POST",
-    body: JSON.stringify({ workspace_uuid, lease_token }),
-  });
-}
-
 export function listProfiles() {
   return apiJson<string[]>("/api/profiles/list");
 }
@@ -81,7 +60,7 @@ export function listAgents(access: WorkspaceAccess) {
 }
 
 export function createAgent(access: WorkspaceAccess, agent: AgentCreateInput) {
-  return apiJson<Agent>("/api/agents/create", {
+  return apiJson<{ created: true }>("/api/agents/create", {
     method: "POST",
     body: JSON.stringify({ ...access, ...agent }),
   });

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  acquireLease,
   addWorkspace as addWorkspaceApi,
   agentSnapshot,
   approveRequest,
@@ -11,18 +10,22 @@ import {
   listWorkspaces,
   sendMessage,
 } from "../api/client";
-import { agentEventStreamUrl, normalizeAgentEvent } from "../api/events";
+import {
+  agentEventStreamUrl,
+  normalizeAgentEvent,
+  normalizeWorkspaceEvent,
+  workspaceEventStreamUrl,
+} from "../api/events";
 import type {
   AgentAccess,
   AgentCreateInput,
   AgentSummary,
-  Lease,
   PendingApproval,
   Unit,
   WorkspaceAccess,
+  WorkspaceSession,
   WorkspaceSummary,
 } from "../api/types";
-import { shouldRenewLease } from "./lease";
 import { applyAgentEvent, initialChatState } from "./sessionModel";
 
 const AGENT_EVENT_NAMES = [
@@ -31,6 +34,19 @@ const AGENT_EVENT_NAMES = [
   "stream_delta",
   "approve_request",
   "status_changed",
+  "error",
+];
+
+const WORKSPACE_EVENT_NAMES = [
+  "connected",
+  "agent_created",
+  "agent_updated",
+  "agent_status_changed",
+  "agent_deleted",
+  "context_created",
+  "workflow_created",
+  "workflow_started",
+  "workflow_cancel_requested",
   "error",
 ];
 
@@ -43,16 +59,23 @@ function createClientId() {
   return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function upsertAgent(agents: AgentSummary[], agent: AgentSummary) {
+  const next = agents.filter((item) => item.agent_uuid !== agent.agent_uuid);
+  next.push(agent);
+  next.sort((left, right) => left.agent_name.localeCompare(right.agent_name));
+  return next;
+}
+
 export type PrismSession = {
   clientId: string;
   workspaces: WorkspaceSummary[];
   profiles: string[];
   expandedWorkspaceUuids: string[];
-  workspaceLeases: Record<string, Lease>;
+  workspaceSessions: Record<string, WorkspaceSession>;
   workspaceAgents: Record<string, AgentSummary[]>;
   selectedAgent: AgentSummary | null;
   selectedWorkspace: WorkspaceSummary | null;
-  lease: Lease | null;
+  session: WorkspaceSession | null;
   units: Unit[];
   streamingText: string;
   pendingApproval: PendingApproval | null;
@@ -69,64 +92,159 @@ export type PrismSession = {
   approve: (approvalMask: number) => Promise<void>;
 };
 
-/** 从 workspaceLeases 取 lease，必要时续租 */
-async function ensureWsLease(
-  wsUuid: string,
-  clientId: string,
-  leases: Record<string, Lease>,
-  setLeases: React.Dispatch<React.SetStateAction<Record<string, Lease>>>,
-): Promise<Lease | null> {
-  const existing = leases[wsUuid];
-  if (existing && !shouldRenewLease(existing)) {
-    return existing;
-  }
-  const renewed = await acquireLease(wsUuid, clientId, existing?.lease_token ?? null);
-  setLeases((prev) => ({ ...prev, [wsUuid]: renewed }));
-  return renewed;
-}
-
 export function usePrismSession(): PrismSession {
   const [clientId] = useState(createClientId);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [expandedWorkspaceUuids, setExpandedWorkspaceUuids] = useState<string[]>([]);
-  const [workspaceLeases, setWorkspaceLeases] = useState<Record<string, Lease>>({});
+  const [workspaceSessions, setWorkspaceSessions] = useState<Record<string, WorkspaceSession>>({});
   const [workspaceAgents, setWorkspaceAgents] = useState<Record<string, AgentSummary[]>>({});
   const [selectedAgent, setSelectedAgent] = useState<AgentSummary | null>(null);
   const [chat, setChat] = useState(initialChatState);
   const [connectionStatus, setConnectionStatus] =
     useState<PrismSession["connectionStatus"]>("idle");
   const [error, setError] = useState<string | null>(null);
-  const streamRef = useRef<EventSource | null>(null);
+  const agentStreamRef = useRef<EventSource | null>(null);
+  const workspaceStreamsRef = useRef<Record<string, EventSource>>({});
   const ignoreStreamUntilNextStatusRef = useRef(false);
 
-  // 当前选中 agent 所属 workspace 的 lease（操作目标），不从 expandWorkspace 改变
-  const activeLease = useMemo<Lease | null>(() => {
+  const activeSession = useMemo<WorkspaceSession | null>(() => {
     if (!selectedAgent) {
       return null;
     }
-    const wsUuid = Object.entries(workspaceAgents).find(
-      ([, agents]) => agents.some((a) => a.agent_uuid === selectedAgent.agent_uuid),
+    const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
+      agents.some((agent) => agent.agent_uuid === selectedAgent.agent_uuid),
     )?.[0];
     if (!wsUuid) {
       return null;
     }
-    return workspaceLeases[wsUuid] ?? null;
-  }, [selectedAgent, workspaceAgents, workspaceLeases]);
+    return workspaceSessions[wsUuid] ?? null;
+  }, [selectedAgent, workspaceAgents, workspaceSessions]);
 
   const selectedWorkspace = useMemo(
-    () => workspaces.find((ws) => ws.workspace_uuid === activeLease?.workspace_uuid) ?? null,
-    [workspaces, activeLease?.workspace_uuid],
+    () => workspaces.find((ws) => ws.workspace_uuid === activeSession?.workspace_uuid) ?? null,
+    [workspaces, activeSession?.workspace_uuid],
   );
 
-  const closeStream = useCallback(() => {
-    streamRef.current?.close();
-    streamRef.current = null;
+  const closeAgentStream = useCallback(() => {
+    agentStreamRef.current?.close();
+    agentStreamRef.current = null;
   }, []);
+
+  const closeWorkspaceStream = useCallback((workspaceUuid: string) => {
+    workspaceStreamsRef.current[workspaceUuid]?.close();
+    delete workspaceStreamsRef.current[workspaceUuid];
+    setWorkspaceSessions((prev) => {
+      const next = { ...prev };
+      delete next[workspaceUuid];
+      return next;
+    });
+  }, []);
+
+  const openWorkspaceStream = useCallback(
+    async (workspaceUuid: string): Promise<WorkspaceAccess> => {
+      const access: WorkspaceAccess = { workspace_uuid: workspaceUuid, client_id: clientId };
+      if (workspaceStreamsRef.current[workspaceUuid]) {
+        return access;
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        let connected = false;
+        const stream = new EventSource(workspaceEventStreamUrl(access));
+        workspaceStreamsRef.current[workspaceUuid] = stream;
+
+        const consume = (eventName: string) => (event: MessageEvent) => {
+          const normalized = normalizeWorkspaceEvent({ eventName, data: event.data });
+          if (normalized.type === "connected") {
+            connected = true;
+            setWorkspaceSessions((prev) => ({
+              ...prev,
+              [workspaceUuid]: {
+                workspace_uuid: workspaceUuid,
+                client_id: clientId,
+                connected: true,
+              },
+            }));
+            setWorkspaces((prev) =>
+              prev.map((workspace) =>
+                workspace.workspace_uuid === workspaceUuid
+                  ? { ...workspace, locked_by: clientId }
+                  : workspace,
+              ),
+            );
+            resolve();
+            return;
+          }
+          if (normalized.type === "agent_created" || normalized.type === "agent_updated") {
+            setWorkspaceAgents((prev) => ({
+              ...prev,
+              [workspaceUuid]: upsertAgent(prev[workspaceUuid] ?? [], normalized.agent),
+            }));
+            setSelectedAgent((current) =>
+              current?.agent_uuid === normalized.agent.agent_uuid ? normalized.agent : current,
+            );
+            return;
+          }
+          if (normalized.type === "agent_status_changed") {
+            setWorkspaceAgents((prev) => ({
+              ...prev,
+              [workspaceUuid]: (prev[workspaceUuid] ?? []).map((agent) =>
+                agent.agent_uuid === normalized.agent_uuid
+                  ? { ...agent, status: normalized.status }
+                  : agent,
+              ),
+            }));
+            setSelectedAgent((current) =>
+              current?.agent_uuid === normalized.agent_uuid
+                ? { ...current, status: normalized.status }
+                : current,
+            );
+            return;
+          }
+          if (normalized.type === "agent_deleted") {
+            setWorkspaceAgents((prev) => ({
+              ...prev,
+              [workspaceUuid]: (prev[workspaceUuid] ?? []).filter(
+                (agent) => agent.agent_uuid !== normalized.agent_uuid,
+              ),
+            }));
+            setSelectedAgent((current) =>
+              current?.agent_uuid === normalized.agent_uuid ? null : current,
+            );
+            return;
+          }
+          if (normalized.type === "error") {
+            setError(normalized.message);
+          }
+        };
+
+        for (const eventName of WORKSPACE_EVENT_NAMES) {
+          stream.addEventListener(eventName, consume(eventName));
+        }
+        stream.onerror = () => {
+          if (!connected) {
+            stream.close();
+            delete workspaceStreamsRef.current[workspaceUuid];
+            reject(new Error("Workspace is already in use or unavailable"));
+            return;
+          }
+          setWorkspaceSessions((prev) => {
+            const next = { ...prev };
+            delete next[workspaceUuid];
+            return next;
+          });
+          setError("Workspace event stream disconnected");
+        };
+      });
+
+      return access;
+    },
+    [clientId],
+  );
 
   const openAgentStream = useCallback(
     async (agent: AgentSummary, access: WorkspaceAccess) => {
-      closeStream();
+      closeAgentStream();
       setSelectedAgent(agent);
       setConnectionStatus("connecting");
       setError(null);
@@ -140,7 +258,7 @@ export function usePrismSession(): PrismSession {
       });
 
       const stream = new EventSource(agentEventStreamUrl(agentAccess));
-      streamRef.current = stream;
+      agentStreamRef.current = stream;
       const consume = (eventName: string) => (event: MessageEvent) => {
         const normalized = normalizeAgentEvent({ eventName, data: event.data });
         if (normalized.type === "connected") {
@@ -164,74 +282,68 @@ export function usePrismSession(): PrismSession {
         setError("Event stream disconnected");
       };
     },
-    [closeStream],
+    [closeAgentStream],
   );
 
   const selectAgent = useCallback(
     async (agent: AgentSummary) => {
-      const wsUuid = Object.entries(workspaceAgents).find(
-        ([, agents]) => agents.some((a) => a.agent_uuid === agent.agent_uuid),
+      const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
+        agents.some((candidate) => candidate.agent_uuid === agent.agent_uuid),
       )?.[0];
       if (!wsUuid) {
         return;
       }
-      const lease = await ensureWsLease(wsUuid, clientId, workspaceLeases, setWorkspaceLeases);
-      if (!lease) {
-        return;
-      }
-      const access: WorkspaceAccess = {
-        workspace_uuid: wsUuid,
-        client_id: clientId,
-        lease_token: lease.lease_token,
-      };
+      const access = await openWorkspaceStream(wsUuid);
       await openAgentStream(agent, access);
     },
-    [clientId, openAgentStream, workspaceAgents, workspaceLeases],
+    [openAgentStream, openWorkspaceStream, workspaceAgents],
   );
 
   const expandWorkspace = useCallback(
     async (workspace: WorkspaceSummary) => {
       if (expandedWorkspaceUuids.includes(workspace.workspace_uuid)) {
-        setExpandedWorkspaceUuids((prev) => prev.filter((id) => id !== workspace.workspace_uuid));
+        setExpandedWorkspaceUuids((prev) =>
+          prev.filter((id) => id !== workspace.workspace_uuid),
+        );
         setWorkspaceAgents((prev) => {
           const next = { ...prev };
           delete next[workspace.workspace_uuid];
           return next;
         });
-        if (selectedAgent && workspaceAgents[workspace.workspace_uuid]?.some(
-          (a) => a.agent_uuid === selectedAgent.agent_uuid,
-        )) {
-          closeStream();
+        if (
+          selectedAgent &&
+          workspaceAgents[workspace.workspace_uuid]?.some(
+            (agent) => agent.agent_uuid === selectedAgent.agent_uuid,
+          )
+        ) {
+          closeAgentStream();
           setSelectedAgent(null);
           setChat(initialChatState());
         }
+        closeWorkspaceStream(workspace.workspace_uuid);
         return;
       }
 
-      const lease = await ensureWsLease(workspace.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
-      if (!lease) {
-        return;
-      }
+      const access = await openWorkspaceStream(workspace.workspace_uuid);
       setExpandedWorkspaceUuids((prev) => [...prev, workspace.workspace_uuid]);
       setError(null);
 
-      const access: WorkspaceAccess = {
-        workspace_uuid: workspace.workspace_uuid,
-        client_id: clientId,
-        lease_token: lease.lease_token,
-      };
       const agents = await listAgents(access);
       setWorkspaceAgents((prev) => ({ ...prev, [workspace.workspace_uuid]: agents }));
     },
-    [clientId, closeStream, expandedWorkspaceUuids, selectedAgent, workspaceAgents, workspaceLeases],
+    [
+      closeAgentStream,
+      closeWorkspaceStream,
+      expandedWorkspaceUuids,
+      openWorkspaceStream,
+      selectedAgent,
+      workspaceAgents,
+    ],
   );
 
   const loadInitialData = useCallback(async () => {
     setError(null);
-    const [workspaceList, profileList] = await Promise.all([
-      listWorkspaces(),
-      listProfiles(),
-    ]);
+    const [workspaceList, profileList] = await Promise.all([listWorkspaces(), listProfiles()]);
     setWorkspaces(workspaceList);
     setProfiles(profileList);
   }, []);
@@ -248,34 +360,21 @@ export function usePrismSession(): PrismSession {
 
   const createAgent = useCallback(
     async (wsUuid: string, input: AgentCreateInput) => {
-      const lease = await ensureWsLease(wsUuid, clientId, workspaceLeases, setWorkspaceLeases);
-      if (!lease) {
-        return;
-      }
-      const access: WorkspaceAccess = {
-        workspace_uuid: wsUuid,
-        client_id: clientId,
-        lease_token: lease.lease_token,
-      };
-      const createdAgent = await createAgentApi(access, input);
-      const updatedAgents = await listAgents(access);
-      setWorkspaceAgents((prev) => ({ ...prev, [wsUuid]: updatedAgents }));
-      const created = updatedAgents.find((a) => a.agent_uuid === createdAgent.uuid);
-      if (created) {
-        await openAgentStream(created, access);
-      }
+      const access = await openWorkspaceStream(wsUuid);
+      await createAgentApi(access, input);
     },
-    [clientId, openAgentStream, workspaceLeases],
+    [openWorkspaceStream],
   );
 
   const send = useCallback(
     async (text: string) => {
-      if (!selectedAgent || !activeLease) {
+      if (!selectedAgent || !activeSession) {
         throw new Error("No agent selected");
       }
 
-      // 乐观添加用户消息
-      const optimisticUuid = `${PENDING_UUID_PREFIX}${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimisticUuid = `${PENDING_UUID_PREFIX}${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
       const optimisticUnit: Unit = {
         uuid: optimisticUuid,
         visibility: "public",
@@ -291,52 +390,45 @@ export function usePrismSession(): PrismSession {
       }));
 
       try {
-        const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
-        if (!lease) {
-          throw new Error("Failed to acquire lease");
-        }
-        const access: WorkspaceAccess = {
-          workspace_uuid: lease.workspace_uuid,
-          client_id: clientId,
-          lease_token: lease.lease_token,
-        };
-        await sendMessage({ ...access, agent_uuid: selectedAgent.agent_uuid }, text);
+        await sendMessage(
+          {
+            workspace_uuid: activeSession.workspace_uuid,
+            client_id: clientId,
+            agent_uuid: selectedAgent.agent_uuid,
+          },
+          text,
+        );
       } catch (err) {
-        // 发送失败 → 移除乐观消息，让 ChatPane 恢复输入框
         setChat((current) => ({
           ...current,
-          units: current.units.filter((u) => u.uuid !== optimisticUuid),
-          pendingUserUuid: current.pendingUserUuid === optimisticUuid ? null : current.pendingUserUuid,
+          units: current.units.filter((unit) => unit.uuid !== optimisticUuid),
+          pendingUserUuid:
+            current.pendingUserUuid === optimisticUuid ? null : current.pendingUserUuid,
         }));
         throw err;
       }
     },
-    [clientId, selectedAgent, activeLease, workspaceLeases],
+    [activeSession, clientId, selectedAgent],
   );
 
   const approve = useCallback(
     async (approvalMask: number) => {
-      if (!selectedAgent || !chat.pendingApproval || !activeLease) {
-        return;
-      }
-      const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
-      if (!lease) {
+      if (!selectedAgent || !chat.pendingApproval || !activeSession) {
         return;
       }
       const access: AgentAccess = {
-        workspace_uuid: lease.workspace_uuid,
+        workspace_uuid: activeSession.workspace_uuid,
         client_id: clientId,
-        lease_token: lease.lease_token,
         agent_uuid: selectedAgent.agent_uuid,
       };
       await approveRequest(access, chat.pendingApproval.request_uuid, approvalMask);
       setChat((current) => ({ ...current, pendingApproval: null, streamingText: "" }));
     },
-    [chat.pendingApproval, clientId, selectedAgent, activeLease, workspaceLeases],
+    [activeSession, chat.pendingApproval, clientId, selectedAgent],
   );
 
   const cancel = useCallback(async () => {
-    if (!selectedAgent || !activeLease) {
+    if (!selectedAgent || !activeSession) {
       return;
     }
     const status = chat.status ?? selectedAgent.status;
@@ -344,14 +436,9 @@ export function usePrismSession(): PrismSession {
       await approve(0);
       return;
     }
-    const lease = await ensureWsLease(activeLease.workspace_uuid, clientId, workspaceLeases, setWorkspaceLeases);
-    if (!lease) {
-      return;
-    }
     const access: AgentAccess = {
-      workspace_uuid: lease.workspace_uuid,
+      workspace_uuid: activeSession.workspace_uuid,
       client_id: clientId,
-      lease_token: lease.lease_token,
       agent_uuid: selectedAgent.agent_uuid,
     };
 
@@ -360,7 +447,7 @@ export function usePrismSession(): PrismSession {
       setChat((current) => ({
         ...current,
         units: current.pendingUserUuid
-          ? current.units.filter((u) => u.uuid !== current.pendingUserUuid)
+          ? current.units.filter((unit) => unit.uuid !== current.pendingUserUuid)
           : current.units,
         pendingUserUuid: null,
         streamingText: "",
@@ -374,23 +461,30 @@ export function usePrismSession(): PrismSession {
       return;
     }
 
-    setChat((current) => {
-      return { ...current, streamingText: "" };
-    });
+    setChat((current) => ({ ...current, streamingText: "" }));
     await cancelAgent(access);
-  }, [approve, chat.status, clientId, selectedAgent, activeLease, workspaceLeases]);
+  }, [activeSession, approve, chat.status, clientId, selectedAgent]);
 
-  useEffect(() => closeStream, [closeStream]);
+  useEffect(
+    () => () => {
+      closeAgentStream();
+      for (const stream of Object.values(workspaceStreamsRef.current)) {
+        stream.close();
+      }
+      workspaceStreamsRef.current = {};
+    },
+    [closeAgentStream],
+  );
 
   return {
     clientId,
     workspaces,
     profiles,
     expandedWorkspaceUuids,
-    workspaceLeases,
+    workspaceSessions,
     workspaceAgents,
     selectedAgent,
-    lease: activeLease,
+    session: activeSession,
     selectedWorkspace,
     units: chat.units,
     streamingText: chat.streamingText,
