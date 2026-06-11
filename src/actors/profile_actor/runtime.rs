@@ -5,6 +5,7 @@ use crate::actors::profile_actor::model::{
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::impl_handle_methods;
+use crate::impl_handle_methods_into;
 use crate::stdlib_assets;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -78,66 +79,22 @@ impl_handle_methods! {
         => ListProfiles {};
 }
 
-// ---- Manual handle methods (impl Into<String> for API compatibility) ----
+// ---- impl_handle_methods_into!: methods with impl Into<String> params ----
 
-impl ProfileHandle {
-    pub async fn profile(&self, name: impl Into<String>) -> SubsystemResult<Profile> {
-        let n = name.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| ProfileMsg::GetProfile { name: n, reply },
-            PROFILE_ACTOR,
-        )
-        .await
-    }
+impl_handle_methods_into! {
+    ProfileHandle for ProfileMsg, PROFILE_ACTOR;
 
-    pub async fn model_config(
-        &self,
-        profile_name: impl Into<String>,
-    ) -> SubsystemResult<FinalModelConfig> {
-        let p = profile_name.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| ProfileMsg::GetModelConfig {
-                profile_name: p,
-                reply,
-            },
-            PROFILE_ACTOR,
-        )
-        .await
-    }
+    fn profile(&self, name: impl_into) -> Profile
+        => GetProfile { name: name };
 
-    pub async fn prompts(
-        &self,
-        profile_name: impl Into<String>,
-    ) -> SubsystemResult<PromptsConfigSection> {
-        let p = profile_name.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| ProfileMsg::GetPrompts {
-                profile_name: p,
-                reply,
-            },
-            PROFILE_ACTOR,
-        )
-        .await
-    }
+    fn model_config(&self, profile_name: impl_into) -> FinalModelConfig
+        => GetModelConfig { profile_name: profile_name };
 
-    pub async fn tools(
-        &self,
-        profile_name: impl Into<String>,
-    ) -> SubsystemResult<ToolsConfigSection> {
-        let p = profile_name.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| ProfileMsg::GetTools {
-                profile_name: p,
-                reply,
-            },
-            PROFILE_ACTOR,
-        )
-        .await
-    }
+    fn prompts(&self, profile_name: impl_into) -> PromptsConfigSection
+        => GetPrompts { profile_name: profile_name };
+
+    fn tools(&self, profile_name: impl_into) -> ToolsConfigSection
+        => GetTools { profile_name: profile_name };
 }
 
 fn default_profiles_root() -> SubsystemResult<PathBuf> {

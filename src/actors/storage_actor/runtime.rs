@@ -5,7 +5,7 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
-use crate::{actor_dispatch, impl_handle_methods};
+use crate::{actor_dispatch, impl_handle_methods, impl_handle_methods_into};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -390,25 +390,39 @@ impl_handle_methods! {
         => CreateWorkflow { request: request };
 }
 
-// ---- Manual handle methods (impl Into<String> for API compatibility) ----
+// ---- impl_handle_methods_into!: methods with impl Into<String> params ----
+
+impl_handle_methods_into! {
+    StorageHandle for StorageMsg, STORAGE_ACTOR;
+
+    fn list_agents(&self, workspace_uuid: impl_into) -> Vec<String>
+        => ListAgents { workspace_uuid: workspace_uuid };
+
+    fn delete_agent(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> ()
+        => DeleteAgent { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
+
+    fn set_agent_auto_loop(&self, workspace_uuid: impl_into, agent_uuid: impl_into, enabled: bool) -> Agent
+        => SetAgentAutoLoop { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid, enabled: enabled };
+
+    fn list_units(&self, workspace_uuid: impl_into) -> Vec<String>
+        => ListUnits { workspace_uuid: workspace_uuid };
+
+    fn list_contexts(&self, workspace_uuid: impl_into) -> Vec<String>
+        => ListContexts { workspace_uuid: workspace_uuid };
+
+    fn list_workflows(&self, workspace_uuid: impl_into) -> Vec<String>
+        => ListWorkflows { workspace_uuid: workspace_uuid };
+
+    fn read_workflow(&self, workspace_uuid: impl_into, uuid: impl_into) -> Workflow
+        => ReadWorkflow { workspace_uuid: workspace_uuid, uuid: uuid };
+
+    fn list_misc(&self, workspace_uuid: impl_into) -> Vec<String>
+        => ListMisc { workspace_uuid: workspace_uuid };
+}
+
+// ---- Manual handle methods (impl Into<String> + complex types not supported by macro) ----
 
 impl StorageHandle {
-    pub async fn list_agents(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ListAgents {
-                workspace_uuid: w,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
     pub async fn read_agents(
         &self,
         workspace_uuid: impl Into<String>,
@@ -445,46 +459,6 @@ impl StorageHandle {
         .await
     }
 
-    pub async fn delete_agent(
-        &self,
-        workspace_uuid: impl Into<String>,
-        agent_uuid: impl Into<String>,
-    ) -> SubsystemResult<()> {
-        let w = workspace_uuid.into();
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::DeleteAgent {
-                workspace_uuid: w,
-                agent_uuid: a,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn set_agent_auto_loop(
-        &self,
-        workspace_uuid: impl Into<String>,
-        agent_uuid: impl Into<String>,
-        enabled: bool,
-    ) -> SubsystemResult<Agent> {
-        let w = workspace_uuid.into();
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::SetAgentAutoLoop {
-                workspace_uuid: w,
-                agent_uuid: a,
-                enabled,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
     pub async fn append_agent_units(
         &self,
         workspace_uuid: impl Into<String>,
@@ -499,22 +473,6 @@ impl StorageHandle {
                 workspace_uuid: w,
                 agent_uuid: a,
                 units,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn list_units(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ListUnits {
-                workspace_uuid: w,
                 reply,
             },
             STORAGE_ACTOR,
@@ -558,22 +516,6 @@ impl StorageHandle {
         .await
     }
 
-    pub async fn list_contexts(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ListContexts {
-                workspace_uuid: w,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
     pub async fn read_contexts(
         &self,
         workspace_uuid: impl Into<String>,
@@ -585,57 +527,6 @@ impl StorageHandle {
             |reply| StorageMsg::ReadContexts {
                 workspace_uuid: w,
                 uuids,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn list_workflows(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ListWorkflows {
-                workspace_uuid: w,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn read_workflow(
-        &self,
-        workspace_uuid: impl Into<String>,
-        uuid: impl Into<String>,
-    ) -> SubsystemResult<Workflow> {
-        let w = workspace_uuid.into();
-        let u = uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ReadWorkflow {
-                workspace_uuid: w,
-                uuid: u,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn list_misc(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ListMisc {
-                workspace_uuid: w,
                 reply,
             },
             STORAGE_ACTOR,

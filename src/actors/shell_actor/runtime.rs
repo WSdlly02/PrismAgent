@@ -1,3 +1,4 @@
+use crate::actor_dispatch_mixed;
 use crate::actors::agent_actor::model::{
     AgentSnapshot, AgentSummary, ApproveRequest, SendMessageRequest,
 };
@@ -40,88 +41,32 @@ impl ShellActor {
 
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                ShellMsg::ListWorkspaces { reply } => {
-                    let _ = reply.send(self.list_workspaces().await);
+            actor_dispatch_mixed!(msg;
+                reply {
+                    ShellMsg::ListWorkspaces { ; reply } => self.list_workspaces().await,
+                    ShellMsg::ListProfiles { ; reply } => self.handles.profile.list_profiles().await,
+                    ShellMsg::CreateWorkspace { request ; reply } => self.create_workspace(request).await,
+                    ShellMsg::AcquireLease { request ; reply } => self.acquire_lease(request).await,
+                    ShellMsg::ReleaseLease { request ; reply } => self.release_lease(request),
+                    ShellMsg::RegisterConnection { connection_id ; reply } => self.register_connection(connection_id),
+                    ShellMsg::SubscribeWorkspace { connection_id, workspace_uuid ; reply } => self.subscribe_workspace(connection_id, workspace_uuid).await,
+                    ShellMsg::SubscribeAgent { connection_id, agent_uuid ; reply } => self.subscribe_agent(connection_id, agent_uuid).await,
+                    ShellMsg::ListAgents { request ; reply } => self.list_agents(request).await,
+                    ShellMsg::CreateAgent { request ; reply } => self.create_agent(request).await,
+                    ShellMsg::DeleteAgent { request ; reply } => self.delete_agent(request).await,
+                    ShellMsg::AgentSnapshot { request ; reply } => self.agent_snapshot(request).await,
+                    ShellMsg::SendMessage { request ; reply } => self.send_message(request).await,
+                    ShellMsg::ApproveRequest { request ; reply } => self.approve_request(request).await,
+                    ShellMsg::Cancel { request ; reply } => self.cancel(request).await,
+                    ShellMsg::WorkflowCancel { request ; reply } => self.workflow_cancel(request).await,
                 }
-                ShellMsg::ListProfiles { reply } => {
-                    let _ = reply.send(self.handles.profile.list_profiles().await);
+                fire {
+                    ShellMsg::UnregisterConnection { connection_id } => self.unregister_connection(connection_id),
+                    ShellMsg::UnsubscribeWorkspace { connection_id } => self.unsubscribe_workspace(connection_id),
+                    ShellMsg::UnsubscribeAgent { connection_id } => self.unsubscribe_agent(connection_id),
+                    ShellMsg::EmitEvent { target, event } => self.emit_event(target, event),
                 }
-                ShellMsg::CreateWorkspace { request, reply } => {
-                    let _ = reply.send(self.create_workspace(request).await);
-                }
-                ShellMsg::AcquireLease { request, reply } => {
-                    let _ = reply.send(self.acquire_lease(request).await);
-                }
-                ShellMsg::ReleaseLease { request, reply } => {
-                    let _ = reply.send(self.release_lease(request));
-                }
-                // ---- Connection lifecycle ----
-                ShellMsg::RegisterConnection {
-                    connection_id,
-                    reply,
-                } => {
-                    let rx = self.register_connection(connection_id);
-                    let _ = reply.send(rx);
-                }
-                ShellMsg::UnregisterConnection { connection_id } => {
-                    self.unregister_connection(connection_id);
-                }
-                // ---- Workspace subscription ----
-                ShellMsg::SubscribeWorkspace {
-                    connection_id,
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        self.subscribe_workspace(connection_id, workspace_uuid)
-                            .await,
-                    );
-                }
-                ShellMsg::UnsubscribeWorkspace { connection_id } => {
-                    self.unsubscribe_workspace(connection_id);
-                }
-                // ---- Agent subscription ----
-                ShellMsg::SubscribeAgent {
-                    connection_id,
-                    agent_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.subscribe_agent(connection_id, agent_uuid).await);
-                }
-                ShellMsg::UnsubscribeAgent { connection_id } => {
-                    self.unsubscribe_agent(connection_id);
-                }
-                // ---- REST operations ----
-                ShellMsg::ListAgents { request, reply } => {
-                    let _ = reply.send(self.list_agents(request).await);
-                }
-                ShellMsg::CreateAgent { request, reply } => {
-                    let _ = reply.send(self.create_agent(request).await);
-                }
-                ShellMsg::DeleteAgent { request, reply } => {
-                    let _ = reply.send(self.delete_agent(request).await);
-                }
-                ShellMsg::AgentSnapshot { request, reply } => {
-                    let _ = reply.send(self.agent_snapshot(request).await);
-                }
-                ShellMsg::SendMessage { request, reply } => {
-                    let _ = reply.send(self.send_message(request).await);
-                }
-                ShellMsg::ApproveRequest { request, reply } => {
-                    let _ = reply.send(self.approve_request(request).await);
-                }
-                ShellMsg::Cancel { request, reply } => {
-                    let _ = reply.send(self.cancel(request).await);
-                }
-                ShellMsg::WorkflowCancel { request, reply } => {
-                    let _ = reply.send(self.workflow_cancel(request).await);
-                }
-                // ---- Event emission ----
-                ShellMsg::EmitEvent { target, event } => {
-                    self.emit_event(target, event);
-                }
-            }
+            );
         }
     }
 

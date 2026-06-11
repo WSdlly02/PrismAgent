@@ -188,6 +188,37 @@ macro_rules! actor_dispatch {
     };
 }
 
+/// Generates an exhaustive `match` for message enums that mix reply-based
+/// request variants and fire-and-forget event variants.
+///
+/// Unlike a partial dispatch with `_ => {}`, this preserves Rust's exhaustiveness
+/// checking: adding a new message variant requires adding it to either `reply`
+/// or `fire`.
+#[macro_export]
+macro_rules! actor_dispatch_mixed {
+    ($msg:expr;
+        reply {
+            $( $ReplyMsg:ident::$ReplyVariant:ident { $($reply_field:ident),* $(,)? ; $reply:ident } => $reply_handler:expr ),* $(,)?
+        }
+        fire {
+            $( $FireMsg:ident::$FireVariant:ident { $($fire_field:ident),* $(,)? } => $fire_handler:expr ),* $(,)?
+        }
+    ) => {
+        match $msg {
+            $(
+                $ReplyMsg::$ReplyVariant { $($reply_field,)* $reply } => {
+                    let _ = $reply.send($reply_handler);
+                }
+            )*
+            $(
+                $FireMsg::$FireVariant { $($fire_field,)* } => {
+                    $fire_handler;
+                }
+            )*
+        }
+    };
+}
+
 // ============================================================================
 // impl_handle_methods!
 // ============================================================================
@@ -255,6 +286,116 @@ macro_rules! impl_handle_methods {
             )*
         }
     };
+}
+
+// ============================================================================
+// impl_handle_methods_into!
+// ============================================================================
+
+/// Generates Handle convenience methods with `impl Into<String>` parameter support.
+///
+/// Like [`impl_handle_methods!`], but supports parameters annotated with
+/// `impl_into` that are automatically wrapped with `.into()` before being
+/// passed to the message variant.
+///
+/// This eliminates the boilerplate of writing `let w = workspace_uuid.into();`
+/// in every method that accepts `impl Into<String>` for ergonomic API reasons.
+///
+/// # Syntax
+///
+/// ```text
+/// impl_handle_methods_into! {
+///     HandleType for MsgType, ACTOR_NAME;
+///
+///     fn method_name(&self, param: impl_into) -> ReturnType
+///         => VariantName { field: param };
+/// }
+/// ```
+///
+/// Parameters declared as `impl_into` are generated as `impl Into<String>` in
+/// the function signature, and an automatic `let param = param.into();` binding
+/// is inserted before the `_request` call. Regular concrete-typed parameters
+/// are passed through unchanged.
+///
+/// The `reply` field is **automatically appended** to each variant — do not
+/// include it in the field list.
+///
+/// # Example
+///
+/// ```ignore
+/// impl_handle_methods_into! {
+///     StorageHandle for StorageMsg, STORAGE_ACTOR;
+///
+///     fn list_agents(&self, workspace_uuid: impl_into) -> Vec<AgentSummary>
+///         => ListAgents { workspace_uuid: workspace_uuid };
+///
+///     fn delete_agent(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> ()
+///         => DeleteAgent { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
+///
+///     fn create_agent(&self, workspace_uuid: impl_into, request: AgentCreateRequest) -> Agent
+///         => CreateAgent { workspace_uuid: workspace_uuid, request: request };
+/// }
+/// ```
+///
+/// Generated code for a method with `impl_into` params:
+///
+/// ```ignore
+/// pub async fn delete_agent(
+///     &self,
+///     workspace_uuid: impl Into<String>,
+///     agent_uuid: impl Into<String>,
+/// ) -> SubsystemResult<()> {
+///     let workspace_uuid = workspace_uuid.into();
+///     let agent_uuid = agent_uuid.into();
+///     crate::macros::_request(&self.tx, |reply| {
+///         StorageMsg::DeleteAgent { workspace_uuid, agent_uuid, reply }
+///     }, STORAGE_ACTOR).await
+/// }
+/// ```
+#[macro_export]
+macro_rules! impl_handle_methods_into {
+    // Entry point: matches Handle + Msg + ACTOR, then delegates each method.
+    // Uses $ptype:tt (single token tree) to match both `impl_into` and
+    // simple concrete types like `String` or `AgentCreateRequest`.
+    // For complex types (e.g. `Vec<String>`), use `impl_handle_methods!` directly.
+    (
+        $Handle:ident for $Msg:ident, $ACTOR:expr;
+        $(
+            fn $method:ident(&self $(, $param:ident : $ptype:tt)*) -> $ret:ty
+                => $Variant:ident { $($fname:ident : $fval:expr),* $(,)? }
+        );* $(;)?
+    ) => {
+        impl $Handle {
+            $(
+                pub async fn $method(
+                    &self
+                    $(, $param: $crate::impl_handle_methods_into!(@sig_type $ptype))*
+                ) -> $crate::error::SubsystemResult<$ret> {
+                    $crate::impl_handle_methods_into!(@into_bindings $($param : $ptype,)*);
+                    $crate::macros::_request(&self.tx, |reply| {
+                        $Msg::$Variant { $($fname: $fval,)* reply }
+                    }, $ACTOR).await
+                }
+            )*
+        }
+    };
+
+    // Helper: transform impl_into → impl Into<String> for the function signature
+    (@sig_type impl_into) => { impl Into<String> };
+    (@sig_type $other:tt) => { $other };
+
+    // TT muncher: generate .into() bindings for impl_into params.
+    // Arm 1: impl_into param → emit `let p = p.into();` and recurse.
+    (@into_bindings $param:ident : impl_into, $($rest:tt)*) => {
+        let $param = $param.into();
+        $crate::impl_handle_methods_into!(@into_bindings $($rest)*);
+    };
+    // Arm 2: concrete-typed param → skip, recurse.
+    (@into_bindings $param:ident : $ptype:tt, $($rest:tt)*) => {
+        $crate::impl_handle_methods_into!(@into_bindings $($rest)*);
+    };
+    // Arm 3: base case — no more params.
+    (@into_bindings) => {};
 }
 
 // ============================================================================
@@ -546,6 +687,154 @@ mod tests {
             match result.unwrap_err() {
                 crate::error::SubsystemError::ActorDead { actor } => {
                     assert_eq!(actor, COMBINED_ACTOR);
+                }
+                other => panic!("expected ActorDead, got {other:?}"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: impl_handle_methods_into!
+    // -----------------------------------------------------------------------
+
+    mod into_methods {
+        use super::*;
+
+        const INTO_ACTOR: &str = "into_test";
+
+        #[derive(Clone)]
+        struct IntoHandle {
+            tx: mpsc::Sender<IntoMsg>,
+        }
+
+        struct IntoActor {
+            rx: mpsc::Receiver<IntoMsg>,
+        }
+
+        enum IntoMsg {
+            Echo {
+                text: String,
+                reply: oneshot::Sender<SubsystemResult<String>>,
+            },
+            Concat {
+                a: String,
+                b: String,
+                reply: oneshot::Sender<SubsystemResult<String>>,
+            },
+            Length {
+                text: String,
+                reply: oneshot::Sender<SubsystemResult<usize>>,
+            },
+        }
+
+        impl IntoActor {
+            fn load(rx: mpsc::Receiver<IntoMsg>) -> Self {
+                Self { rx }
+            }
+
+            async fn echo(&self, text: String) -> SubsystemResult<String> {
+                Ok(text)
+            }
+
+            async fn concat(&self, a: String, b: String) -> SubsystemResult<String> {
+                Ok(format!("{a}{b}"))
+            }
+
+            async fn length(&self, text: String) -> SubsystemResult<usize> {
+                Ok(text.len())
+            }
+
+            pub async fn run(mut self) {
+                while let Some(msg) = self.rx.recv().await {
+                    actor_dispatch!(msg;
+                        IntoMsg::Echo { text ; reply } => self.echo(text).await,
+                        IntoMsg::Concat { a, b ; reply } => self.concat(a, b).await,
+                        IntoMsg::Length { text ; reply } => self.length(text).await,
+                    );
+                }
+            }
+        }
+
+        impl_handle_methods_into! {
+            IntoHandle for IntoMsg, INTO_ACTOR;
+
+            // Single impl_into param
+            fn echo(&self, text: impl_into) -> String
+                => Echo { text: text };
+
+            // Multiple impl_into params
+            fn concat(&self, a: impl_into, b: impl_into) -> String
+                => Concat { a: a, b: b };
+
+            // Concrete type only (no impl_into) — mixed param style
+            fn length(&self, text: String) -> usize
+                => Length { text: text };
+        }
+
+        #[tokio::test]
+        async fn into_single_param_accepts_string() {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(IntoActor::load(rx).run());
+            let handle = IntoHandle { tx };
+
+            // Should accept owned String via impl Into<String>
+            assert_eq!(handle.echo("hello".to_string()).await.unwrap(), "hello");
+        }
+
+        #[tokio::test]
+        async fn into_single_param_accepts_str() {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(IntoActor::load(rx).run());
+            let handle = IntoHandle { tx };
+
+            // Should accept &str via impl Into<String>
+            assert_eq!(handle.echo("world").await.unwrap(), "world");
+        }
+
+        #[tokio::test]
+        async fn into_multiple_params() {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(IntoActor::load(rx).run());
+            let handle = IntoHandle { tx };
+
+            // Both params accept &str via impl Into<String>
+            assert_eq!(handle.concat("foo", "bar").await.unwrap(), "foobar");
+        }
+
+        #[tokio::test]
+        async fn into_multiple_params_mixed_str_and_string() {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(IntoActor::load(rx).run());
+            let handle = IntoHandle { tx };
+
+            // Mix &str and String — both should work
+            assert_eq!(
+                handle.concat("hello ", "world!".to_string()).await.unwrap(),
+                "hello world!"
+            );
+        }
+
+        #[tokio::test]
+        async fn into_concrete_type_no_into() {
+            let (tx, rx) = mpsc::channel(8);
+            tokio::spawn(IntoActor::load(rx).run());
+            let handle = IntoHandle { tx };
+
+            // Concrete type (String) — no .into() wrapping, passed through directly
+            assert_eq!(handle.length("hello".to_string()).await.unwrap(), 5);
+        }
+
+        #[tokio::test]
+        async fn into_actor_dead_error() {
+            let (tx, rx) = mpsc::channel(8);
+            drop(rx); // actor never started
+            let handle = IntoHandle { tx };
+
+            let result = handle.echo("dead").await;
+            assert!(result.is_err());
+            match result.unwrap_err() {
+                crate::error::SubsystemError::ActorDead { actor } => {
+                    assert_eq!(actor, INTO_ACTOR);
                 }
                 other => panic!("expected ActorDead, got {other:?}"),
             }

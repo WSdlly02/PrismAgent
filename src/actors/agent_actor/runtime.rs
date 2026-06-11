@@ -16,6 +16,7 @@ use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::impl_handle_methods;
+use crate::impl_handle_methods_into;
 use genai::chat::ToolCall;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -813,108 +814,33 @@ impl_handle_methods! {
         => ApproveRequest { request: request };
 }
 
-// ---- Manual handle methods (impl Into<String> for API compatibility) ----
+// ---- impl_handle_methods_into!: methods with impl Into<String> params ----
+
+impl_handle_methods_into! {
+    AgentHandle for AgentMsg, AGENT_ACTOR;
+
+    fn list(&self, workspace_uuid: impl_into) -> Vec<AgentSummary>
+        => List { workspace_uuid: workspace_uuid };
+
+    fn delete(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> ()
+        => Delete { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
+
+    fn contains(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> bool
+        => Contains { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
+
+    fn snapshot(&self, agent_uuid: impl_into) -> AgentSnapshot
+        => Snapshot { agent_uuid: agent_uuid };
+
+    fn cancel(&self, agent_uuid: impl_into) -> ()
+        => Cancel { agent_uuid: agent_uuid };
+
+    fn set_auto_loop(&self, agent_uuid: impl_into, enabled: bool) -> Agent
+        => SetAutoLoop { agent_uuid: agent_uuid, enabled: enabled };
+}
+
+// ---- Manual handle methods (fire-and-forget: no reply channel) ----
 
 impl AgentHandle {
-    pub async fn list(
-        &self,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<Vec<AgentSummary>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| AgentMsg::List {
-                workspace_uuid: w,
-                reply,
-            },
-            AGENT_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn delete(
-        &self,
-        workspace_uuid: impl Into<String>,
-        agent_uuid: impl Into<String>,
-    ) -> SubsystemResult<()> {
-        let w = workspace_uuid.into();
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| AgentMsg::Delete {
-                workspace_uuid: w,
-                agent_uuid: a,
-                reply,
-            },
-            AGENT_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn contains(
-        &self,
-        workspace_uuid: impl Into<String>,
-        agent_uuid: impl Into<String>,
-    ) -> SubsystemResult<bool> {
-        let w = workspace_uuid.into();
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| AgentMsg::Contains {
-                workspace_uuid: w,
-                agent_uuid: a,
-                reply,
-            },
-            AGENT_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn snapshot(&self, agent_uuid: impl Into<String>) -> SubsystemResult<AgentSnapshot> {
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| AgentMsg::Snapshot {
-                agent_uuid: a,
-                reply,
-            },
-            AGENT_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn cancel(&self, agent_uuid: impl Into<String>) -> SubsystemResult<()> {
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| AgentMsg::Cancel {
-                agent_uuid: a,
-                reply,
-            },
-            AGENT_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn set_auto_loop(
-        &self,
-        agent_uuid: impl Into<String>,
-        enabled: bool,
-    ) -> SubsystemResult<Agent> {
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| AgentMsg::SetAutoLoop {
-                agent_uuid: a,
-                enabled,
-                reply,
-            },
-            AGENT_ACTOR,
-        )
-        .await
-    }
-
-    // Fire-and-forget: uses send() directly (not request/reply pattern)
     pub async fn inference_complete(
         &self,
         agent_uuid: impl Into<String>,
