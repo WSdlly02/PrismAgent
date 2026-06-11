@@ -121,13 +121,12 @@ available_tools = [
    "prismagent_skill_dir_get",
    "prismagent_profile_list",
    "prismagent_self_show",
-   "prismagent_self_update",
+   "prismagent_agent_list",
    "prismagent_agent_create",
    "prismagent_agent_message_send",
    "prismagent_agent_terminate",
    "prismagent_agent_update",
    "prismagent_trigger_create",
-   "prismagent_agent_list",
 ]
 auto_approve = [
    "fs_tree_list",
@@ -139,11 +138,10 @@ auto_approve = [
    "prismagent_skill_dir_get",
    "prismagent_profile_list",
    "prismagent_self_show",
-   "prismagent_self_update",
+   "prismagent_agent_list",
    "prismagent_agent_create",
    "prismagent_agent_message_send",
    "prismagent_agent_terminate",
    "prismagent_agent_update",
    "prismagent_trigger_create",
-   "prismagent_agent_list",
 ]

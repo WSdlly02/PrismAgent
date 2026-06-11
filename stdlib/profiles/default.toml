@@ -66,7 +66,6 @@ available_tools = [
   "prismagent_skill_dir_get",
   "prismagent_profile_list",
   "prismagent_self_show",
-  "prismagent_self_update",
 ]
 auto_approve = [
   "fs_tree_list",
@@ -79,5 +78,4 @@ auto_approve = [
   "prismagent_skill_dir_get",
   "prismagent_profile_list",
   "prismagent_self_show",
-  "prismagent_self_update",
 ]
