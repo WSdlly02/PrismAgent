@@ -50,5 +50,7 @@ export function applyAgentEvent(
       return { ...state, status: event.status };
     case "error":
       return { ...state, errors: [...state.errors, event.message] };
+    default:
+      return state; // ignore unknown/unhandled event types
   }
 }

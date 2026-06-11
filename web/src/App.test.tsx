@@ -9,11 +9,10 @@ vi.mock("./state/usePrismSession", () => ({
 
 function session(loadFn: () => Promise<void>): PrismSession {
   return {
-    clientId: "client-1",
+    clientId: "test-client",
     workspaces: [],
     profiles: [],
     expandedWorkspaceUuids: [],
-    workspaceSessions: {},
     workspaceAgents: {},
     selectedAgent: null,
     selectedWorkspace: null,

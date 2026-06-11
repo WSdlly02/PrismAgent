@@ -1,6 +1,6 @@
 use crate::actors::agent_actor::model::AgentHandle;
 use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRequest};
-use crate::actors::shell_actor::model::WorkspaceEvent;
+use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::workflow::Workflow;
@@ -116,7 +116,7 @@ impl WorkflowActor {
             .await?;
         self.emit_workspace_event(
             &runtime.workspace_uuid,
-            WorkspaceEvent::WorkflowStarted {
+            WsEvent::WorkflowStarted {
                 workflow_uuid: runtime.workflow_uuid.clone(),
                 coordinator_agent_uuid: runtime.coordinator_agent_uuid.clone(),
             },
@@ -152,7 +152,7 @@ impl WorkflowActor {
             .await?;
         self.emit_workspace_event(
             &runtime.workspace_uuid,
-            WorkspaceEvent::WorkflowCancelRequested {
+            WsEvent::WorkflowCancelRequested {
                 workflow_uuid: runtime.workflow_uuid.clone(),
                 coordinator_agent_uuid: runtime.coordinator_agent_uuid.clone(),
             },
@@ -172,7 +172,7 @@ impl WorkflowActor {
         let workflow = self.handles.storage.create_workflow(request).await?;
         self.emit_workspace_event(
             &workspace_uuid,
-            WorkspaceEvent::WorkflowCreated {
+            WsEvent::WorkflowCreated {
                 workflow_uuid: workflow.uuid.clone(),
                 title: workflow.title.clone(),
             },
@@ -188,7 +188,7 @@ impl WorkflowActor {
         let context = self.handles.storage.create_context(request).await?;
         self.emit_workspace_event(
             &workspace_uuid,
-            WorkspaceEvent::ContextCreated {
+            WsEvent::ContextCreated {
                 context_uuid: context.uuid.clone(),
                 title: context.title.clone(),
             },
@@ -377,7 +377,7 @@ impl WorkflowActor {
         });
     }
 
-    fn emit_workspace_event(&self, workspace_uuid: &str, event: WorkspaceEvent) {
+    fn emit_workspace_event(&self, workspace_uuid: &str, event: WsEvent) {
         let _ = self
             .handles
             .shell

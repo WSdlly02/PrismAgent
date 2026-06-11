@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addWorkspace as addWorkspaceApi,
+  acquireLease,
   agentSnapshot,
   approveRequest,
   cancelAgent,
@@ -9,49 +10,26 @@ import {
   listAgents,
   listProfiles,
   listWorkspaces,
+  releaseLease,
   sendMessage,
 } from "../api/client";
-import {
-  agentEventStreamUrl,
-  normalizeAgentEvent,
-  normalizeWorkspaceEvent,
-  workspaceEventStreamUrl,
-} from "../api/events";
+import { createWebSocket, parseWsMessage, wsSend } from "../api/events";
 import type {
-  AgentAccess,
   AgentCreateInput,
+  AgentEvent,
   AgentSummary,
   PendingApproval,
   Unit,
-  WorkspaceAccess,
-  WorkspaceSession,
+  WsClientMessage,
+  WsServerMessage,
+  WorkspaceLease,
   WorkspaceSummary,
 } from "../api/types";
 import { applyAgentEvent, initialChatState } from "./sessionModel";
 
-const AGENT_EVENT_NAMES = [
-  "connected",
-  "unit_append",
-  "stream_delta",
-  "approve_request",
-  "status_changed",
-  "error",
-];
-
-const WORKSPACE_EVENT_NAMES = [
-  "connected",
-  "agent_created",
-  "agent_updated",
-  "agent_status_changed",
-  "agent_deleted",
-  "context_created",
-  "workflow_created",
-  "workflow_started",
-  "workflow_cancel_requested",
-  "error",
-];
-
 const PENDING_UUID_PREFIX = "__pending-";
+const LEASE_RENEW_INTERVAL_SECONDS = 5;
+const LEASE_RENEW_SKEW_SECONDS = 10;
 
 function createClientId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -72,11 +50,10 @@ export type PrismSession = {
   workspaces: WorkspaceSummary[];
   profiles: string[];
   expandedWorkspaceUuids: string[];
-  workspaceSessions: Record<string, WorkspaceSession>;
   workspaceAgents: Record<string, AgentSummary[]>;
   selectedAgent: AgentSummary | null;
   selectedWorkspace: WorkspaceSummary | null;
-  session: WorkspaceSession | null;
+  session: { workspace_uuid: string } | null;
   units: Unit[];
   streamingText: string;
   pendingApproval: PendingApproval | null;
@@ -99,205 +76,316 @@ export function usePrismSession(): PrismSession {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [profiles, setProfiles] = useState<string[]>([]);
   const [expandedWorkspaceUuids, setExpandedWorkspaceUuids] = useState<string[]>([]);
-  const [workspaceSessions, setWorkspaceSessions] = useState<Record<string, WorkspaceSession>>({});
   const [workspaceAgents, setWorkspaceAgents] = useState<Record<string, AgentSummary[]>>({});
+  const [workspaceLeases, setWorkspaceLeases] = useState<Record<string, WorkspaceLease & { expires_at: number }>>({});
   const [selectedAgent, setSelectedAgent] = useState<AgentSummary | null>(null);
   const [chat, setChat] = useState(initialChatState);
   const [connectionStatus, setConnectionStatus] =
     useState<PrismSession["connectionStatus"]>("idle");
   const [error, setError] = useState<string | null>(null);
-  const agentStreamRef = useRef<EventSource | null>(null);
-  const workspaceStreamsRef = useRef<Record<string, EventSource>>({});
+
+  // --- Refs ---
+  const wsRef = useRef<WebSocket | null>(null);
+  const wsReadyRef = useRef(false);
+  const pendingMessagesRef = useRef<WsClientMessage[]>([]);
   const ignoreStreamUntilNextStatusRef = useRef(false);
   const selectedAgentUuidRef = useRef<string | null>(null);
+  const subscribedWorkspaceUuidRef = useRef<string | null>(null);
+  const subscribedAgentUuidRef = useRef<string | null>(null);
+  const workspaceLeasesRef = useRef(workspaceLeases);
+
+  // Message handler ref — updated every render to capture current state
+  const handleWsMessageRef = useRef<(msg: WsServerMessage) => void>(() => {});
 
   useEffect(() => {
     selectedAgentUuidRef.current = selectedAgent?.agent_uuid ?? null;
   }, [selectedAgent?.agent_uuid]);
 
-  const activeSession = useMemo<WorkspaceSession | null>(() => {
+  useEffect(() => {
+    workspaceLeasesRef.current = workspaceLeases;
+  }, [workspaceLeases]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      for (const lease of Object.values(workspaceLeasesRef.current)) {
+        void acquireLease(lease.workspace_uuid, clientId, lease.lease_token)
+          .then((renewed) => {
+            setWorkspaceLeases((prev) => ({
+              ...prev,
+              [renewed.workspace_uuid]: {
+                workspace_uuid: renewed.workspace_uuid,
+                lease_token: renewed.lease_token,
+                expires_at: renewed.expires_at,
+              },
+            }));
+          })
+          .catch(() => {
+            setWorkspaceLeases((prev) => {
+              const next = { ...prev };
+              delete next[lease.workspace_uuid];
+              return next;
+            });
+          });
+      }
+    }, LEASE_RENEW_INTERVAL_SECONDS * 1000);
+    return () => window.clearInterval(interval);
+  }, [clientId]);
+
+  // --- Derived state ---
+
+  const activeSession = useMemo(() => {
     if (!selectedAgent) {
       return null;
     }
     const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
       agents.some((agent) => agent.agent_uuid === selectedAgent.agent_uuid),
     )?.[0];
-    if (!wsUuid) {
-      return null;
-    }
-    return workspaceSessions[wsUuid] ?? null;
-  }, [selectedAgent, workspaceAgents, workspaceSessions]);
+    return wsUuid ? { workspace_uuid: wsUuid } : null;
+  }, [selectedAgent, workspaceAgents]);
 
   const selectedWorkspace = useMemo(
-    () => workspaces.find((ws) => ws.workspace_uuid === activeSession?.workspace_uuid) ?? null,
+    () =>
+      workspaces.find((ws) => ws.workspace_uuid === activeSession?.workspace_uuid) ?? null,
     [workspaces, activeSession?.workspace_uuid],
   );
 
-  const closeAgentStream = useCallback(() => {
-    agentStreamRef.current?.close();
-    agentStreamRef.current = null;
-  }, []);
+  // --- WebSocket connection management ---
 
-  const closeWorkspaceStream = useCallback((workspaceUuid: string) => {
-    workspaceStreamsRef.current[workspaceUuid]?.close();
-    delete workspaceStreamsRef.current[workspaceUuid];
-    setWorkspaceSessions((prev) => {
-      const next = { ...prev };
-      delete next[workspaceUuid];
-      return next;
-    });
-  }, []);
+  // Stable sendOrQueue (ensureWs is declared first so closure captures it)
+  const ensureWs = useCallback(() => {
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.OPEN ||
+        wsRef.current.readyState === WebSocket.CONNECTING)
+    ) {
+      return wsRef.current;
+    }
 
-  const openWorkspaceStream = useCallback(
-    async (workspaceUuid: string): Promise<WorkspaceAccess> => {
-      const access: WorkspaceAccess = { workspace_uuid: workspaceUuid, client_id: clientId };
-      if (workspaceStreamsRef.current[workspaceUuid]) {
-        return access;
+    const ws = createWebSocket();
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      wsReadyRef.current = true;
+      // Flush queued messages
+      for (const msg of pendingMessagesRef.current) {
+        wsSend(ws, msg);
       }
+      pendingMessagesRef.current = [];
+      // Re-subscribe on reconnect
+      if (subscribedWorkspaceUuidRef.current) {
+        wsSend(ws, {
+          type: "subscribe_workspace",
+          workspace_uuid: subscribedWorkspaceUuidRef.current,
+        });
+      }
+      if (subscribedAgentUuidRef.current) {
+        wsSend(ws, {
+          type: "subscribe_agent",
+          agent_uuid: subscribedAgentUuidRef.current,
+        });
+      }
+    };
 
-      await new Promise<void>((resolve, reject) => {
-        let connected = false;
-        const stream = new EventSource(workspaceEventStreamUrl(access));
-        workspaceStreamsRef.current[workspaceUuid] = stream;
+    ws.onmessage = (event) => {
+      handleWsMessageRef.current(parseWsMessage(event.data as string));
+    };
 
-        const consume = (eventName: string) => (event: MessageEvent) => {
-          const normalized = normalizeWorkspaceEvent({ eventName, data: event.data });
-          if (normalized.type === "connected") {
-            connected = true;
-            setWorkspaceSessions((prev) => ({
-              ...prev,
-              [workspaceUuid]: {
-                workspace_uuid: workspaceUuid,
-                client_id: clientId,
-                connected: true,
-              },
-            }));
-            setWorkspaces((prev) =>
-              prev.map((workspace) =>
-                workspace.workspace_uuid === workspaceUuid
-                  ? { ...workspace, locked_by: clientId }
-                  : workspace,
-              ),
-            );
-            resolve();
-            return;
-          }
-          if (normalized.type === "agent_created" || normalized.type === "agent_updated") {
-            setWorkspaceAgents((prev) => ({
-              ...prev,
-              [workspaceUuid]: upsertAgent(prev[workspaceUuid] ?? [], normalized.agent),
-            }));
-            setSelectedAgent((current) =>
-              current?.agent_uuid === normalized.agent.agent_uuid ? normalized.agent : current,
-            );
-            return;
-          }
-          if (normalized.type === "agent_status_changed") {
-            setWorkspaceAgents((prev) => ({
-              ...prev,
-              [workspaceUuid]: (prev[workspaceUuid] ?? []).map((agent) =>
-                agent.agent_uuid === normalized.agent_uuid
-                  ? { ...agent, status: normalized.status }
-                  : agent,
-              ),
-            }));
-            setSelectedAgent((current) =>
-              current?.agent_uuid === normalized.agent_uuid
-                ? { ...current, status: normalized.status }
-                : current,
-            );
-            return;
-          }
-          if (normalized.type === "agent_deleted") {
-            setWorkspaceAgents((prev) => ({
-              ...prev,
-              [workspaceUuid]: (prev[workspaceUuid] ?? []).filter(
-                (agent) => agent.agent_uuid !== normalized.agent_uuid,
-              ),
-            }));
-            setSelectedAgent((current) =>
-              current?.agent_uuid === normalized.agent_uuid ? null : current,
-            );
-            if (selectedAgentUuidRef.current === normalized.agent_uuid) {
-              closeAgentStream();
-              setChat(initialChatState());
-              setConnectionStatus("idle");
-            }
-            return;
-          }
-          if (normalized.type === "error") {
-            setError(normalized.message);
-          }
-          // TODO: handle context_created / workflow_created / workflow_started / workflow_cancel_requested
-          // when frontend has UI for resources and workflows
-        };
+    ws.onclose = () => {
+      wsReadyRef.current = false;
+      wsRef.current = null;
+      // Auto-reconnect after 1 second
+      setTimeout(() => ensureWs(), 1000);
+    };
 
-        for (const eventName of WORKSPACE_EVENT_NAMES) {
-          stream.addEventListener(eventName, consume(eventName));
-        }
-        stream.onerror = () => {
-          if (!connected) {
-            stream.close();
-            delete workspaceStreamsRef.current[workspaceUuid];
-            reject(new Error("Workspace is already in use or unavailable"));
-            return;
-          }
-          setWorkspaceSessions((prev) => {
-            const next = { ...prev };
-            delete next[workspaceUuid];
-            return next;
-          });
-          setError("Workspace event stream disconnected");
-        };
-      });
+    return ws;
+  }, []);
 
-      return access;
+  const sendOrQueue = useCallback(
+    (msg: WsClientMessage) => {
+      const ws = wsRef.current;
+      if (ws?.readyState === WebSocket.OPEN) {
+        wsSend(ws, msg);
+      } else {
+        pendingMessagesRef.current.push(msg);
+        ensureWs();
+      }
     },
-    [clientId, closeAgentStream],
+    [ensureWs],
   );
 
-  const openAgentStream = useCallback(
-    async (agent: AgentSummary, access: WorkspaceAccess) => {
-      closeAgentStream();
-      setSelectedAgent(agent);
-      setConnectionStatus("connecting");
-      setError(null);
-      ignoreStreamUntilNextStatusRef.current = false;
-      const agentAccess = { ...access, agent_uuid: agent.agent_uuid };
-      const snapshot = await agentSnapshot(agentAccess);
-      setChat({
-        ...initialChatState(),
-        units: snapshot.units,
-        status: snapshot.status,
-        pendingApproval: snapshot.pending_approval,
-      });
-
-      const stream = new EventSource(agentEventStreamUrl(agentAccess));
-      agentStreamRef.current = stream;
-      const consume = (eventName: string) => (event: MessageEvent) => {
-        const normalized = normalizeAgentEvent({ eventName, data: event.data });
-        if (normalized.type === "connected") {
-          setConnectionStatus("connected");
-          return;
-        }
-        if (normalized.type === "stream_delta" && ignoreStreamUntilNextStatusRef.current) {
-          return;
-        }
-        if (normalized.type === "status_changed") {
-          ignoreStreamUntilNextStatusRef.current = false;
-        }
-        setChat((current) => applyAgentEvent(current, normalized));
-      };
-
-      for (const eventName of AGENT_EVENT_NAMES) {
-        stream.addEventListener(eventName, consume(eventName));
+  const ensureWorkspaceLease = useCallback(
+    async (workspaceUuid: string): Promise<WorkspaceLease> => {
+      const existing = workspaceLeases[workspaceUuid];
+      const now = Math.floor(Date.now() / 1000);
+      if (existing && existing.expires_at - now > LEASE_RENEW_SKEW_SECONDS) {
+        return {
+          workspace_uuid: existing.workspace_uuid,
+          lease_token: existing.lease_token,
+        };
       }
-      stream.onerror = () => {
-        setConnectionStatus("error");
-        setError("Event stream disconnected");
+
+      const lease = await acquireLease(
+        workspaceUuid,
+        clientId,
+        existing?.lease_token ?? null,
+      );
+      const access = {
+        workspace_uuid: lease.workspace_uuid,
+        lease_token: lease.lease_token,
+        expires_at: lease.expires_at,
+      };
+      setWorkspaceLeases((prev) => ({
+        ...prev,
+        [workspaceUuid]: access,
+      }));
+      setWorkspaces((prev) =>
+        prev.map((workspace) =>
+          workspace.workspace_uuid === workspaceUuid
+            ? { ...workspace, locked_by: lease.client_id }
+            : workspace,
+        ),
+      );
+      return {
+        workspace_uuid: access.workspace_uuid,
+        lease_token: access.lease_token,
       };
     },
-    [closeAgentStream],
+    [clientId, workspaceLeases],
+  );
+
+  // Update message handler on each render
+  handleWsMessageRef.current = (msg: WsServerMessage) => {
+    // --- Ping / Connected / Error ---
+    if (msg.type === "ping") {
+      sendOrQueue({ type: "pong" });
+      return;
+    }
+    if (msg.type === "connected") {
+      setConnectionStatus("connected");
+      return;
+    }
+    if (msg.type === "error") {
+      setError(msg.message);
+      return;
+    }
+
+    // --- Workspace events ---
+    const wsUuid = subscribedWorkspaceUuidRef.current;
+
+    if (msg.type === "agent_created" || msg.type === "agent_updated") {
+      if (wsUuid) {
+        setWorkspaceAgents((prev) => ({
+          ...prev,
+          [wsUuid]: upsertAgent(prev[wsUuid] ?? [], msg.agent),
+        }));
+        setSelectedAgent((current) =>
+          current?.agent_uuid === msg.agent.agent_uuid ? msg.agent : current,
+        );
+      }
+      return;
+    }
+
+    if (msg.type === "agent_status_changed") {
+      if (wsUuid) {
+        setWorkspaceAgents((prev) => ({
+          ...prev,
+          [wsUuid]: (prev[wsUuid] ?? []).map((agent) =>
+            agent.agent_uuid === msg.agent_uuid
+              ? { ...agent, status: msg.status }
+              : agent,
+          ),
+        }));
+        setSelectedAgent((current) =>
+          current?.agent_uuid === msg.agent_uuid
+            ? { ...current, status: msg.status }
+            : current,
+        );
+      }
+      return;
+    }
+
+    if (msg.type === "agent_deleted") {
+      if (wsUuid) {
+        setWorkspaceAgents((prev) => ({
+          ...prev,
+          [wsUuid]: (prev[wsUuid] ?? []).filter(
+            (agent) => agent.agent_uuid !== msg.agent_uuid,
+          ),
+        }));
+        setSelectedAgent((current) =>
+          current?.agent_uuid === msg.agent_uuid ? null : current,
+        );
+        if (selectedAgentUuidRef.current === msg.agent_uuid) {
+          subscribedAgentUuidRef.current = null;
+          setChat(initialChatState());
+          setConnectionStatus("idle");
+        }
+      }
+      return;
+    }
+
+    // Workspace resource events — not yet handled in UI, safely ignore
+    if (
+      msg.type === "context_created" ||
+      msg.type === "workflow_created" ||
+      msg.type === "workflow_started" ||
+      msg.type === "workflow_cancel_requested"
+    ) {
+      return;
+    }
+
+    // --- Agent events ---
+    if (msg.type === "stream_delta" && ignoreStreamUntilNextStatusRef.current) {
+      return;
+    }
+    if (msg.type === "status_changed") {
+      ignoreStreamUntilNextStatusRef.current = false;
+    }
+    setChat((current) => applyAgentEvent(current, msg as AgentEvent));
+  };
+
+  // --- Actions ---
+
+  const expandWorkspace = useCallback(
+    async (workspace: WorkspaceSummary) => {
+      if (expandedWorkspaceUuids.includes(workspace.workspace_uuid)) {
+        // Collapse: unsubscribe agent if it belongs to this workspace
+        if (
+          selectedAgent &&
+          workspaceAgents[workspace.workspace_uuid]?.some(
+            (agent) => agent.agent_uuid === selectedAgent.agent_uuid,
+          )
+        ) {
+          sendOrQueue({ type: "unsubscribe_agent" });
+          subscribedAgentUuidRef.current = null;
+          setSelectedAgent(null);
+          setChat(initialChatState());
+          setConnectionStatus("idle");
+        }
+        // Unsubscribe workspace
+        sendOrQueue({ type: "unsubscribe_workspace" });
+        subscribedWorkspaceUuidRef.current = null;
+        setExpandedWorkspaceUuids((prev) =>
+          prev.filter((id) => id !== workspace.workspace_uuid),
+        );
+        setWorkspaceAgents((prev) => {
+          const next = { ...prev };
+          delete next[workspace.workspace_uuid];
+          return next;
+        });
+        return;
+      }
+
+      // Expand: subscribe workspace and fetch agents
+      sendOrQueue({ type: "subscribe_workspace", workspace_uuid: workspace.workspace_uuid });
+      subscribedWorkspaceUuidRef.current = workspace.workspace_uuid;
+      setExpandedWorkspaceUuids((prev) => [...prev, workspace.workspace_uuid]);
+      setError(null);
+
+      const agents = await listAgents(workspace.workspace_uuid);
+      setWorkspaceAgents((prev) => ({ ...prev, [workspace.workspace_uuid]: agents }));
+    },
+    [expandedWorkspaceUuids, selectedAgent, sendOrQueue, workspaceAgents],
   );
 
   const selectAgent = useCallback(
@@ -308,57 +396,47 @@ export function usePrismSession(): PrismSession {
       if (!wsUuid) {
         return;
       }
-      const access = await openWorkspaceStream(wsUuid);
-      await openAgentStream(agent, access);
-    },
-    [openAgentStream, openWorkspaceStream, workspaceAgents],
-  );
 
-  const expandWorkspace = useCallback(
-    async (workspace: WorkspaceSummary) => {
-      if (expandedWorkspaceUuids.includes(workspace.workspace_uuid)) {
-        setExpandedWorkspaceUuids((prev) =>
-          prev.filter((id) => id !== workspace.workspace_uuid),
-        );
-        setWorkspaceAgents((prev) => {
-          const next = { ...prev };
-          delete next[workspace.workspace_uuid];
-          return next;
-        });
-        if (
-          selectedAgent &&
-          workspaceAgents[workspace.workspace_uuid]?.some(
-            (agent) => agent.agent_uuid === selectedAgent.agent_uuid,
-          )
-        ) {
-          closeAgentStream();
-          setSelectedAgent(null);
-          setChat(initialChatState());
+      // If the workspace changed, switch subscriptions
+      if (subscribedWorkspaceUuidRef.current && subscribedWorkspaceUuidRef.current !== wsUuid) {
+        sendOrQueue({ type: "unsubscribe_workspace" });
+        if (subscribedAgentUuidRef.current) {
+          sendOrQueue({ type: "unsubscribe_agent" });
+          subscribedAgentUuidRef.current = null;
         }
-        closeWorkspaceStream(workspace.workspace_uuid);
-        return;
+      }
+      if (subscribedWorkspaceUuidRef.current !== wsUuid) {
+        sendOrQueue({ type: "subscribe_workspace", workspace_uuid: wsUuid });
+        subscribedWorkspaceUuidRef.current = wsUuid;
       }
 
-      const access = await openWorkspaceStream(workspace.workspace_uuid);
-      setExpandedWorkspaceUuids((prev) => [...prev, workspace.workspace_uuid]);
+      // Subscribe to agent (server auto-unsubscribes previous)
+      sendOrQueue({ type: "subscribe_agent", agent_uuid: agent.agent_uuid });
+      subscribedAgentUuidRef.current = agent.agent_uuid;
+      selectedAgentUuidRef.current = agent.agent_uuid;
+      setSelectedAgent(agent);
+      setConnectionStatus("connecting");
       setError(null);
+      ignoreStreamUntilNextStatusRef.current = false;
 
-      const agents = await listAgents(access);
-      setWorkspaceAgents((prev) => ({ ...prev, [workspace.workspace_uuid]: agents }));
+      // Fetch snapshot via REST
+      const snapshot = await agentSnapshot(wsUuid, agent.agent_uuid);
+      setChat({
+        ...initialChatState(),
+        units: snapshot.units,
+        status: snapshot.status,
+        pendingApproval: snapshot.pending_approval,
+      });
     },
-    [
-      closeAgentStream,
-      closeWorkspaceStream,
-      expandedWorkspaceUuids,
-      openWorkspaceStream,
-      selectedAgent,
-      workspaceAgents,
-    ],
+    [sendOrQueue, workspaceAgents],
   );
 
   const loadInitialData = useCallback(async () => {
     setError(null);
-    const [workspaceList, profileList] = await Promise.all([listWorkspaces(), listProfiles()]);
+    const [workspaceList, profileList] = await Promise.all([
+      listWorkspaces(),
+      listProfiles(),
+    ]);
     setWorkspaces(workspaceList);
     setProfiles(profileList);
   }, []);
@@ -375,10 +453,10 @@ export function usePrismSession(): PrismSession {
 
   const createAgent = useCallback(
     async (wsUuid: string, input: AgentCreateInput) => {
-      const access = await openWorkspaceStream(wsUuid);
+      const access = await ensureWorkspaceLease(wsUuid);
       await createAgentApi(access, input);
     },
-    [openWorkspaceStream],
+    [ensureWorkspaceLease],
   );
 
   const deleteAgent = useCallback(
@@ -389,10 +467,10 @@ export function usePrismSession(): PrismSession {
       if (!wsUuid) {
         return;
       }
-      const access = await openWorkspaceStream(wsUuid);
-      await deleteAgentApi({ ...access, agent_uuid: agent.agent_uuid });
+      const access = await ensureWorkspaceLease(wsUuid);
+      await deleteAgentApi(access, agent.agent_uuid);
     },
-    [openWorkspaceStream, workspaceAgents],
+    [ensureWorkspaceLease, workspaceAgents],
   );
 
   const send = useCallback(
@@ -419,12 +497,10 @@ export function usePrismSession(): PrismSession {
       }));
 
       try {
+        const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
         await sendMessage(
-          {
-            workspace_uuid: activeSession.workspace_uuid,
-            client_id: clientId,
-            agent_uuid: selectedAgent.agent_uuid,
-          },
+          access,
+          selectedAgent.agent_uuid,
           text,
         );
       } catch (err) {
@@ -437,7 +513,7 @@ export function usePrismSession(): PrismSession {
         throw err;
       }
     },
-    [activeSession, clientId, selectedAgent],
+    [activeSession, ensureWorkspaceLease, selectedAgent],
   );
 
   const approve = useCallback(
@@ -445,15 +521,16 @@ export function usePrismSession(): PrismSession {
       if (!selectedAgent || !chat.pendingApproval || !activeSession) {
         return;
       }
-      const access: AgentAccess = {
-        workspace_uuid: activeSession.workspace_uuid,
-        client_id: clientId,
-        agent_uuid: selectedAgent.agent_uuid,
-      };
-      await approveRequest(access, chat.pendingApproval.request_uuid, approvalMask);
+      const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+      await approveRequest(
+        access,
+        selectedAgent.agent_uuid,
+        chat.pendingApproval.request_uuid,
+        approvalMask,
+      );
       setChat((current) => ({ ...current, pendingApproval: null, streamingText: "" }));
     },
-    [activeSession, chat.pendingApproval, clientId, selectedAgent],
+    [activeSession, chat.pendingApproval, ensureWorkspaceLease, selectedAgent],
   );
 
   const cancel = useCallback(async () => {
@@ -465,11 +542,6 @@ export function usePrismSession(): PrismSession {
       await approve(0);
       return;
     }
-    const access: AgentAccess = {
-      workspace_uuid: activeSession.workspace_uuid,
-      client_id: clientId,
-      agent_uuid: selectedAgent.agent_uuid,
-    };
 
     if (status === "running_llm") {
       ignoreStreamUntilNextStatusRef.current = true;
@@ -482,7 +554,8 @@ export function usePrismSession(): PrismSession {
         streamingText: "",
       }));
       try {
-        await cancelAgent(access);
+        const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+        await cancelAgent(access, selectedAgent.agent_uuid);
       } catch (err) {
         ignoreStreamUntilNextStatusRef.current = false;
         throw err;
@@ -491,18 +564,20 @@ export function usePrismSession(): PrismSession {
     }
 
     setChat((current) => ({ ...current, streamingText: "" }));
-    await cancelAgent(access);
-  }, [activeSession, approve, chat.status, clientId, selectedAgent]);
+    const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+    await cancelAgent(access, selectedAgent.agent_uuid);
+  }, [activeSession, approve, chat.status, ensureWorkspaceLease, selectedAgent]);
 
+  // Cleanup on unmount
   useEffect(
     () => () => {
-      closeAgentStream();
-      for (const stream of Object.values(workspaceStreamsRef.current)) {
-        stream.close();
+      wsRef.current?.close();
+      wsRef.current = null;
+      for (const lease of Object.values(workspaceLeasesRef.current)) {
+        void releaseLease(lease.workspace_uuid, lease.lease_token).catch(() => {});
       }
-      workspaceStreamsRef.current = {};
     },
-    [closeAgentStream],
+    [],
   );
 
   return {
@@ -510,7 +585,6 @@ export function usePrismSession(): PrismSession {
     workspaces,
     profiles,
     expandedWorkspaceUuids,
-    workspaceSessions,
     workspaceAgents,
     selectedAgent,
     session: activeSession,

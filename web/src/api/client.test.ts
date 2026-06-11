@@ -1,19 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  acquireLease,
   agentSnapshot,
   createAgent,
   deleteAgent,
   listAgents,
   listProfiles,
   sendMessage,
-  workspaceAccessQuery,
 } from "./client";
-import type { WorkspaceAccess } from "./types";
 
-const access: WorkspaceAccess = {
-  workspace_uuid: "workspace-1",
-  client_id: "client-1",
-};
+const LEASE = { workspace_uuid: "workspace-1", lease_token: "lease-1" };
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -43,10 +39,33 @@ describe("api client", () => {
     });
   });
 
-  it("creates agents through /api/agents/create with flattened access fields", async () => {
+  it("acquires workspace leases through /api/workspaces/acquire_lease", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        workspace_uuid: "workspace-1",
+        client_id: "client-1",
+        lease_token: "lease-1",
+        expires_at: 123,
+      }),
+    );
+
+    await acquireLease("workspace-1", "client-1", "old-token");
+
+    expect(fetch).toHaveBeenCalledWith("/api/workspaces/acquire_lease", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workspace_uuid: "workspace-1",
+        client_id: "client-1",
+        lease_token: "old-token",
+      }),
+    });
+  });
+
+  it("creates agents through /api/agents/create with lease_token", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ created: true }));
 
-    await createAgent(access, {
+    await createAgent(LEASE, {
       name: "Planner",
       profile: "planner",
       context_refs: ["ctx-in"],
@@ -57,7 +76,8 @@ describe("api client", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        ...access,
+        workspace_uuid: "workspace-1",
+        lease_token: "lease-1",
         name: "Planner",
         profile: "planner",
         context_refs: ["ctx-in"],
@@ -69,22 +89,26 @@ describe("api client", () => {
   it("deletes agents through /api/agents/delete", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ deleted: true }));
 
-    await deleteAgent({ ...access, agent_uuid: "agent-1" });
+    await deleteAgent(LEASE, "agent-1");
 
     expect(fetch).toHaveBeenCalledWith("/api/agents/delete", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...access, agent_uuid: "agent-1" }),
+      body: JSON.stringify({
+        workspace_uuid: "workspace-1",
+        lease_token: "lease-1",
+        agent_uuid: "agent-1",
+      }),
     });
   });
 
-  it("encodes workspace access for query endpoints", async () => {
+  it("encodes workspace_uuid in query endpoints", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse([]));
 
-    await listAgents(access);
+    await listAgents("workspace-1");
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/agents/list?workspace_uuid=workspace-1&client_id=client-1",
+      "/api/agents/list?workspace_uuid=workspace-1",
       { headers: { "content-type": "application/json" } },
     );
   });
@@ -104,23 +128,24 @@ describe("api client", () => {
       }),
     );
 
-    const snapshot = await agentSnapshot({ ...access, agent_uuid: "agent-1" });
+    const snapshot = await agentSnapshot("workspace-1", "agent-1");
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/agents/snapshot?workspace_uuid=workspace-1&client_id=client-1&agent_uuid=agent-1",
+      "/api/agents/snapshot?workspace_uuid=workspace-1&agent_uuid=agent-1",
       { headers: { "content-type": "application/json" } },
     );
     expect(snapshot.pending_approval?.request_uuid).toBe("approval-1");
   });
 
   it("sends message bodies with attachments array by default", async () => {
-    await sendMessage({ ...access, agent_uuid: "agent-1" }, "hello");
+    await sendMessage(LEASE, "agent-1", "hello");
 
     expect(fetch).toHaveBeenCalledWith("/api/agents/send_message", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        ...access,
+        workspace_uuid: "workspace-1",
+        lease_token: "lease-1",
         agent_uuid: "agent-1",
         message_body: { text: "hello", attachments: [] },
       }),
@@ -133,11 +158,5 @@ describe("api client", () => {
     );
 
     await expect(listProfiles()).rejects.toThrow("workspace locked");
-  });
-
-  it("builds query strings from workspace access", () => {
-    expect(workspaceAccessQuery(access).toString()).toBe(
-      "workspace_uuid=workspace-1&client_id=client-1",
-    );
   });
 });

@@ -1,10 +1,11 @@
 use crate::actors::agent_actor::model::MessageBody;
 use crate::actors::agent_actor::model::{
-    AgentEvent, AgentInferenceOutput, SendMessageRequest, ToolBatchOutput,
+    AgentInferenceOutput, SendMessageRequest, ToolBatchOutput,
 };
 use crate::actors::agent_actor::runtime::ApprovalMask;
 use crate::actors::llm_actor::model::{LlmInferRequest, LlmStreamEvent};
 use crate::actors::profile_actor::model::ToolsConfigSection;
+use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::tools_actor::model::{ToolApproval, ToolBatchRequest, ToolStreamEvent};
 use crate::error::{SubsystemError, SubsystemResult};
@@ -147,7 +148,7 @@ pub async fn run_tool_batch(
                 ToolStreamEvent::Finished => "tool batch finished".to_string(),
             };
             let _ =
-                shell.emit_agent_event(stream_agent_uuid.clone(), AgentEvent::StreamDelta { text });
+                shell.emit_agent_event(stream_agent_uuid.clone(), WsEvent::StreamDelta { text });
         }
     });
     let tools_config = handles.profile.tools(&profile_name).await?;
@@ -266,7 +267,7 @@ async fn call_llm_with_units(
             if let Some(text) = event.display_text() {
                 let _ = shell.emit_agent_event(
                     agent_uuid.clone(),
-                    AgentEvent::StreamDelta {
+                    WsEvent::StreamDelta {
                         text: text.to_string(),
                     },
                 );

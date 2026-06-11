@@ -47,6 +47,28 @@ pub struct WorkspaceCreateRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcquireLeaseRequest {
+    pub workspace_uuid: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub lease_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseLeaseRequest {
+    pub workspace_uuid: String,
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lease {
+    pub lease_token: String,
+    pub workspace_uuid: String,
+    pub client_id: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSummary {
     pub workspace_uuid: String,
     pub workspace_path: PathBuf,

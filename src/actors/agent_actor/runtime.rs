@@ -1,5 +1,5 @@
 use crate::actors::agent_actor::model::{
-    AGENT_ACTOR, AgentActor, AgentEvent, AgentHandle, AgentInferenceOutput, AgentMsg, AgentRuntime,
+    AGENT_ACTOR, AgentActor, AgentHandle, AgentInferenceOutput, AgentMsg, AgentRuntime,
     AgentSnapshot, AgentStatus, AgentSummary, ApproveRequest, PendingApproval, PendingToolBatch,
     SelfUpdateRequest, SendMessageRequest, ToolBatchOutput,
 };
@@ -8,7 +8,7 @@ use crate::actors::agent_actor::pipeline::{
     tool_batch_is_auto_approved, tool_response_units,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
-use crate::actors::shell_actor::model::WorkspaceEvent;
+use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::agent::{
     Agent, AgentCreateRequest, AgentUpdateRequest as StorageAgentUpdateRequest,
 };
@@ -185,7 +185,7 @@ impl AgentActor {
         self.agents.insert(agent.uuid.clone(), agent.clone());
         self.emit_workspace_event(
             &workspace_uuid,
-            WorkspaceEvent::AgentCreated {
+            WsEvent::AgentCreated {
                 agent: self.agent_summary(&agent),
             },
         );
@@ -214,7 +214,7 @@ impl AgentActor {
         self.runtimes.remove(agent_uuid);
         self.emit_workspace_event(
             workspace_uuid,
-            WorkspaceEvent::AgentDeleted {
+            WsEvent::AgentDeleted {
                 agent_uuid: agent_uuid.to_string(),
             },
         );
@@ -319,7 +319,7 @@ impl AgentActor {
         self.agents.insert(agent.uuid.clone(), agent.clone());
         self.emit_workspace_event(
             &workspace_uuid,
-            WorkspaceEvent::AgentUpdated {
+            WsEvent::AgentUpdated {
                 agent: self.agent_summary(&agent),
             },
         );
@@ -358,7 +358,7 @@ impl AgentActor {
                         if let Err(error) = self.handle_tool_calls(agent_uuid, tool_calls).await {
                             self.emit_agent_event(
                                 agent_uuid,
-                                AgentEvent::Error {
+                                WsEvent::Error {
                                     message: error.to_string(),
                                 },
                             );
@@ -372,7 +372,7 @@ impl AgentActor {
                             {
                                 self.emit_agent_event(
                                     agent_uuid,
-                                    AgentEvent::Error {
+                                    WsEvent::Error {
                                         message: error.to_string(),
                                     },
                                 );
@@ -384,7 +384,7 @@ impl AgentActor {
                     Err(error) => {
                         self.emit_agent_event(
                             agent_uuid,
-                            AgentEvent::Error {
+                            WsEvent::Error {
                                 message: error.to_string(),
                             },
                         );
@@ -394,7 +394,7 @@ impl AgentActor {
             Err(error) => {
                 self.emit_agent_event(
                     agent_uuid,
-                    AgentEvent::Error {
+                    WsEvent::Error {
                         message: error.to_string(),
                     },
                 );
@@ -427,7 +427,7 @@ impl AgentActor {
                 if let Err(error) = self.commit_units(agent_uuid, output.units).await {
                     self.emit_agent_event(
                         agent_uuid,
-                        AgentEvent::Error {
+                        WsEvent::Error {
                             message: error.to_string(),
                         },
                     );
@@ -438,7 +438,7 @@ impl AgentActor {
                     if let Err(error) = self.spawn_llm_continuation(agent_uuid).await {
                         self.emit_agent_event(
                             agent_uuid,
-                            AgentEvent::Error {
+                            WsEvent::Error {
                                 message: error.to_string(),
                             },
                         );
@@ -458,7 +458,7 @@ impl AgentActor {
                     if let Err(commit_error) = self.commit_units(agent_uuid, units).await {
                         self.emit_agent_event(
                             agent_uuid,
-                            AgentEvent::Error {
+                            WsEvent::Error {
                                 message: commit_error.to_string(),
                             },
                         );
@@ -466,7 +466,7 @@ impl AgentActor {
                 }
                 self.emit_agent_event(
                     agent_uuid,
-                    AgentEvent::Error {
+                    WsEvent::Error {
                         message: error.to_string(),
                     },
                 );
@@ -487,7 +487,7 @@ impl AgentActor {
             .await?;
         self.agents.insert(agent_uuid.to_string(), updated_agent);
         for unit in units {
-            self.emit_agent_event(agent_uuid, AgentEvent::UnitAppend { unit });
+            self.emit_agent_event(agent_uuid, WsEvent::UnitAppend { unit });
         }
         Ok(())
     }
@@ -575,7 +575,7 @@ impl AgentActor {
         self.agents.insert(agent_uuid.to_string(), agent.clone());
         self.emit_workspace_event(
             &workspace_uuid,
-            WorkspaceEvent::AgentUpdated {
+            WsEvent::AgentUpdated {
                 agent: self.agent_summary(&agent),
             },
         );
@@ -622,7 +622,7 @@ impl AgentActor {
             self.set_status(agent_uuid, AgentStatus::WaitingApproval)?;
             self.emit_agent_event(
                 agent_uuid,
-                AgentEvent::ApproveRequest {
+                WsEvent::ApproveRequest {
                     request: PendingApproval {
                         request_uuid,
                         description: "model requested tool execution".to_string(),
@@ -721,14 +721,14 @@ impl AgentActor {
         self.runtime_mut(agent_uuid)?.status = status.clone();
         self.emit_agent_event(
             agent_uuid,
-            AgentEvent::StatusChanged {
+            WsEvent::StatusChanged {
                 status: status.clone(),
             },
         );
         if let Ok(workspace_uuid) = self.workspace_uuid(agent_uuid) {
             self.emit_workspace_event(
                 workspace_uuid,
-                WorkspaceEvent::AgentStatusChanged {
+                WsEvent::AgentStatusChanged {
                     agent_uuid: agent_uuid.to_string(),
                     status,
                 },
@@ -737,14 +737,14 @@ impl AgentActor {
         Ok(())
     }
 
-    fn emit_agent_event(&self, agent_uuid: &str, event: AgentEvent) {
+    fn emit_agent_event(&self, agent_uuid: &str, event: WsEvent) {
         let _ = self
             .handles
             .shell
             .emit_agent_event(agent_uuid.to_string(), event);
     }
 
-    fn emit_workspace_event(&self, workspace_uuid: &str, event: WorkspaceEvent) {
+    fn emit_workspace_event(&self, workspace_uuid: &str, event: WsEvent) {
         let _ = self
             .handles
             .shell

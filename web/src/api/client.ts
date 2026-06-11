@@ -1,26 +1,13 @@
 import type {
-  AgentAccess,
   AgentCreateInput,
   AgentSnapshot,
   AgentSummary,
-  WorkspaceAccess,
+  Lease,
+  WorkspaceLease,
   WorkspaceSummary,
 } from "./types";
 
 const JSON_HEADERS = { "content-type": "application/json" };
-
-export function workspaceAccessQuery(access: WorkspaceAccess) {
-  return new URLSearchParams({
-    workspace_uuid: access.workspace_uuid,
-    client_id: access.client_id,
-  });
-}
-
-function agentAccessQuery(access: AgentAccess) {
-  const params = workspaceAccessQuery(access);
-  params.set("agent_uuid", access.agent_uuid);
-  return params;
-}
 
 async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
@@ -49,38 +36,60 @@ export function addWorkspace(path: string) {
   });
 }
 
+export function acquireLease(
+  workspace_uuid: string,
+  client_id: string,
+  lease_token?: string | null,
+) {
+  return apiJson<Lease>("/api/workspaces/acquire_lease", {
+    method: "POST",
+    body: JSON.stringify({ workspace_uuid, client_id, lease_token }),
+  });
+}
+
+export function releaseLease(workspace_uuid: string, lease_token: string) {
+  return apiJson<{ released: true }>("/api/workspaces/release_lease", {
+    method: "POST",
+    body: JSON.stringify({ workspace_uuid, lease_token }),
+  });
+}
+
 export function listProfiles() {
   return apiJson<string[]>("/api/profiles/list");
 }
 
-export function listAgents(access: WorkspaceAccess) {
+export function listAgents(workspaceUuid: string) {
   return apiJson<AgentSummary[]>(
-    `/api/agents/list?${workspaceAccessQuery(access)}`,
+    `/api/agents/list?workspace_uuid=${encodeURIComponent(workspaceUuid)}`,
   );
 }
 
-export function createAgent(access: WorkspaceAccess, agent: AgentCreateInput) {
+export function createAgent(access: WorkspaceLease, agent: AgentCreateInput) {
   return apiJson<{ created: true }>("/api/agents/create", {
     method: "POST",
     body: JSON.stringify({ ...access, ...agent }),
   });
 }
 
-export function deleteAgent(access: AgentAccess) {
+export function deleteAgent(access: WorkspaceLease, agentUuid: string) {
   return apiJson<{ deleted: true }>("/api/agents/delete", {
     method: "POST",
-    body: JSON.stringify(access),
+    body: JSON.stringify({
+      ...access,
+      agent_uuid: agentUuid,
+    }),
   });
 }
 
-export function agentSnapshot(access: AgentAccess) {
+export function agentSnapshot(workspaceUuid: string, agentUuid: string) {
   return apiJson<AgentSnapshot>(
-    `/api/agents/snapshot?${agentAccessQuery(access)}`,
+    `/api/agents/snapshot?workspace_uuid=${encodeURIComponent(workspaceUuid)}&agent_uuid=${encodeURIComponent(agentUuid)}`,
   );
 }
 
 export function sendMessage(
-  access: AgentAccess,
+  access: WorkspaceLease,
+  agentUuid: string,
   text: string,
   attachments: Array<{ data: string; filename: string; mimetype: string }> = [],
 ) {
@@ -88,25 +97,35 @@ export function sendMessage(
     method: "POST",
     body: JSON.stringify({
       ...access,
+      agent_uuid: agentUuid,
       message_body: { text, attachments },
     }),
   });
 }
 
 export function approveRequest(
-  access: AgentAccess,
+  access: WorkspaceLease,
+  agentUuid: string,
   request_uuid: string,
   approval_mask: number,
 ) {
   return apiJson<{ accepted: true }>("/api/agents/approve_request", {
     method: "POST",
-    body: JSON.stringify({ ...access, request_uuid, approval_mask }),
+    body: JSON.stringify({
+      ...access,
+      agent_uuid: agentUuid,
+      request_uuid,
+      approval_mask,
+    }),
   });
 }
 
-export function cancelAgent(access: AgentAccess) {
+export function cancelAgent(access: WorkspaceLease, agentUuid: string) {
   return apiJson<{ cancelled: true }>("/api/agents/cancel", {
     method: "POST",
-    body: JSON.stringify(access),
+    body: JSON.stringify({
+      ...access,
+      agent_uuid: agentUuid,
+    }),
   });
 }

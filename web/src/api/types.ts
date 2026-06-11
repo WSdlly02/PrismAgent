@@ -4,19 +4,16 @@ export type WorkspaceSummary = {
   locked_by: string | null;
 };
 
-export type WorkspaceSession = {
+export type Lease = {
+  lease_token: string;
   workspace_uuid: string;
   client_id: string;
-  connected: boolean;
+  expires_at: number;
 };
 
-export type WorkspaceAccess = {
+export type WorkspaceLease = {
   workspace_uuid: string;
-  client_id: string;
-};
-
-export type AgentAccess = WorkspaceAccess & {
-  agent_uuid: string;
+  lease_token: string;
 };
 
 export type AgentStatus =
@@ -125,3 +122,19 @@ export type WorkspaceEvent =
       coordinator_agent_uuid: string;
     }
   | { type: "error"; message: string };
+
+// WS 消息类型（客户端发送）
+export type WsClientMessage =
+  | { type: "subscribe_workspace"; workspace_uuid: string }
+  | { type: "unsubscribe_workspace" }
+  | { type: "subscribe_agent"; agent_uuid: string }
+  | { type: "unsubscribe_agent" }
+  | { type: "pong" };
+
+// WS 消息类型（服务端推送）
+export type WsServerMessage =
+  | { type: "connected" }
+  | { type: "ping"; ts: number }
+  | { type: "error"; message: string }
+  | WorkspaceEvent
+  | AgentEvent;

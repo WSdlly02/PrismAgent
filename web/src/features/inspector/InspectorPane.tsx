@@ -1,9 +1,9 @@
-import type { AgentSummary, WorkspaceSession, WorkspaceSummary } from "../../api/types";
+import type { AgentSummary, WorkspaceSummary } from "../../api/types";
 
 type InspectorPaneProps = {
   workspace: WorkspaceSummary | null;
   agent: AgentSummary | null;
-  session: WorkspaceSession | null;
+  session: { workspace_uuid: string } | null;
 };
 
 export function InspectorPane({ workspace, agent, session }: InspectorPaneProps) {
@@ -23,8 +23,8 @@ export function InspectorPane({ workspace, agent, session }: InspectorPaneProps)
           <dd>{agent?.agent_name ?? "None"}</dd>
         </div>
         <div>
-          <dt>Workspace session</dt>
-          <dd>{session ? `held by ${session.client_id}` : "None"}</dd>
+          <dt>Session</dt>
+          <dd>{session ? `subscribed to ${session.workspace_uuid}` : "None"}</dd>
         </div>
       </dl>
       <div className="inspector-empty">

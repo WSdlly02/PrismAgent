@@ -20,7 +20,7 @@ genai = "0.6"
 reqwest = { version = "0.13", features = ["json"] }
 urlencoding = "2"
 thiserror = "2.0.18"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 ipnetwork = "0.21"
 futures-util = "0.3"
 petname = { version = "3.0.0", default-features = false, features = [

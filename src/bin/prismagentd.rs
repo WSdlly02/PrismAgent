@@ -1,16 +1,15 @@
 use axum::{
     Json, Router,
     body::Body,
-    extract::{ConnectInfo, Query, State},
+    extract::{
+        ConnectInfo, Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::{Request, StatusCode, Uri},
     middleware,
-    response::{
-        IntoResponse, Response,
-        sse::{Event, KeepAlive, Sse},
-    },
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::stream::{self, Stream, StreamExt};
 use ipnetwork::IpNetwork;
 use prismagent::{
     actors::{
@@ -19,21 +18,32 @@ use prismagent::{
         llm_actor::model::{LlmActor, LlmHandle, LlmMsg},
         profile_actor::model::{ProfileActor, ProfileHandle, ProfileMsg},
         shell_actor::model::{
-            AgentAccessRequest, AuthorizedAgentCreateRequest, AuthorizedApproveRequest,
-            AuthorizedSendMessageRequest, AuthorizedWorkflowCancelRequest, ShellActor, ShellHandle,
-            ShellMsg, WorkspaceAccessRequest, WorkspaceEvent, WorkspaceSubscribeRequest,
+            AgentAccessRequest, AgentWriteAccessRequest, AuthorizedAgentCreateRequest,
+            AuthorizedApproveRequest, AuthorizedSendMessageRequest,
+            AuthorizedWorkflowCancelRequest, ConnectionId, ShellActor, ShellHandle, ShellMsg,
+            WorkspaceAccessRequest,
         },
         storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
         tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
         workflow_actor::model::{WorkflowActor, WorkflowHandle, WorkflowMsg},
-        workspace_actor::model::{WorkspaceActor, WorkspaceCreateRequest, WorkspaceMsg},
+        workspace_actor::model::{
+            AcquireLeaseRequest, ReleaseLeaseRequest, WorkspaceActor, WorkspaceCreateRequest,
+            WorkspaceMsg,
+        },
     },
     error::SubsystemError,
     handles::AppHandles,
     web_assets,
 };
 use serde_json::{Value, json};
-use std::{convert::Infallible, net::SocketAddr, sync::OnceLock, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::mpsc;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:7618";
@@ -46,7 +56,7 @@ const ALLOWED_NETS: &[&str] = &[
 ];
 
 fn allowed_nets() -> &'static [IpNetwork] {
-    static ALLOWED_NETS_CACHE: OnceLock<Vec<IpNetwork>> = OnceLock::new();
+    static ALLOWED_NETS_CACHE: std::sync::OnceLock<Vec<IpNetwork>> = std::sync::OnceLock::new();
     ALLOWED_NETS_CACHE
         .get_or_init(|| {
             ALLOWED_NETS
@@ -74,6 +84,7 @@ async fn ip_filter(request: Request<Body>, next: middleware::Next) -> Result<Res
 #[derive(Clone)]
 struct AppState {
     shell: ShellHandle,
+    next_connection_id: Arc<AtomicU64>,
 }
 
 #[tokio::main]
@@ -82,20 +93,22 @@ async fn main() -> anyhow::Result<()> {
     let addr = addr.parse::<SocketAddr>()?;
     let state = AppState {
         shell: start_runtime()?,
+        next_connection_id: Arc::new(AtomicU64::new(1)),
     };
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/ws", get(ws_handler))
         .route("/api/workspaces/list", get(list_workspaces))
         .route("/api/workspaces/add", post(add_workspace))
-        .route("/api/workspaces/event_stream", get(workspace_event_stream))
+        .route("/api/workspaces/acquire_lease", post(acquire_lease))
+        .route("/api/workspaces/release_lease", post(release_lease))
         .route("/api/profiles/list", get(list_profiles))
         .route("/api/workflows/cancel", post(workflow_cancel))
         .route("/api/agents/list", get(list_agents))
         .route("/api/agents/create", post(create_agent))
         .route("/api/agents/delete", post(delete_agent))
         .route("/api/agents/snapshot", get(agent_snapshot))
-        .route("/api/agents/event_stream", get(agent_event_stream))
         .route("/api/agents/send_message", post(send_message))
         .route("/api/agents/approve_request", post(approve_request))
         .route("/api/agents/cancel", post(cancel))
@@ -157,6 +170,195 @@ fn start_runtime() -> anyhow::Result<ShellHandle> {
     Ok(handles.shell)
 }
 
+// ========== WebSocket handler ==========
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+    let connection_id = state.next_connection_id.fetch_add(1, Ordering::Relaxed);
+    ws.on_upgrade(move |socket| handle_ws(socket, state.shell, connection_id))
+}
+
+async fn handle_ws(socket: WebSocket, shell: ShellHandle, connection_id: ConnectionId) {
+    // Register connection with shell actor
+    let mut event_rx = shell.register_connection(connection_id).await;
+
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+
+    // Send connected confirmation
+    let connected_msg = serde_json::to_string(&json!({ "type": "connected" })).unwrap();
+    if ws_sender
+        .send(Message::Text(connected_msg.into()))
+        .await
+        .is_err()
+    {
+        shell.unregister_connection(connection_id);
+        return;
+    }
+
+    // Shared flag for coordinating shutdown
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+
+    // Channel for heartbeat → write_task ping signaling
+    let (ping_tx, mut ping_rx) = mpsc::channel::<()>(1);
+
+    // Write task: forward events from shell actor → WS client, and send pings
+    let _write_shell = shell.clone();
+    let write_shutdown = shutdown.clone();
+    let write_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                Some(event) = event_rx.recv() => {
+                    let json = serde_json::to_string(&event).unwrap_or_else(|e| {
+                        serde_json::to_string(&json!({ "type": "error", "message": format!("serialize error: {e}") })).unwrap()
+                    });
+                    if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Some(()) = ping_rx.recv() => {
+                    let ping_msg = serde_json::json!({"type": "ping", "ts": now_secs()});
+                    if ws_sender.send(Message::Text(ping_msg.to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = write_shutdown.notified() => {
+                    break;
+                }
+                else => break,
+            }
+        }
+        let _ = ws_sender.close().await;
+    });
+
+    // Heartbeat task: check pong timeout every 15s, signal write_task to send ping
+    let heartbeat_shell = shell.clone();
+    let heartbeat_shutdown = shutdown.clone();
+    let last_pong = Arc::new(AtomicU64::new(now_secs()));
+    let heartbeat_last_pong = last_pong.clone();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        interval.tick().await; // skip first immediate tick
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if now_secs() - heartbeat_last_pong.load(Ordering::Relaxed) > 30 {
+                        break;
+                    }
+                    if ping_tx.send(()).await.is_err() {
+                        break;
+                    }
+                }
+                _ = heartbeat_shutdown.notified() => {
+                    break;
+                }
+            }
+        }
+        heartbeat_shell.unregister_connection(connection_id);
+    });
+
+    // Read task: read messages from WS client → shell actor
+    let read_shell = shell.clone();
+    let read_shutdown = shutdown.clone();
+    let read_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                msg = ws_receiver.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Err(e) = handle_client_message(&read_shell, connection_id, &text, &last_pong).await {
+                                eprintln!("WS message error: {e}");
+                            }
+                        }
+                        Some(Ok(Message::Pong(_))) => {
+                            last_pong.store(now_secs(), Ordering::Relaxed);
+                        }
+                        Some(Ok(Message::Ping(_data))) => {
+                            // Ping is auto-responded by axum, but we track it
+                            last_pong.store(now_secs(), Ordering::Relaxed);
+                        }
+                        Some(Err(e)) => {
+                            eprintln!("WS read error: {e}");
+                            break;
+                        }
+                        None => break,
+                        _ => {} // Binary, Close, etc.
+                    }
+                }
+                _ = read_shutdown.notified() => {
+                    break;
+                }
+            }
+        }
+        read_shell.unregister_connection(connection_id);
+    });
+
+    // Wait for any task to finish, then signal shutdown
+    tokio::select! {
+        _ = write_task => {},
+        _ = read_task => {},
+        _ = heartbeat_task => {},
+    }
+    shutdown.notify_waiters();
+}
+
+async fn handle_client_message(
+    shell: &ShellHandle,
+    connection_id: ConnectionId,
+    text: &str,
+    last_pong: &AtomicU64,
+) -> Result<(), String> {
+    let msg: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
+
+    let msg_type = msg["type"].as_str().ok_or("missing 'type' field")?;
+
+    match msg_type {
+        "subscribe_workspace" => {
+            let workspace_uuid = msg["workspace_uuid"]
+                .as_str()
+                .ok_or("missing workspace_uuid")?
+                .to_string();
+            shell
+                .subscribe_workspace(connection_id, workspace_uuid)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        "unsubscribe_workspace" => {
+            shell.unsubscribe_workspace(connection_id);
+        }
+        "subscribe_agent" => {
+            let agent_uuid = msg["agent_uuid"]
+                .as_str()
+                .ok_or("missing agent_uuid")?
+                .to_string();
+            shell
+                .subscribe_agent(connection_id, agent_uuid)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        "unsubscribe_agent" => {
+            shell.unsubscribe_agent(connection_id);
+        }
+        "pong" => {
+            last_pong.store(now_secs(), Ordering::Relaxed);
+        }
+        _ => {
+            return Err(format!("unknown message type: {msg_type}"));
+        }
+    }
+    Ok(())
+}
+
+use futures_util::{SinkExt, StreamExt};
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+// ========== REST endpoints ==========
+
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
@@ -174,6 +376,21 @@ async fn add_workspace(
     Json(request): Json<WorkspaceCreateRequest>,
 ) -> ApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.create_workspace(request).await?)))
+}
+
+async fn acquire_lease(
+    State(state): State<AppState>,
+    Json(request): Json<AcquireLeaseRequest>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.shell.acquire_lease(request).await?)))
+}
+
+async fn release_lease(
+    State(state): State<AppState>,
+    Json(request): Json<ReleaseLeaseRequest>,
+) -> ApiResult<Json<Value>> {
+    state.shell.release_lease(request).await?;
+    Ok(Json(json!({ "released": true })))
 }
 
 async fn list_profiles(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -197,50 +414,10 @@ async fn create_agent(
 
 async fn delete_agent(
     State(state): State<AppState>,
-    Json(request): Json<AgentAccessRequest>,
+    Json(request): Json<AgentWriteAccessRequest>,
 ) -> ApiResult<Json<Value>> {
     state.shell.delete_agent(request).await?;
     Ok(Json(json!({ "deleted": true })))
-}
-
-async fn workspace_event_stream(
-    State(state): State<AppState>,
-    Query(query): Query<WorkspaceSubscribeRequest>,
-) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    let receiver = state.shell.subscribe_workspace(query.clone()).await?;
-    let events = stream::unfold(
-        WorkspaceStreamState {
-            receiver,
-            shell: state.shell.clone(),
-            request: query,
-        },
-        |mut state| async move {
-            match state.receiver.recv().await {
-                Some(event) => {
-                    let event = Event::default()
-                        .event(workspace_event_name(&event))
-                        .json_data(event)
-                        .unwrap_or_else(|error| {
-                            Event::default()
-                                .event("error")
-                                .data(format!("failed to encode event: {error}"))
-                        });
-                    Some((Ok(event), state))
-                }
-                None => None,
-            }
-        },
-    );
-    let connected = stream::once(async {
-        Ok(Event::default()
-            .event("connected")
-            .data(r#"{"status":"connected"}"#))
-    });
-    Ok(Sse::new(connected.chain(events)).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(10))
-            .text("keep-alive"),
-    ))
 }
 
 async fn list_agents(
@@ -255,39 +432,6 @@ async fn agent_snapshot(
     Query(query): Query<AgentAccessRequest>,
 ) -> ApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.agent_snapshot(query).await?)))
-}
-
-async fn agent_event_stream(
-    State(state): State<AppState>,
-    Query(query): Query<AgentAccessRequest>,
-) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    let receiver = state.shell.subscribe_agent(query).await?;
-    let events = stream::unfold(receiver, |mut receiver| async move {
-        match receiver.recv().await {
-            Some(event) => {
-                let event = Event::default()
-                    .event(event_name(&event))
-                    .json_data(event)
-                    .unwrap_or_else(|error| {
-                        Event::default()
-                            .event("error")
-                            .data(format!("failed to encode event: {error}"))
-                    });
-                Some((Ok(event), receiver))
-            }
-            None => None,
-        }
-    });
-    let connected = stream::once(async {
-        Ok(Event::default()
-            .event("connected")
-            .data(r#"{"status":"connected"}"#))
-    });
-    Ok(Sse::new(connected.chain(events)).keep_alive(
-        KeepAlive::new()
-            .interval(Duration::from_secs(10))
-            .text("keep-alive"),
-    ))
 }
 
 async fn send_message(
@@ -308,46 +452,10 @@ async fn approve_request(
 
 async fn cancel(
     State(state): State<AppState>,
-    Json(query): Json<AgentAccessRequest>,
+    Json(query): Json<AgentWriteAccessRequest>,
 ) -> ApiResult<Json<Value>> {
     state.shell.cancel(query).await?;
     Ok(Json(json!({ "cancelled": true })))
-}
-
-fn event_name(event: &prismagent::actors::agent_actor::model::AgentEvent) -> &'static str {
-    use prismagent::actors::agent_actor::model::AgentEvent;
-    match event {
-        AgentEvent::UnitAppend { .. } => "unit_append",
-        AgentEvent::StreamDelta { .. } => "stream_delta",
-        AgentEvent::ApproveRequest { .. } => "approve_request",
-        AgentEvent::StatusChanged { .. } => "status_changed",
-        AgentEvent::Error { .. } => "error",
-    }
-}
-
-struct WorkspaceStreamState {
-    receiver: mpsc::Receiver<WorkspaceEvent>,
-    shell: ShellHandle,
-    request: WorkspaceSubscribeRequest,
-}
-
-impl Drop for WorkspaceStreamState {
-    fn drop(&mut self) {
-        self.shell.unsubscribe_workspace(self.request.clone());
-    }
-}
-
-fn workspace_event_name(event: &WorkspaceEvent) -> &'static str {
-    match event {
-        WorkspaceEvent::AgentCreated { .. } => "agent_created",
-        WorkspaceEvent::AgentUpdated { .. } => "agent_updated",
-        WorkspaceEvent::AgentStatusChanged { .. } => "agent_status_changed",
-        WorkspaceEvent::AgentDeleted { .. } => "agent_deleted",
-        WorkspaceEvent::ContextCreated { .. } => "context_created",
-        WorkspaceEvent::WorkflowCreated { .. } => "workflow_created",
-        WorkspaceEvent::WorkflowStarted { .. } => "workflow_started",
-        WorkspaceEvent::WorkflowCancelRequested { .. } => "workflow_cancel_requested",
-    }
 }
 
 type ApiResult<T> = Result<T, ApiError>;
