@@ -7,6 +7,7 @@ use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::impl_actor;
 use crate::stdlib_assets;
 use genai::chat::ChatMessage;
 use std::collections::HashSet;
@@ -25,17 +26,9 @@ impl ContextActor {
         tokio::spawn(self.run())
     }
 
-    pub async fn run(mut self) {
-        while let Some(msg) = self.rx.recv().await {
-            match msg {
-                ContextMsg::GetSkillDir { request, reply } => {
-                    let _ = reply.send(get_skill_dir(request));
-                }
-                ContextMsg::RenderInitialPrompts { request, reply } => {
-                    let _ = reply.send(self.render_initial_prompts(request).await);
-                }
-            }
-        }
+    /// Wrapper for free function, used by impl_actor! dispatch
+    async fn get_skill_dir(&self, request: GetSkillDirRequest) -> SubsystemResult<String> {
+        get_skill_dir(request)
     }
 
     async fn resolve_context_refs(
@@ -81,43 +74,25 @@ impl ContextActor {
     }
 }
 
-impl ContextHandle {
-    pub async fn get_skill_dir(&self, request_body: GetSkillDirRequest) -> SubsystemResult<String> {
-        request(&self.tx, |reply| ContextMsg::GetSkillDir {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+// ---- Declarative macro: generates run() dispatch + Handle methods ----
 
-    pub async fn render_initial_prompts(
-        &self,
-        request_body: Box<RenderInitialPromptsRequest>,
-    ) -> SubsystemResult<Vec<Unit>> {
-        request(&self.tx, |reply| ContextMsg::RenderInitialPrompts {
-            request: request_body,
-            reply,
-        })
-        .await
+impl_actor! {
+    actor ContextActor;
+    handle ContextHandle;
+    msg ContextMsg;
+    actor_name CONTEXT_ACTOR;
+    methods {
+        fn get_skill_dir(&self, request: GetSkillDirRequest) -> String
+            => GetSkillDir { request: request };
+
+        fn render_initial_prompts(&self, request: Box<RenderInitialPromptsRequest>) -> Vec<Unit>
+            => RenderInitialPrompts { request: request };
     }
 }
 
-async fn request<T>(
-    tx: &mpsc::Sender<ContextMsg>,
-    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> ContextMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(message(reply_tx))
-        .await
-        .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(CONTEXT_ACTOR))?
-}
-
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // get_skill_dir：校验 skill 目录存在且无路径逃逸，返回路径字符串
-// ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------
 
 fn get_skill_dir(request: GetSkillDirRequest) -> SubsystemResult<String> {
     let name = request.name.trim();

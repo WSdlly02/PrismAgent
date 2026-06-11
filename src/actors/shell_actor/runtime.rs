@@ -14,6 +14,7 @@ use crate::actors::workspace_actor::model::{WorkspaceCreateRequest, WorkspaceSum
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
+use crate::impl_handle_methods;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -556,126 +557,60 @@ impl ShellActor {
     }
 }
 
-// ========== ShellHandle convenience methods ==========
+// ========== ShellHandle convenience methods (macro-generated) ==========
+
+impl_handle_methods! {
+    ShellHandle for ShellMsg, SHELL_ACTOR;
+
+    fn list_workspaces(&self) -> Vec<WorkspaceSummary>
+        => ListWorkspaces {};
+
+    fn create_workspace(&self, request: WorkspaceCreateRequest) -> WorkspaceSummary
+        => CreateWorkspace { request: request };
+
+    fn acquire_lease(&self, request: AcquireLeaseRequest) -> Lease
+        => AcquireLease { request: request };
+
+    fn release_lease(&self, request: ReleaseLeaseRequest) -> ()
+        => ReleaseLease { request: request };
+
+    fn subscribe_workspace(&self, connection_id: ConnectionId, workspace_uuid: impl Into<String>) -> ()
+        => SubscribeWorkspace { connection_id: connection_id, workspace_uuid: workspace_uuid.into() };
+
+    fn subscribe_agent(&self, connection_id: ConnectionId, agent_uuid: impl Into<String>) -> ()
+        => SubscribeAgent { connection_id: connection_id, agent_uuid: agent_uuid.into() };
+
+    fn list_agents(&self, request: WorkspaceAccessRequest) -> Vec<AgentSummary>
+        => ListAgents { request: request };
+
+    fn create_agent(&self, request: AuthorizedAgentCreateRequest) -> Agent
+        => CreateAgent { request: request };
+
+    fn delete_agent(&self, request: AgentWriteAccessRequest) -> ()
+        => DeleteAgent { request: request };
+
+    fn list_profiles(&self) -> Vec<String>
+        => ListProfiles {};
+
+    fn agent_snapshot(&self, request: AgentAccessRequest) -> AgentSnapshot
+        => AgentSnapshot { request: request };
+
+    fn send_message(&self, request: AuthorizedSendMessageRequest) -> ()
+        => SendMessage { request: request };
+
+    fn approve_request(&self, request: AuthorizedApproveRequest) -> ()
+        => ApproveRequest { request: request };
+
+    fn cancel(&self, request: AgentWriteAccessRequest) -> ()
+        => Cancel { request: request };
+
+    fn workflow_cancel(&self, request: AuthorizedWorkflowCancelRequest) -> WorkflowCancelResponse
+        => WorkflowCancel { request: request };
+}
+
+// ========== ShellHandle non-standard methods (manual) ==========
 
 impl ShellHandle {
-    pub async fn list_workspaces(&self) -> SubsystemResult<Vec<WorkspaceSummary>> {
-        request(&self.tx, |reply| ShellMsg::ListWorkspaces { reply }).await
-    }
-
-    pub async fn create_workspace(
-        &self,
-        request_body: WorkspaceCreateRequest,
-    ) -> SubsystemResult<WorkspaceSummary> {
-        request(&self.tx, |reply| ShellMsg::CreateWorkspace {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn acquire_lease(&self, request_body: AcquireLeaseRequest) -> SubsystemResult<Lease> {
-        request(&self.tx, |reply| ShellMsg::AcquireLease {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn release_lease(&self, request_body: ReleaseLeaseRequest) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::ReleaseLease {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn list_agents(
-        &self,
-        request_body: WorkspaceAccessRequest,
-    ) -> SubsystemResult<Vec<AgentSummary>> {
-        request(&self.tx, |reply| ShellMsg::ListAgents {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn create_agent(
-        &self,
-        request_body: AuthorizedAgentCreateRequest,
-    ) -> SubsystemResult<Agent> {
-        request(&self.tx, |reply| ShellMsg::CreateAgent {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn delete_agent(&self, request_body: AgentWriteAccessRequest) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::DeleteAgent {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn list_profiles(&self) -> SubsystemResult<Vec<String>> {
-        request(&self.tx, |reply| ShellMsg::ListProfiles { reply }).await
-    }
-
-    pub async fn agent_snapshot(
-        &self,
-        request_body: AgentAccessRequest,
-    ) -> SubsystemResult<AgentSnapshot> {
-        request(&self.tx, |reply| ShellMsg::AgentSnapshot {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn send_message(
-        &self,
-        request_body: AuthorizedSendMessageRequest,
-    ) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::SendMessage {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn approve_request(
-        &self,
-        request_body: AuthorizedApproveRequest,
-    ) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::ApproveRequest {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn cancel(&self, request_body: AgentWriteAccessRequest) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::Cancel {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn workflow_cancel(
-        &self,
-        request_body: AuthorizedWorkflowCancelRequest,
-    ) -> SubsystemResult<WorkflowCancelResponse> {
-        request(&self.tx, |reply| ShellMsg::WorkflowCancel {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
     // ---- Connection lifecycle ----
 
     pub async fn register_connection(
@@ -703,36 +638,10 @@ impl ShellHandle {
 
     // ---- Subscription ----
 
-    pub async fn subscribe_workspace(
-        &self,
-        connection_id: ConnectionId,
-        workspace_uuid: impl Into<String>,
-    ) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::SubscribeWorkspace {
-            connection_id,
-            workspace_uuid: workspace_uuid.into(),
-            reply,
-        })
-        .await
-    }
-
     pub fn unsubscribe_workspace(&self, connection_id: ConnectionId) {
         let _ = self
             .tx
             .try_send(ShellMsg::UnsubscribeWorkspace { connection_id });
-    }
-
-    pub async fn subscribe_agent(
-        &self,
-        connection_id: ConnectionId,
-        agent_uuid: impl Into<String>,
-    ) -> SubsystemResult<()> {
-        request(&self.tx, |reply| ShellMsg::SubscribeAgent {
-            connection_id,
-            agent_uuid: agent_uuid.into(),
-            reply,
-        })
-        .await
     }
 
     pub fn unsubscribe_agent(&self, connection_id: ConnectionId) {
@@ -772,19 +681,6 @@ impl ShellHandle {
                 SubsystemError::internal(format!("failed to enqueue workspace event: {error}"))
             })
     }
-}
-
-async fn request<T>(
-    tx: &mpsc::Sender<ShellMsg>,
-    message: impl FnOnce(oneshot::Sender<SubsystemResult<T>>) -> ShellMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = oneshot::channel();
-    tx.send(message(reply_tx))
-        .await
-        .map_err(|_| SubsystemError::actor_dead(SHELL_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(SHELL_ACTOR))?
 }
 
 #[cfg(test)]

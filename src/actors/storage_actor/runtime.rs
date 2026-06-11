@@ -5,6 +5,7 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
+use crate::{actor_dispatch, impl_handle_methods};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -29,146 +30,30 @@ impl StorageActor {
 
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                StorageMsg::Root { reply } => {
-                    let _ = reply.send(Ok(self.root.clone()));
-                }
-                StorageMsg::ListAgents {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.list_agents(&workspace_uuid));
-                }
-                StorageMsg::ReadAgents {
-                    workspace_uuid,
-                    uuids,
-                    reply,
-                } => {
-                    let _ = reply.send(self.read_agents(&workspace_uuid, uuids));
-                }
-                StorageMsg::WriteAgents {
-                    workspace_uuid,
-                    agents,
-                    reply,
-                } => {
-                    let _ = reply.send(self.write_agents(&workspace_uuid, &agents));
-                }
-                StorageMsg::CreateAgent {
-                    request,
-                    auto_loop,
-                    auto_loop_message,
-                    reply,
-                } => {
-                    let _ = reply.send(self.create_agent(request, auto_loop, auto_loop_message));
-                }
-                StorageMsg::DeleteAgent {
-                    workspace_uuid,
-                    agent_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.delete_agent(&workspace_uuid, &agent_uuid));
-                }
-                StorageMsg::SetAgentAutoLoop {
-                    workspace_uuid,
-                    agent_uuid,
-                    enabled,
-                    reply,
-                } => {
-                    let _ =
-                        reply.send(self.set_agent_auto_loop(&workspace_uuid, &agent_uuid, enabled));
-                }
-                StorageMsg::UpdateAgent { request, reply } => {
-                    let _ = reply.send(self.update_agent(request));
-                }
-                StorageMsg::AppendAgentUnits {
-                    workspace_uuid,
-                    agent_uuid,
-                    units,
-                    reply,
-                } => {
-                    let _ =
-                        reply.send(self.append_agent_units(&workspace_uuid, &agent_uuid, &units));
-                }
-                StorageMsg::ListUnits {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.list_units(&workspace_uuid));
-                }
-                StorageMsg::ReadUnits {
-                    workspace_uuid,
-                    uuids,
-                    reply,
-                } => {
-                    let _ = reply.send(self.read_units(&workspace_uuid, uuids));
-                }
-                StorageMsg::WriteUnits {
-                    workspace_uuid,
-                    units,
-                    reply,
-                } => {
-                    let _ = reply.send(self.write_units(&workspace_uuid, &units));
-                }
-                StorageMsg::ListContexts {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.list_contexts(&workspace_uuid));
-                }
-                StorageMsg::ReadContexts {
-                    workspace_uuid,
-                    uuids,
-                    reply,
-                } => {
-                    let _ = reply.send(self.read_contexts(&workspace_uuid, uuids));
-                }
-                StorageMsg::CreateContext { request, reply } => {
-                    let _ = reply.send(self.create_context(request));
-                }
-                StorageMsg::ListWorkflows {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.list_workflows(&workspace_uuid));
-                }
-                StorageMsg::ReadWorkflow {
-                    workspace_uuid,
-                    uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.read_workflow(&workspace_uuid, &uuid));
-                }
-                StorageMsg::CreateWorkflow { request, reply } => {
-                    let _ = reply.send(self.create_workflow(request));
-                }
-                StorageMsg::ListMisc {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.list_misc(&workspace_uuid));
-                }
-                StorageMsg::ReadMisc {
-                    workspace_uuid,
-                    names,
-                    reply,
-                } => {
-                    let _ = reply.send(self.read_misc_entries(&workspace_uuid, names));
-                }
-                StorageMsg::WriteMisc {
-                    workspace_uuid,
-                    entries,
-                    reply,
-                } => {
-                    let _ = reply.send(self.write_misc_entries(&workspace_uuid, &entries));
-                }
-                StorageMsg::ReplaceMisc {
-                    workspace_uuid,
-                    entries,
-                    reply,
-                } => {
-                    let _ = reply.send(self.replace_misc_entries(&workspace_uuid, entries));
-                }
-            }
+            actor_dispatch!(msg;
+                StorageMsg::Root { ; reply } => Ok(self.root.clone()),
+                StorageMsg::ListAgents { workspace_uuid ; reply } => self.list_agents(&workspace_uuid),
+                StorageMsg::ReadAgents { workspace_uuid, uuids ; reply } => self.read_agents(&workspace_uuid, uuids),
+                StorageMsg::WriteAgents { workspace_uuid, agents ; reply } => self.write_agents(&workspace_uuid, &agents),
+                StorageMsg::CreateAgent { request, auto_loop, auto_loop_message ; reply } => self.create_agent(request, auto_loop, auto_loop_message),
+                StorageMsg::DeleteAgent { workspace_uuid, agent_uuid ; reply } => self.delete_agent(&workspace_uuid, &agent_uuid),
+                StorageMsg::SetAgentAutoLoop { workspace_uuid, agent_uuid, enabled ; reply } => self.set_agent_auto_loop(&workspace_uuid, &agent_uuid, enabled),
+                StorageMsg::UpdateAgent { request ; reply } => self.update_agent(request),
+                StorageMsg::AppendAgentUnits { workspace_uuid, agent_uuid, units ; reply } => self.append_agent_units(&workspace_uuid, &agent_uuid, &units),
+                StorageMsg::ListUnits { workspace_uuid ; reply } => self.list_units(&workspace_uuid),
+                StorageMsg::ReadUnits { workspace_uuid, uuids ; reply } => self.read_units(&workspace_uuid, uuids),
+                StorageMsg::WriteUnits { workspace_uuid, units ; reply } => self.write_units(&workspace_uuid, &units),
+                StorageMsg::ListContexts { workspace_uuid ; reply } => self.list_contexts(&workspace_uuid),
+                StorageMsg::ReadContexts { workspace_uuid, uuids ; reply } => self.read_contexts(&workspace_uuid, uuids),
+                StorageMsg::CreateContext { request ; reply } => self.create_context(request),
+                StorageMsg::ListWorkflows { workspace_uuid ; reply } => self.list_workflows(&workspace_uuid),
+                StorageMsg::ReadWorkflow { workspace_uuid, uuid ; reply } => self.read_workflow(&workspace_uuid, &uuid),
+                StorageMsg::CreateWorkflow { request ; reply } => self.create_workflow(request),
+                StorageMsg::ListMisc { workspace_uuid ; reply } => self.list_misc(&workspace_uuid),
+                StorageMsg::ReadMisc { workspace_uuid, names ; reply } => self.read_misc_entries(&workspace_uuid, names),
+                StorageMsg::WriteMisc { workspace_uuid, entries ; reply } => self.write_misc_entries(&workspace_uuid, &entries),
+                StorageMsg::ReplaceMisc { workspace_uuid, entries ; reply } => self.replace_misc_entries(&workspace_uuid, entries)
+            );
         }
     }
 
@@ -352,8 +237,6 @@ impl StorageActor {
     }
 
     fn list_workflows(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
-        // Kept as a natural discovery API for future workflow list tools/UI. The MVP
-        // currently starts workflows by explicit uuid.
         list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("workflows"))
     }
 
@@ -486,33 +369,44 @@ impl StorageActor {
     }
 }
 
-impl StorageHandle {
-    pub async fn root(&self) -> SubsystemResult<PathBuf> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::Root { reply: reply_tx })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
-    }
+// ---- Declarative macro: handle methods with concrete types ----
 
+impl_handle_methods! {
+    StorageHandle for StorageMsg, STORAGE_ACTOR;
+
+    fn root(&self) -> PathBuf
+        => Root {};
+
+    fn create_agent(&self, request: AgentCreateRequest, auto_loop: bool, auto_loop_message: String) -> Agent
+        => CreateAgent { request: request, auto_loop: auto_loop, auto_loop_message: auto_loop_message };
+
+    fn update_agent(&self, request: AgentUpdateRequest) -> Agent
+        => UpdateAgent { request: request };
+
+    fn create_context(&self, request: ContextCreateRequest) -> Context
+        => CreateContext { request: request };
+
+    fn create_workflow(&self, request: WorkflowCreateRequest) -> Workflow
+        => CreateWorkflow { request: request };
+}
+
+// ---- Manual handle methods (impl Into<String> for API compatibility) ----
+
+impl StorageHandle {
     pub async fn list_agents(
         &self,
         workspace_uuid: impl Into<String>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ListAgents {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ListAgents {
+                workspace_uuid: w,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn read_agents(
@@ -520,18 +414,17 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         uuids: Vec<String>,
     ) -> SubsystemResult<Vec<Agent>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ReadAgents {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ReadAgents {
+                workspace_uuid: w,
                 uuids,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn write_agents(
@@ -539,39 +432,17 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         agents: Vec<Agent>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::WriteAgents {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::WriteAgents {
+                workspace_uuid: w,
                 agents,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
-    }
-
-    pub async fn create_agent(
-        &self,
-        request: AgentCreateRequest,
-        auto_loop: bool,
-        auto_loop_message: String,
-    ) -> SubsystemResult<Agent> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::CreateAgent {
-                request,
-                auto_loop,
-                auto_loop_message,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn delete_agent(
@@ -579,18 +450,18 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         agent_uuid: impl Into<String>,
     ) -> SubsystemResult<()> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::DeleteAgent {
-                workspace_uuid: workspace_uuid.into(),
-                agent_uuid: agent_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::DeleteAgent {
+                workspace_uuid: w,
+                agent_uuid: a,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn set_agent_auto_loop(
@@ -599,33 +470,19 @@ impl StorageHandle {
         agent_uuid: impl Into<String>,
         enabled: bool,
     ) -> SubsystemResult<Agent> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::SetAgentAutoLoop {
-                workspace_uuid: workspace_uuid.into(),
-                agent_uuid: agent_uuid.into(),
+        let w = workspace_uuid.into();
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::SetAgentAutoLoop {
+                workspace_uuid: w,
+                agent_uuid: a,
                 enabled,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
-    }
-
-    pub async fn update_agent(&self, request: AgentUpdateRequest) -> SubsystemResult<Agent> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::UpdateAgent {
-                request,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn append_agent_units(
@@ -634,36 +491,35 @@ impl StorageHandle {
         agent_uuid: impl Into<String>,
         units: Vec<Unit>,
     ) -> SubsystemResult<Agent> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::AppendAgentUnits {
-                workspace_uuid: workspace_uuid.into(),
-                agent_uuid: agent_uuid.into(),
+        let w = workspace_uuid.into();
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::AppendAgentUnits {
+                workspace_uuid: w,
+                agent_uuid: a,
                 units,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn list_units(
         &self,
         workspace_uuid: impl Into<String>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ListUnits {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ListUnits {
+                workspace_uuid: w,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn read_units(
@@ -671,18 +527,17 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         uuids: Vec<String>,
     ) -> SubsystemResult<Vec<Unit>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ReadUnits {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ReadUnits {
+                workspace_uuid: w,
                 uuids,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn write_units(
@@ -690,35 +545,33 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         units: Vec<Unit>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::WriteUnits {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::WriteUnits {
+                workspace_uuid: w,
                 units,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn list_contexts(
         &self,
         workspace_uuid: impl Into<String>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ListContexts {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ListContexts {
+                workspace_uuid: w,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn read_contexts(
@@ -726,49 +579,33 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         uuids: Vec<String>,
     ) -> SubsystemResult<Vec<Context>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ReadContexts {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ReadContexts {
+                workspace_uuid: w,
                 uuids,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
-    }
-
-    pub async fn create_context(&self, request: ContextCreateRequest) -> SubsystemResult<Context> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::CreateContext {
-                request,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn list_workflows(
         &self,
         workspace_uuid: impl Into<String>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ListWorkflows {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ListWorkflows {
+                workspace_uuid: w,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn read_workflow(
@@ -776,52 +613,34 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         uuid: impl Into<String>,
     ) -> SubsystemResult<Workflow> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ReadWorkflow {
-                workspace_uuid: workspace_uuid.into(),
-                uuid: uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
-    }
-
-    pub async fn create_workflow(
-        &self,
-        request: WorkflowCreateRequest,
-    ) -> SubsystemResult<Workflow> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::CreateWorkflow {
-                request,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        let u = uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ReadWorkflow {
+                workspace_uuid: w,
+                uuid: u,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn list_misc(
         &self,
         workspace_uuid: impl Into<String>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ListMisc {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ListMisc {
+                workspace_uuid: w,
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn read_misc(
@@ -829,18 +648,17 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         names: Vec<String>,
     ) -> SubsystemResult<Vec<MiscReadEntry>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ReadMisc {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ReadMisc {
+                workspace_uuid: w,
                 names,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn write_misc(
@@ -848,18 +666,17 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         entries: Vec<MiscWriteEntry>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::WriteMisc {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::WriteMisc {
+                workspace_uuid: w,
                 entries,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 
     pub async fn replace_misc(
@@ -867,18 +684,17 @@ impl StorageHandle {
         workspace_uuid: impl Into<String>,
         entries: Vec<MiscReplaceEntry>,
     ) -> SubsystemResult<Vec<String>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(StorageMsg::ReplaceMisc {
-                workspace_uuid: workspace_uuid.into(),
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| StorageMsg::ReplaceMisc {
+                workspace_uuid: w,
                 entries,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(STORAGE_ACTOR))?
+                reply,
+            },
+            STORAGE_ACTOR,
+        )
+        .await
     }
 }
 

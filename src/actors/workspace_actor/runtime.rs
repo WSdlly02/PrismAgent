@@ -3,6 +3,7 @@ use crate::actors::workspace_actor::model::{
     WorkspaceMsg, WorkspaceSummary,
 };
 use crate::error::{SubsystemError, SubsystemResult};
+use crate::{actor_dispatch, impl_handle_methods};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -32,30 +33,16 @@ impl WorkspaceActor {
 
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                WorkspaceMsg::List { reply } => {
-                    let _ = reply.send(self.list());
-                }
-                WorkspaceMsg::Create { request, reply } => {
-                    let _ = reply.send(self.create(request));
-                }
-                WorkspaceMsg::Contains {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(Ok(self.workspaces.contains_key(&workspace_uuid)));
-                }
-                WorkspaceMsg::Get {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.get(&workspace_uuid));
-                }
-            }
+            actor_dispatch!(msg;
+                WorkspaceMsg::List { ; reply } => self.list().await,
+                WorkspaceMsg::Create { request ; reply } => self.create(request).await,
+                WorkspaceMsg::Contains { workspace_uuid ; reply } => self.contains(workspace_uuid).await,
+                WorkspaceMsg::Get { workspace_uuid ; reply } => self.get(workspace_uuid).await,
+            );
         }
     }
 
-    fn list(&mut self) -> SubsystemResult<Vec<WorkspaceSummary>> {
+    async fn list(&mut self) -> SubsystemResult<Vec<WorkspaceSummary>> {
         for entry in std::fs::read_dir(&self.root)? {
             let path = entry?.path();
             let metadata_path = path.join("metadata.json");
@@ -80,7 +67,10 @@ impl WorkspaceActor {
         Ok(workspaces)
     }
 
-    fn create(&mut self, request: WorkspaceCreateRequest) -> SubsystemResult<WorkspaceSummary> {
+    async fn create(
+        &mut self,
+        request: WorkspaceCreateRequest,
+    ) -> SubsystemResult<WorkspaceSummary> {
         let workspace_path = std::fs::canonicalize(&request.path)?;
         if !workspace_path.is_dir() {
             return Err(SubsystemError::invalid_input(format!(
@@ -88,7 +78,7 @@ impl WorkspaceActor {
                 workspace_path.display()
             )));
         }
-        let existing = self.list()?;
+        let existing = self.list().await?;
         if existing
             .iter()
             .any(|workspace| workspace.workspace_path == workspace_path)
@@ -118,11 +108,15 @@ impl WorkspaceActor {
         })
     }
 
-    fn get(&self, workspace_uuid: &str) -> SubsystemResult<Workspace> {
+    async fn contains(&self, workspace_uuid: String) -> SubsystemResult<bool> {
+        Ok(self.workspaces.contains_key(&workspace_uuid))
+    }
+
+    async fn get(&self, workspace_uuid: String) -> SubsystemResult<Workspace> {
         self.workspaces
-            .get(workspace_uuid)
+            .get(&workspace_uuid)
             .cloned()
-            .ok_or_else(|| SubsystemError::not_found("workspace", workspace_uuid))
+            .ok_or_else(|| SubsystemError::not_found("workspace", &workspace_uuid))
     }
 }
 
@@ -156,35 +150,20 @@ fn read_workspace(path: &std::path::Path) -> SubsystemResult<Workspace> {
     Ok(workspace)
 }
 
+// ---- Declarative macros: handle methods (list, create via macro; contains, get manual) ----
+
+impl_handle_methods! {
+    WorkspaceHandle for WorkspaceMsg, WORKSPACE_ACTOR;
+
+    fn list(&self) -> Vec<WorkspaceSummary>
+        => List {};
+
+    fn create(&self, request: WorkspaceCreateRequest) -> WorkspaceSummary
+        => Create { request: request };
+}
+
+// Manual handle methods that need impl Into<String> for API compatibility
 impl WorkspaceHandle {
-    pub async fn list(&self) -> SubsystemResult<Vec<WorkspaceSummary>> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(WorkspaceMsg::List { reply: reply_tx })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?
-    }
-
-    pub async fn create(
-        &self,
-        request_body: WorkspaceCreateRequest,
-    ) -> SubsystemResult<WorkspaceSummary> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(WorkspaceMsg::Create {
-                request: request_body,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?
-    }
-
     pub async fn contains(&self, workspace_uuid: impl Into<String>) -> SubsystemResult<bool> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         self.tx

@@ -3,6 +3,7 @@ use crate::actors::llm_actor::model::{
 };
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
+use crate::impl_handle_methods;
 use futures_util::StreamExt;
 use genai::ServiceTarget;
 use genai::adapter::AdapterKind;
@@ -94,31 +95,30 @@ impl LlmActor {
     }
 }
 
-impl LlmHandle {
-    pub async fn infer(&self, request: LlmInferRequest) -> SubsystemResult<LlmInferResponse> {
-        request_response(&self.tx, |reply| LlmMsg::Infer { request, reply }).await
-    }
+// ---- Declarative macro: handle method with concrete type ----
 
-    pub async fn cancel(&self, inference_uuid: impl Into<String>) -> SubsystemResult<bool> {
-        request_response(&self.tx, |reply| LlmMsg::Cancel {
-            inference_uuid: inference_uuid.into(),
-            reply,
-        })
-        .await
-    }
+impl_handle_methods! {
+    LlmHandle for LlmMsg, LLM_ACTOR;
+
+    fn infer(&self, request: LlmInferRequest) -> LlmInferResponse
+        => Infer { request: request };
 }
 
-async fn request_response<T>(
-    tx: &mpsc::Sender<LlmMsg>,
-    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> LlmMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(message(reply_tx))
+// ---- Manual handle methods (non-standard patterns) ----
+
+impl LlmHandle {
+    pub async fn cancel(&self, inference_uuid: impl Into<String>) -> SubsystemResult<bool> {
+        let id = inference_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| LlmMsg::Cancel {
+                inference_uuid: id,
+                reply,
+            },
+            LLM_ACTOR,
+        )
         .await
-        .map_err(|_| SubsystemError::actor_dead(LLM_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(LLM_ACTOR))?
+    }
 }
 
 async fn run_streaming_inference(

@@ -6,6 +6,7 @@ use crate::actors::tools_actor::model::{
 use crate::actors::tools_actor::{fs, prismagent, shell, web};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::impl_handle_methods;
 use genai::chat::{ChatMessage, Tool, ToolCall, ToolResponse};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -157,38 +158,33 @@ impl ToolsActor {
     }
 }
 
-impl ToolsHandle {
-    pub async fn list(&self, names: Option<Vec<String>>) -> SubsystemResult<Vec<Tool>> {
-        request_response(&self.tx, |reply| ToolsMsg::List { names, reply }).await
-    }
+// ---- Declarative macro: handle methods with concrete types ----
 
-    pub async fn dispatch_batch(
-        &self,
-        request: ToolBatchRequest,
-    ) -> SubsystemResult<ToolBatchResponse> {
-        request_response(&self.tx, |reply| ToolsMsg::DispatchBatch { request, reply }).await
-    }
+impl_handle_methods! {
+    ToolsHandle for ToolsMsg, TOOLS_ACTOR;
 
-    pub async fn cancel(&self, job_uuid: impl Into<String>) -> SubsystemResult<bool> {
-        request_response(&self.tx, |reply| ToolsMsg::Cancel {
-            job_uuid: job_uuid.into(),
-            reply,
-        })
-        .await
-    }
+    fn list(&self, names: Option<Vec<String>>) -> Vec<Tool>
+        => List { names: names };
+
+    fn dispatch_batch(&self, request: ToolBatchRequest) -> ToolBatchResponse
+        => DispatchBatch { request: request };
 }
 
-async fn request_response<T>(
-    tx: &mpsc::Sender<ToolsMsg>,
-    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> ToolsMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(message(reply_tx))
+// ---- Manual handle methods ----
+
+impl ToolsHandle {
+    pub async fn cancel(&self, job_uuid: impl Into<String>) -> SubsystemResult<bool> {
+        let id = job_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| ToolsMsg::Cancel {
+                job_uuid: id,
+                reply,
+            },
+            TOOLS_ACTOR,
+        )
         .await
-        .map_err(|_| SubsystemError::actor_dead(TOOLS_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(TOOLS_ACTOR))?
+    }
 }
 
 async fn dispatch_batch(

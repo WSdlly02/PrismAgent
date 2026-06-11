@@ -15,6 +15,7 @@ use crate::actors::storage_actor::model::agent::{
 use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::impl_handle_methods;
 use genai::chat::ToolCall;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -83,6 +84,7 @@ impl AgentActor {
                 } => {
                     let _ = reply.send(self.set_auto_loop(&agent_uuid, enabled).await);
                 }
+                // Fire-and-forget: no reply channel
                 AgentMsg::InferenceFinished {
                     agent_uuid,
                     inference_uuid,
@@ -793,23 +795,40 @@ impl AgentActor {
     }
 }
 
+// ---- Declarative macro: handle methods with concrete types ----
+
+impl_handle_methods! {
+    AgentHandle for AgentMsg, AGENT_ACTOR;
+
+    fn create(&self, request: AgentCreateRequest) -> Agent
+        => Create { request: request };
+
+    fn send_message(&self, request: SendMessageRequest) -> ()
+        => SendMessage { request: request };
+
+    fn self_update(&self, request: SelfUpdateRequest) -> Agent
+        => SelfUpdate { request: request };
+
+    fn approve_request(&self, request: ApproveRequest) -> ()
+        => ApproveRequest { request: request };
+}
+
+// ---- Manual handle methods (impl Into<String> for API compatibility) ----
+
 impl AgentHandle {
     pub async fn list(
         &self,
         workspace_uuid: impl Into<String>,
     ) -> SubsystemResult<Vec<AgentSummary>> {
-        request(&self.tx, |reply| AgentMsg::List {
-            workspace_uuid: workspace_uuid.into(),
-            reply,
-        })
-        .await
-    }
-
-    pub async fn create(&self, request_body: AgentCreateRequest) -> SubsystemResult<Agent> {
-        request(&self.tx, |reply| AgentMsg::Create {
-            request: request_body,
-            reply,
-        })
+        let w = workspace_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| AgentMsg::List {
+                workspace_uuid: w,
+                reply,
+            },
+            AGENT_ACTOR,
+        )
         .await
     }
 
@@ -818,11 +837,17 @@ impl AgentHandle {
         workspace_uuid: impl Into<String>,
         agent_uuid: impl Into<String>,
     ) -> SubsystemResult<()> {
-        request(&self.tx, |reply| AgentMsg::Delete {
-            workspace_uuid: workspace_uuid.into(),
-            agent_uuid: agent_uuid.into(),
-            reply,
-        })
+        let w = workspace_uuid.into();
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| AgentMsg::Delete {
+                workspace_uuid: w,
+                agent_uuid: a,
+                reply,
+            },
+            AGENT_ACTOR,
+        )
         .await
     }
 
@@ -831,51 +856,43 @@ impl AgentHandle {
         workspace_uuid: impl Into<String>,
         agent_uuid: impl Into<String>,
     ) -> SubsystemResult<bool> {
-        request(&self.tx, |reply| AgentMsg::Contains {
-            workspace_uuid: workspace_uuid.into(),
-            agent_uuid: agent_uuid.into(),
-            reply,
-        })
+        let w = workspace_uuid.into();
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| AgentMsg::Contains {
+                workspace_uuid: w,
+                agent_uuid: a,
+                reply,
+            },
+            AGENT_ACTOR,
+        )
         .await
     }
 
     pub async fn snapshot(&self, agent_uuid: impl Into<String>) -> SubsystemResult<AgentSnapshot> {
-        request(&self.tx, |reply| AgentMsg::Snapshot {
-            agent_uuid: agent_uuid.into(),
-            reply,
-        })
-        .await
-    }
-
-    pub async fn send_message(&self, request_body: SendMessageRequest) -> SubsystemResult<()> {
-        request(&self.tx, |reply| AgentMsg::SendMessage {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn self_update(&self, request_body: SelfUpdateRequest) -> SubsystemResult<Agent> {
-        request(&self.tx, |reply| AgentMsg::SelfUpdate {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
-
-    pub async fn approve_request(&self, request_body: ApproveRequest) -> SubsystemResult<()> {
-        request(&self.tx, |reply| AgentMsg::ApproveRequest {
-            request: request_body,
-            reply,
-        })
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| AgentMsg::Snapshot {
+                agent_uuid: a,
+                reply,
+            },
+            AGENT_ACTOR,
+        )
         .await
     }
 
     pub async fn cancel(&self, agent_uuid: impl Into<String>) -> SubsystemResult<()> {
-        request(&self.tx, |reply| AgentMsg::Cancel {
-            agent_uuid: agent_uuid.into(),
-            reply,
-        })
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| AgentMsg::Cancel {
+                agent_uuid: a,
+                reply,
+            },
+            AGENT_ACTOR,
+        )
         .await
     }
 
@@ -884,14 +901,20 @@ impl AgentHandle {
         agent_uuid: impl Into<String>,
         enabled: bool,
     ) -> SubsystemResult<Agent> {
-        request(&self.tx, |reply| AgentMsg::SetAutoLoop {
-            agent_uuid: agent_uuid.into(),
-            enabled,
-            reply,
-        })
+        let a = agent_uuid.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| AgentMsg::SetAutoLoop {
+                agent_uuid: a,
+                enabled,
+                reply,
+            },
+            AGENT_ACTOR,
+        )
         .await
     }
 
+    // Fire-and-forget: uses send() directly (not request/reply pattern)
     pub async fn inference_complete(
         &self,
         agent_uuid: impl Into<String>,
@@ -981,19 +1004,6 @@ fn pending_approval_from_runtime(runtime: &AgentRuntime) -> Option<PendingApprov
         auto_approved_mask: pending.auto_approved_mask,
         manual_approval_mask: pending.manual_approval_mask,
     })
-}
-
-async fn request<T>(
-    tx: &mpsc::Sender<AgentMsg>,
-    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> AgentMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(message(reply_tx))
-        .await
-        .map_err(|_| SubsystemError::actor_dead(AGENT_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(AGENT_ACTOR))?
 }
 
 #[cfg(test)]

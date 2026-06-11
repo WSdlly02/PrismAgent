@@ -1,9 +1,10 @@
+use crate::actor_dispatch;
 use crate::actors::agent_actor::model::AgentHandle;
 use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRequest};
 use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
-use crate::actors::storage_actor::model::context::Context;
-use crate::actors::storage_actor::model::workflow::Workflow;
+use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
+use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::actors::workflow_actor::model::{
     AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, SelfShowRequest,
     SelfShowResponse, TaskFinishRequest, TaskFinishResponse, WORKFLOW_ACTOR, WorkflowActor,
@@ -13,6 +14,7 @@ use crate::actors::workflow_actor::model::{
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
+use crate::impl_handle_methods;
 use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -33,35 +35,17 @@ impl WorkflowActor {
 
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                WorkflowMsg::UuidGenerate { count, reply } => {
-                    let _ = reply.send(uuid_generate(count));
-                }
-                WorkflowMsg::WorkflowCreate { request, reply } => {
-                    let _ = reply.send(self.workflow_create(request).await);
-                }
-                WorkflowMsg::WorkflowStart { request, reply } => {
-                    let _ = reply.send(self.workflow_start(request).await);
-                }
-                WorkflowMsg::WorkflowCancel { request, reply } => {
-                    let _ = reply.send(self.workflow_cancel(request).await);
-                }
-                WorkflowMsg::ContextCreate { request, reply } => {
-                    let _ = reply.send(self.context_create(request).await);
-                }
-                WorkflowMsg::TriggerCreate { request, reply } => {
-                    let _ = reply.send(self.trigger_create(request).await);
-                }
-                WorkflowMsg::TaskFinish { request, reply } => {
-                    let _ = reply.send(self.task_finish(request).await);
-                }
-                WorkflowMsg::SelfShow { request, reply } => {
-                    let _ = reply.send(self.self_show(request).await);
-                }
-                WorkflowMsg::ListAgents { request, reply } => {
-                    let _ = reply.send(self.list_agents(request).await);
-                }
-            }
+            actor_dispatch!(msg;
+                WorkflowMsg::UuidGenerate { count ; reply } => uuid_generate(count),
+                WorkflowMsg::WorkflowCreate { request ; reply } => self.workflow_create(request).await,
+                WorkflowMsg::WorkflowStart { request ; reply } => self.workflow_start(request).await,
+                WorkflowMsg::WorkflowCancel { request ; reply } => self.workflow_cancel(request).await,
+                WorkflowMsg::ContextCreate { request ; reply } => self.context_create(request).await,
+                WorkflowMsg::TriggerCreate { request ; reply } => self.trigger_create(request).await,
+                WorkflowMsg::TaskFinish { request ; reply } => self.task_finish(request).await,
+                WorkflowMsg::SelfShow { request ; reply } => self.self_show(request).await,
+                WorkflowMsg::ListAgents { request ; reply } => self.list_agents(request).await,
+            );
         }
     }
 
@@ -166,7 +150,7 @@ impl WorkflowActor {
 
     async fn workflow_create(
         &mut self,
-        request: crate::actors::storage_actor::model::workflow::WorkflowCreateRequest,
+        request: WorkflowCreateRequest,
     ) -> SubsystemResult<Workflow> {
         let workspace_uuid = request.workspace_uuid.clone();
         let workflow = self.handles.storage.create_workflow(request).await?;
@@ -180,10 +164,7 @@ impl WorkflowActor {
         Ok(workflow)
     }
 
-    async fn context_create(
-        &mut self,
-        request: crate::actors::storage_actor::model::context::ContextCreateRequest,
-    ) -> SubsystemResult<Context> {
+    async fn context_create(&mut self, request: ContextCreateRequest) -> SubsystemResult<Context> {
         let workspace_uuid = request.workspace_uuid.clone();
         let context = self.handles.storage.create_context(request).await?;
         self.emit_workspace_event(
@@ -418,99 +399,40 @@ async fn deliver_trigger_message(
     }
 }
 
-impl WorkflowHandle {
-    pub async fn uuid_generate(&self, count: usize) -> SubsystemResult<Vec<String>> {
-        request(&self.tx, |reply| WorkflowMsg::UuidGenerate { count, reply }).await
-    }
+// ---- Handle methods (macro-generated) ----
 
-    pub async fn workflow_create(
-        &self,
-        request_body: crate::actors::storage_actor::model::workflow::WorkflowCreateRequest,
-    ) -> SubsystemResult<crate::actors::storage_actor::model::workflow::Workflow> {
-        request(&self.tx, |reply| WorkflowMsg::WorkflowCreate {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+impl_handle_methods! {
+    WorkflowHandle for WorkflowMsg, WORKFLOW_ACTOR;
 
-    pub async fn workflow_start(
-        &self,
-        request_body: WorkflowStartRequest,
-    ) -> SubsystemResult<WorkflowRuntime> {
-        request(&self.tx, |reply| WorkflowMsg::WorkflowStart {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn uuid_generate(&self, count: usize) -> Vec<String>
+        => UuidGenerate { count: count };
 
-    pub async fn context_create(
-        &self,
-        request_body: crate::actors::storage_actor::model::context::ContextCreateRequest,
-    ) -> SubsystemResult<Context> {
-        request(&self.tx, |reply| WorkflowMsg::ContextCreate {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn workflow_create(&self, request: WorkflowCreateRequest) -> Workflow
+        => WorkflowCreate { request: request };
 
-    pub async fn trigger_create(
-        &self,
-        request_body: WorkflowTriggerCreateRequest,
-    ) -> SubsystemResult<WorkflowTrigger> {
-        request(&self.tx, |reply| WorkflowMsg::TriggerCreate {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn workflow_start(&self, request: WorkflowStartRequest) -> WorkflowRuntime
+        => WorkflowStart { request: request };
 
-    pub async fn task_finish(
-        &self,
-        request_body: TaskFinishRequest,
-    ) -> SubsystemResult<TaskFinishResponse> {
-        request(&self.tx, |reply| WorkflowMsg::TaskFinish {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn workflow_cancel(&self, request: WorkflowCancelRequest) -> WorkflowCancelResponse
+        => WorkflowCancel { request: request };
 
-    pub async fn self_show(
-        &self,
-        request_body: SelfShowRequest,
-    ) -> SubsystemResult<SelfShowResponse> {
-        request(&self.tx, |reply| WorkflowMsg::SelfShow {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn context_create(&self, request: ContextCreateRequest) -> Context
+        => ContextCreate { request: request };
 
-    pub async fn list_agents(
-        &self,
-        request_body: ListAgentsRequest,
-    ) -> SubsystemResult<ListAgentsResponse> {
-        request(&self.tx, |reply| WorkflowMsg::ListAgents {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn trigger_create(&self, request: WorkflowTriggerCreateRequest) -> WorkflowTrigger
+        => TriggerCreate { request: request };
 
-    pub async fn workflow_cancel(
-        &self,
-        request_body: WorkflowCancelRequest,
-    ) -> SubsystemResult<WorkflowCancelResponse> {
-        request(&self.tx, |reply| WorkflowMsg::WorkflowCancel {
-            request: request_body,
-            reply,
-        })
-        .await
-    }
+    fn task_finish(&self, request: TaskFinishRequest) -> TaskFinishResponse
+        => TaskFinish { request: request };
+
+    fn self_show(&self, request: SelfShowRequest) -> SelfShowResponse
+        => SelfShow { request: request };
+
+    fn list_agents(&self, request: ListAgentsRequest) -> ListAgentsResponse
+        => ListAgents { request: request };
 }
+
+// ---- Free functions ----
 
 fn validate_runtime_id(value: &str, field: &'static str) -> SubsystemResult<()> {
     if !value.trim().is_empty()
@@ -526,19 +448,6 @@ fn validate_runtime_id(value: &str, field: &'static str) -> SubsystemResult<()> 
             "invalid {field}: {value}"
         )))
     }
-}
-
-async fn request<T>(
-    tx: &mpsc::Sender<WorkflowMsg>,
-    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> WorkflowMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(message(reply_tx))
-        .await
-        .map_err(|_| SubsystemError::actor_dead(WORKFLOW_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(WORKFLOW_ACTOR))?
 }
 
 fn uuid_generate(count: usize) -> SubsystemResult<Vec<String>> {

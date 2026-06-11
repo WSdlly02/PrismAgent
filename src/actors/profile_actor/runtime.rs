@@ -1,8 +1,10 @@
+use crate::actor_dispatch;
 use crate::actors::profile_actor::model::{
     FinalModelConfig, PROFILE_ACTOR, Profile, ProfileActor, ProfileHandle, ProfileMsg,
     PromptsConfigSection, ToolsConfigSection,
 };
 use crate::error::{SubsystemError, SubsystemResult};
+use crate::impl_handle_methods;
 use crate::stdlib_assets;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,38 +32,13 @@ impl ProfileActor {
 
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                ProfileMsg::ListProfiles { reply } => {
-                    let _ = reply.send(self.list_profiles());
-                }
-                ProfileMsg::GetProfile { name, reply } => {
-                    let _ = reply.send(self.profile(&name).cloned());
-                }
-                ProfileMsg::GetModelConfig {
-                    profile_name,
-                    reply,
-                } => {
-                    let _ = reply.send(self.model_config(&profile_name));
-                }
-                ProfileMsg::GetPrompts {
-                    profile_name,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        self.profile(&profile_name)
-                            .map(|profile| profile.prompts.clone()),
-                    );
-                }
-                ProfileMsg::GetTools {
-                    profile_name,
-                    reply,
-                } => {
-                    let _ = reply.send(
-                        self.profile(&profile_name)
-                            .map(|profile| profile.tools.clone()),
-                    );
-                }
-            }
+            actor_dispatch!(msg;
+                ProfileMsg::ListProfiles { ; reply } => self.list_profiles(),
+                ProfileMsg::GetProfile { name ; reply } => self.profile(&name).cloned(),
+                ProfileMsg::GetModelConfig { profile_name ; reply } => self.model_config(&profile_name),
+                ProfileMsg::GetPrompts { profile_name ; reply } => self.profile(&profile_name).map(|p| p.prompts.clone()),
+                ProfileMsg::GetTools { profile_name ; reply } => self.profile(&profile_name).map(|p| p.tools.clone())
+            );
         }
     }
 
@@ -92,16 +69,25 @@ impl ProfileActor {
     }
 }
 
-impl ProfileHandle {
-    pub async fn list_profiles(&self) -> SubsystemResult<Vec<String>> {
-        request(&self.tx, |reply| ProfileMsg::ListProfiles { reply }).await
-    }
+// ---- Declarative macro: handle method with no params ----
 
+impl_handle_methods! {
+    ProfileHandle for ProfileMsg, PROFILE_ACTOR;
+
+    fn list_profiles(&self) -> Vec<String>
+        => ListProfiles {};
+}
+
+// ---- Manual handle methods (impl Into<String> for API compatibility) ----
+
+impl ProfileHandle {
     pub async fn profile(&self, name: impl Into<String>) -> SubsystemResult<Profile> {
-        request(&self.tx, |reply| ProfileMsg::GetProfile {
-            name: name.into(),
-            reply,
-        })
+        let n = name.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| ProfileMsg::GetProfile { name: n, reply },
+            PROFILE_ACTOR,
+        )
         .await
     }
 
@@ -109,10 +95,15 @@ impl ProfileHandle {
         &self,
         profile_name: impl Into<String>,
     ) -> SubsystemResult<FinalModelConfig> {
-        request(&self.tx, |reply| ProfileMsg::GetModelConfig {
-            profile_name: profile_name.into(),
-            reply,
-        })
+        let p = profile_name.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| ProfileMsg::GetModelConfig {
+                profile_name: p,
+                reply,
+            },
+            PROFILE_ACTOR,
+        )
         .await
     }
 
@@ -120,10 +111,15 @@ impl ProfileHandle {
         &self,
         profile_name: impl Into<String>,
     ) -> SubsystemResult<PromptsConfigSection> {
-        request(&self.tx, |reply| ProfileMsg::GetPrompts {
-            profile_name: profile_name.into(),
-            reply,
-        })
+        let p = profile_name.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| ProfileMsg::GetPrompts {
+                profile_name: p,
+                reply,
+            },
+            PROFILE_ACTOR,
+        )
         .await
     }
 
@@ -131,25 +127,17 @@ impl ProfileHandle {
         &self,
         profile_name: impl Into<String>,
     ) -> SubsystemResult<ToolsConfigSection> {
-        request(&self.tx, |reply| ProfileMsg::GetTools {
-            profile_name: profile_name.into(),
-            reply,
-        })
+        let p = profile_name.into();
+        crate::macros::_request(
+            &self.tx,
+            |reply| ProfileMsg::GetTools {
+                profile_name: p,
+                reply,
+            },
+            PROFILE_ACTOR,
+        )
         .await
     }
-}
-
-async fn request<T>(
-    tx: &mpsc::Sender<ProfileMsg>,
-    message: impl FnOnce(tokio::sync::oneshot::Sender<SubsystemResult<T>>) -> ProfileMsg,
-) -> SubsystemResult<T> {
-    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    tx.send(message(reply_tx))
-        .await
-        .map_err(|_| SubsystemError::actor_dead(PROFILE_ACTOR))?;
-    reply_rx
-        .await
-        .map_err(|_| SubsystemError::actor_dead(PROFILE_ACTOR))?
 }
 
 fn default_profiles_root() -> SubsystemResult<PathBuf> {
