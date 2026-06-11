@@ -5,7 +5,7 @@ use crate::actors::agent_actor::model::{
 };
 use crate::actors::agent_actor::pipeline::{
     auto_approval_mask, clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
-    tool_batch_is_auto_approved, tool_response_units,
+    tool_batch_is_auto_approved, tool_calls_sound, tool_response_units,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
 use crate::actors::shell_actor::model::WsEvent;
@@ -21,6 +21,8 @@ use genai::chat::ToolCall;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use uuid::Uuid;
+
+const MAX_MALFORMED_TOOL_CALL_RETRIES: u8 = 2;
 
 impl AgentActor {
     pub fn load(rx: mpsc::Receiver<AgentMsg>, handles: AppHandles) -> Self {
@@ -119,15 +121,8 @@ impl AgentActor {
         for agent in discovered {
             self.agent_workspace
                 .insert(agent.uuid.clone(), workspace_uuid.to_string());
-            self.runtimes.insert(
-                agent.uuid.clone(),
-                AgentRuntime {
-                    status: AgentStatus::Idle,
-                    inference_uuid: None,
-                    pending_tool_batch: None,
-                    active_tool_batch: None,
-                },
-            );
+            self.runtimes
+                .insert(agent.uuid.clone(), AgentRuntime::idle());
             self.agents.insert(agent.uuid.clone(), agent);
         }
         let mut agents = self
@@ -176,15 +171,8 @@ impl AgentActor {
         }
         self.agent_workspace
             .insert(agent.uuid.clone(), workspace_uuid.clone());
-        self.runtimes.insert(
-            agent.uuid.clone(),
-            AgentRuntime {
-                status: AgentStatus::Idle,
-                inference_uuid: None,
-                pending_tool_batch: None,
-                active_tool_batch: None,
-            },
-        );
+        self.runtimes
+            .insert(agent.uuid.clone(), AgentRuntime::idle());
         self.agents.insert(agent.uuid.clone(), agent.clone());
         self.emit_workspace_event(
             &workspace_uuid,
@@ -263,6 +251,7 @@ impl AgentActor {
         let profile_name = agent.profile.clone();
         let agent_uuid = request.agent_uuid.clone();
         let workspace_uuid = self.workspace_uuid(&agent_uuid)?.to_string();
+        self.runtime_mut(&agent_uuid)?.malformed_tool_call_retries = 0;
         self.set_status(&agent_uuid, AgentStatus::RunningLlm)?;
 
         let handles = self.handles.clone();
@@ -356,6 +345,21 @@ impl AgentActor {
                 } else {
                     Vec::new()
                 };
+                if is_tool_calls && !tool_calls_sound(&tool_calls) {
+                    if let Err(error) = self.handle_malformed_tool_calls(agent_uuid).await {
+                        self.emit_agent_event(
+                            agent_uuid,
+                            WsEvent::Error {
+                                message: error.to_string(),
+                            },
+                        );
+                        let _ = self.set_status(agent_uuid, AgentStatus::Idle);
+                    }
+                    return;
+                }
+                self.runtime_mut(agent_uuid)
+                    .expect("runtime checked above")
+                    .malformed_tool_call_retries = 0;
                 match self.commit_units(agent_uuid, output.units).await {
                     Ok(()) if is_tool_calls => {
                         if let Err(error) = self.handle_tool_calls(agent_uuid, tool_calls).await {
@@ -404,6 +408,41 @@ impl AgentActor {
             }
         }
         let _ = self.set_status(agent_uuid, AgentStatus::Idle);
+    }
+
+    async fn handle_malformed_tool_calls(&mut self, agent_uuid: &str) -> SubsystemResult<()> {
+        let retry = {
+            let runtime = self.runtime_mut(agent_uuid)?;
+            if runtime.malformed_tool_call_retries < MAX_MALFORMED_TOOL_CALL_RETRIES {
+                runtime.malformed_tool_call_retries += 1;
+                Some(runtime.malformed_tool_call_retries)
+            } else {
+                None
+            }
+        };
+
+        let text = match retry {
+            Some(attempt) => format!(
+                "[PrismAgent] Your previous tool call was malformed. Tool arguments must be a JSON object, and call_id/fn_name must be non-empty. Retry the tool call with valid arguments. Repair attempt {attempt}/{MAX_MALFORMED_TOOL_CALL_RETRIES}."
+            ),
+            None => format!(
+                "[PrismAgent] Tool-call repair stopped after {MAX_MALFORMED_TOOL_CALL_RETRIES} malformed attempts. Please inspect the previous output and continue manually."
+            ),
+        };
+        self.commit_units(agent_uuid, vec![Unit::from_user_text(text)])
+            .await?;
+
+        if retry.is_some() {
+            self.spawn_llm_continuation(agent_uuid).await
+        } else {
+            self.emit_agent_event(
+                agent_uuid,
+                WsEvent::Error {
+                    message: "LLM produced malformed tool calls repeatedly".to_string(),
+                },
+            );
+            self.set_status(agent_uuid, AgentStatus::Idle)
+        }
     }
 
     async fn finish_tool_batch(

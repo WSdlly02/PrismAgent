@@ -83,6 +83,19 @@ pub struct AgentRuntime {
     pub inference_uuid: Option<String>,
     pub pending_tool_batch: Option<PendingToolBatch>,
     pub active_tool_batch: Option<PendingToolBatch>,
+    pub malformed_tool_call_retries: u8,
+}
+
+impl AgentRuntime {
+    pub fn idle() -> Self {
+        Self {
+            status: AgentStatus::Idle,
+            inference_uuid: None,
+            pending_tool_batch: None,
+            active_tool_batch: None,
+            malformed_tool_call_retries: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

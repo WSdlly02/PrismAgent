@@ -200,6 +200,22 @@ pub fn clone_tool_calls(unit: &Unit) -> Vec<ToolCall> {
         .collect()
 }
 
+/// Checks that genai-parsed tool calls are structurally sound.
+///
+/// When an LLM stream is cut off mid-JSON, genai may produce a `ToolCall`
+/// with malformed arguments such as `Null` or a raw string. Tool arguments
+/// must be a JSON object; no-argument tools should use `{}`.
+pub fn tool_calls_sound(tool_calls: &[ToolCall]) -> bool {
+    if tool_calls.is_empty() {
+        return false;
+    }
+    tool_calls.iter().all(|tc| {
+        !tc.call_id.trim().is_empty()
+            && !tc.fn_name.trim().is_empty()
+            && tc.fn_arguments.is_object()
+    })
+}
+
 pub fn tool_batch_is_auto_approved(config: &ToolsConfigSection, tool_calls: &[ToolCall]) -> bool {
     if tool_calls.is_empty() {
         return false;
@@ -352,5 +368,60 @@ mod tests {
             fn_arguments: json!({}),
             thought_signatures: None,
         }
+    }
+
+    #[test]
+    fn sound_rejects_null_arguments() {
+        let tcs = vec![ToolCall {
+            call_id: "c1".into(),
+            fn_name: "fs_read".into(),
+            fn_arguments: serde_json::Value::Null,
+            thought_signatures: None,
+        }];
+        assert!(!tool_calls_sound(&tcs));
+    }
+
+    #[test]
+    fn sound_rejects_empty_fn_name() {
+        let tcs = vec![ToolCall {
+            call_id: "c1".into(),
+            fn_name: String::new(),
+            fn_arguments: json!({"path": "/tmp"}),
+            thought_signatures: None,
+        }];
+        assert!(!tool_calls_sound(&tcs));
+    }
+
+    #[test]
+    fn sound_rejects_empty_call_id() {
+        let tcs = vec![ToolCall {
+            call_id: String::new(),
+            fn_name: "fs_read".into(),
+            fn_arguments: json!({"path": "/tmp"}),
+            thought_signatures: None,
+        }];
+        assert!(!tool_calls_sound(&tcs));
+    }
+
+    #[test]
+    fn sound_rejects_string_arguments() {
+        let tcs = vec![ToolCall {
+            call_id: "c1".into(),
+            fn_name: "fs_read".into(),
+            fn_arguments: json!("{\"path\": \"src/actors/workflow_actor/runtime.rs\""),
+            thought_signatures: None,
+        }];
+        assert!(!tool_calls_sound(&tcs));
+    }
+
+    #[test]
+    fn sound_rejects_empty_list() {
+        assert!(!tool_calls_sound(&[]));
+    }
+
+    #[test]
+    fn sound_accepts_valid_tool_call() {
+        let tcs = vec![tool_call("fs_read")];
+        assert!(tool_calls_sound(&tcs));
     }
 }
