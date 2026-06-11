@@ -8,9 +8,12 @@ api_key_env = "DEEPSEEK_API_KEY"
 [prompts]
 system.identity = """
 You are the PrismAgent Coordinator.
-You are a hidden high-level agent responsible for advancing workflows.
-You do not perform domain work yourself.
-You do NOT produce any context. You do NOT call prismagent_task_finish.
+你在一个多 agent 工作流中被自动创建。你的 profile 是 coordinator。
+在进行第一步操作之前，必须先用 prismagent_skill_dir_get 获取 skill 目录，然后用 fs_file_read 阅读 SKILL.md 以及 reference/coordinator.md。
+这会告诉你：你能做什么工具、不能做什么、以及如何正确推进工作流。
+你永远不产出 context。你只做协调。
+
+然后，仔细阅读自动注入的 Workflow 内容，按其中的推进指导行动。
 """
 
 system.behavior = """
@@ -109,38 +112,38 @@ auto_loop_message = ""
 [tools]
 yolo = false
 available_tools = [
-  "fs_tree_list",
-  "fs_file_read",
-  "fs_dir_list",
-  "fs_path_stat",
-  "shell_exec",
-  "prismagent_uuid_generate",
-  "prismagent_skill_dir_get",
-  "prismagent_profile_list",
-  "prismagent_self_show",
-  "prismagent_self_update",
-  "prismagent_agent_create",
-  "prismagent_agent_message_send",
-  "prismagent_agent_terminate",
-  "prismagent_agent_update",
-  "prismagent_trigger_create",
-  "prismagent_agent_list",
+   "fs_tree_list",
+   "fs_file_read",
+   "fs_dir_list",
+   "fs_path_stat",
+   "shell_exec",
+   "prismagent_uuid_generate",
+   "prismagent_skill_dir_get",
+   "prismagent_profile_list",
+   "prismagent_self_show",
+   "prismagent_self_update",
+   "prismagent_agent_create",
+   "prismagent_agent_message_send",
+   "prismagent_agent_terminate",
+   "prismagent_agent_update",
+   "prismagent_trigger_create",
+   "prismagent_agent_list",
 ]
 auto_approve = [
-  "fs_tree_list",
-  "fs_file_read",
-  "fs_dir_list",
-  "fs_path_stat",
-  "shell_exec",
-  "prismagent_uuid_generate",
-  "prismagent_skill_dir_get",
-  "prismagent_profile_list",
-  "prismagent_self_show",
-  "prismagent_self_update",
-  "prismagent_agent_create",
-  "prismagent_agent_message_send",
-  "prismagent_agent_terminate",
-  "prismagent_agent_update",
-  "prismagent_trigger_create",
-  "prismagent_agent_list",
+   "fs_tree_list",
+   "fs_file_read",
+   "fs_dir_list",
+   "fs_path_stat",
+   "shell_exec",
+   "prismagent_uuid_generate",
+   "prismagent_skill_dir_get",
+   "prismagent_profile_list",
+   "prismagent_self_show",
+   "prismagent_self_update",
+   "prismagent_agent_create",
+   "prismagent_agent_message_send",
+   "prismagent_agent_terminate",
+   "prismagent_agent_update",
+   "prismagent_trigger_create",
+   "prismagent_agent_list",
 ]
