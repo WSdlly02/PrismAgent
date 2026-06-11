@@ -11,77 +11,27 @@ scope: global
 
 ## 快速上手
 
-Agent 在收到任务后，按以下步骤执行。这些是硬规则，不可跳过：
+Agent 在收到任务后，先用 `prismagent_skill_dir_get` 找到本 skill 目录，再用 `fs_file_read` 阅读 `reference/{profile}.md`。该 reference 是对应 profile 的单一事实源。
 
-### 所有角色通用
+通用硬规则：
+- 只使用当前 profile 暴露的工具，不假设隐藏能力。
+- 不编造 UUID；需要新对象时先用 `prismagent_uuid_generate`。
+- `context_refs` 是输入，创建 agent 时自动注入 prompt。
+- `context_out` 是输出契约，Executor/Verifier 必须创建这些 context。
+- Planner/Coordinator 不是 auto_loop，不调用 `prismagent_task_finish`。
+- Executor/Verifier 是 auto_loop，完成全部 `context_out` 后必须调用 `prismagent_task_finish`。
 
-1. **只使用当前 profile 暴露的工具** — 不要引用或假设自己没有的工具。
-2. **必须阅读 reference 文档** — 用 `prismagent_skill_dir_get` 找到本 skill 目录，再用 `fs_file_read` 阅读 `reference/{profile}.md`。这是强制步骤，不可跳过。
+角色入口：
+- Default: `reference/default.md`
+- Planner: `reference/planner.md`
+- Coordinator: `reference/coordinator.md`
+- Executor: `reference/executor.md`
+- Verifier: `reference/verifier.md`
 
-### Worker 角色通用
-
-仅 Executor/Verifier 属于 worker 角色：
-
-1. 收到任务后立即用 `prismagent_self_show` 查看 `context_out` 列表。
-2. 用 `prismagent_context_create` 产出每个指定的 context，UUID 必须精确匹配 `context_out`。
-3. 完成所有 `context_out` 后调用 `prismagent_task_finish` 关闭 auto_loop。
-
-Planner/Coordinator 不是 worker，不产出普通任务结果，不调用 `prismagent_task_finish`。
-
-### auto_loop 语义
-
-- **Executor/Verifier**：`auto_loop=true`，系统会自动发送消息确保持续工作。
-- **task_finish**：用于关闭 auto_loop，表示任务完成。Executor/Verifier 完成任务后必须调用。
-- **Planner/Coordinator**：`auto_loop=false`，不调用 task_finish，通过事件驱动（用户输入/trigger 触发）。
-
-### Planner
-
-- 规划前先 `prismagent_profile_list` 看有哪些角色可用。
-- 简单任务直接回答（单步查询、单文件修改）。复杂任务（plan→execute→verify 闭环、多步依赖）创建工作流。
-- 不确定时优先建工作流。
-- **不要编造 UUID** — 需要新对象时先用 `prismagent_uuid_generate` 预分配。
-- **把 UUID 写入文档正文** — 下游 agent/coordinator 依赖 context、workflow、trigger、agent UUID 做确定性协作。
-- **创建 Context**：为每个下游 agent 创建任务说明书，声明 context_out（本 agent 需要产出的 context UUID）。
-- **创建 Workflow**：纯控制流描述（Mermaid + 文字），包含所有 UUID 和推进指导，不包含业务细节。
-- **启动工作流**：用 `prismagent_workflow_start` 启动 → 自动创建 coordinator，workflow 内容自动注入。
-- **接收结果**：工作流完成后，coordinator 通过 `piped_context_out` 发送最终结果。
-- **迭代优化**：如果结果不满意，根据反馈创建新的 Context/Workflow 继续。
-
-### Coordinator
-
-- **收到 Workflow**：内容已自动注入你的上下文，理解其中的 UUID 和推进指导。
-- **创建 Agent**：根据 Workflow 中的注册表创建 agent，设置 `context_refs`（需要读取的 context）和 `context_out`（需要产出的 context UUID）。
-- **创建 Trigger**：监控 context 创建事件，OR 语义（任一 context 创建即触发）。
-- **推进逻辑**：收到 trigger → 记录已触发的 context → 检查 agent 依赖是否满足 → 满足则推进下一步。
-- **查询状态**：不确定时用 `prismagent_agent_list` 查看所有 agent 状态和 context 存在性。
-- **汇报结果**：工作流完成后，用 `prismagent_agent_message_send` + `piped_context_out` 发送最终 context 给 planner。
-- **绝不**：产出 context、执行业务逻辑、在无 trigger 时空转。
-
-### Executor
-
-- **第一步**：`prismagent_self_show` → 确认 context_out UUID。
-- **读取任务**：context_refs 中的 context 已自动注入你的 prompt。
-- **执行任务**：做最小的安全变更。
-- **产出结果**：`prismagent_context_create`（用正确 UUID），顶部写 `STATUS: DONE / BLOCKED / FAILED`。
-- **完成任务**：`prismagent_task_finish`（系统检查 context_out 是否都存在，然后关闭 auto_loop）。
-- **永远不要**：编造 context UUID、修改无关文件、在产出 context 后继续工作。
-
-### Verifier
-
-- **第一步**：`prismagent_self_show` → 确认 context_out UUID。
-- **读取任务**：task context + result context 已自动注入你的 prompt。
-- **验证**：逐条核对需求是否满足。
-- **产出裁决**：`prismagent_context_create`（用正确 UUID），先写 `VERDICT: ACCEPTED / REJECTED / BLOCKED / FAILED`，再附证据。
-- **完成任务**：`prismagent_task_finish`。
-- **验证命令**：仅运行 `cargo check/test/build`, `go test`, `npm test` 等，不运行破坏性命令。
-
-### Default
-
-- 你是用户对话入口，不做工作流角色。
-- 简单任务直接做。复杂任务建议用户创建 planner agent。
-- 你没有 agent/workflow 创建工具，不要尝试。
-
----
+Workflow 文档必须同时包含：
+- 一个 machine-readable YAML block，供 Coordinator 优先解析 UUID、agent、context、trigger、依赖与完成条件。
+- 一个 Mermaid 图，供人类审阅控制流。
+- 必要的推进说明，处理 YAML 不能充分表达的条件分支或异常策略。
 
 ## 系统概述
 
