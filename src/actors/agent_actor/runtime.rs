@@ -16,7 +16,6 @@ use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::impl_handle_methods;
-use crate::impl_handle_methods_into;
 use genai::chat::ToolCall;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -840,8 +839,23 @@ impl AgentActor {
 impl_handle_methods! {
     AgentHandle for AgentMsg, AGENT_ACTOR;
 
+    fn list(&self, workspace_uuid: impl Into<String>) -> Vec<AgentSummary>
+        => List { workspace_uuid: workspace_uuid.into() };
+
     fn create(&self, request: AgentCreateRequest) -> Agent
         => Create { request: request };
+
+    fn delete(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> ()
+        => Delete { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
+
+    fn contains(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> bool
+        => Contains { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
+
+    fn snapshot(&self, agent_uuid: impl Into<String>) -> AgentSnapshot
+        => Snapshot { agent_uuid: agent_uuid.into() };
+
+    fn cancel(&self, agent_uuid: impl Into<String>) -> ()
+        => Cancel { agent_uuid: agent_uuid.into() };
 
     fn send_message(&self, request: SendMessageRequest) -> ()
         => SendMessage { request: request };
@@ -849,32 +863,11 @@ impl_handle_methods! {
     fn self_update(&self, request: SelfUpdateRequest) -> Agent
         => SelfUpdate { request: request };
 
+    fn set_auto_loop(&self, agent_uuid: impl Into<String>, enabled: bool) -> Agent
+        => SetAutoLoop { agent_uuid: agent_uuid.into(), enabled: enabled };
+
     fn approve_request(&self, request: ApproveRequest) -> ()
         => ApproveRequest { request: request };
-}
-
-// ---- impl_handle_methods_into!: methods with impl Into<String> params ----
-
-impl_handle_methods_into! {
-    AgentHandle for AgentMsg, AGENT_ACTOR;
-
-    fn list(&self, workspace_uuid: impl_into) -> Vec<AgentSummary>
-        => List { workspace_uuid: workspace_uuid };
-
-    fn delete(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> ()
-        => Delete { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
-
-    fn contains(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> bool
-        => Contains { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
-
-    fn snapshot(&self, agent_uuid: impl_into) -> AgentSnapshot
-        => Snapshot { agent_uuid: agent_uuid };
-
-    fn cancel(&self, agent_uuid: impl_into) -> ()
-        => Cancel { agent_uuid: agent_uuid };
-
-    fn set_auto_loop(&self, agent_uuid: impl_into, enabled: bool) -> Agent
-        => SetAutoLoop { agent_uuid: agent_uuid, enabled: enabled };
 }
 
 // ---- Manual handle methods (fire-and-forget: no reply channel) ----

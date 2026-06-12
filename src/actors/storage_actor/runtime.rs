@@ -5,7 +5,7 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{SubsystemError, SubsystemResult};
-use crate::{actor_dispatch, impl_handle_methods, impl_handle_methods_into};
+use crate::{actor_dispatch, impl_handle_methods};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -34,7 +34,6 @@ impl StorageActor {
                 StorageMsg::Root { ; reply } => Ok(self.root.clone()),
                 StorageMsg::ListAgents { workspace_uuid ; reply } => self.list_agents(&workspace_uuid),
                 StorageMsg::ReadAgents { workspace_uuid, uuids ; reply } => self.read_agents(&workspace_uuid, uuids),
-                StorageMsg::WriteAgents { workspace_uuid, agents ; reply } => self.write_agents(&workspace_uuid, &agents),
                 StorageMsg::CreateAgent { request, auto_loop, auto_loop_message ; reply } => self.create_agent(request, auto_loop, auto_loop_message),
                 StorageMsg::DeleteAgent { workspace_uuid, agent_uuid ; reply } => self.delete_agent(&workspace_uuid, &agent_uuid),
                 StorageMsg::SetAgentAutoLoop { workspace_uuid, agent_uuid, enabled ; reply } => self.set_agent_auto_loop(&workspace_uuid, &agent_uuid, enabled),
@@ -42,7 +41,6 @@ impl StorageActor {
                 StorageMsg::AppendAgentUnits { workspace_uuid, agent_uuid, units ; reply } => self.append_agent_units(&workspace_uuid, &agent_uuid, &units),
                 StorageMsg::ListUnits { workspace_uuid ; reply } => self.list_units(&workspace_uuid),
                 StorageMsg::ReadUnits { workspace_uuid, uuids ; reply } => self.read_units(&workspace_uuid, uuids),
-                StorageMsg::WriteUnits { workspace_uuid, units ; reply } => self.write_units(&workspace_uuid, &units),
                 StorageMsg::ListContexts { workspace_uuid ; reply } => self.list_contexts(&workspace_uuid),
                 StorageMsg::ReadContexts { workspace_uuid, uuids ; reply } => self.read_contexts(&workspace_uuid, uuids),
                 StorageMsg::CreateContext { request ; reply } => self.create_context(request),
@@ -66,15 +64,6 @@ impl StorageActor {
             .iter()
             .map(|uuid| read_json(&self.agent_path(workspace_uuid, uuid)?))
             .collect()
-    }
-
-    fn write_agents(&self, workspace_uuid: &str, agents: &[Agent]) -> SubsystemResult<Vec<String>> {
-        let mut written = Vec::with_capacity(agents.len());
-        for agent in agents {
-            write_json_create_only(&self.agent_path(workspace_uuid, &agent.uuid)?, agent)?;
-            written.push(agent.uuid.clone());
-        }
-        Ok(written)
     }
 
     fn create_agent(
@@ -196,15 +185,6 @@ impl StorageActor {
             .iter()
             .map(|uuid| read_json(&self.unit_path(workspace_uuid, uuid)?))
             .collect()
-    }
-
-    fn write_units(&self, workspace_uuid: &str, units: &[Unit]) -> SubsystemResult<Vec<String>> {
-        let mut written = Vec::with_capacity(units.len());
-        for unit in units {
-            write_json_create_only(&self.unit_path(workspace_uuid, &unit.uuid)?, unit)?;
-            written.push(unit.uuid.clone());
-        }
-        Ok(written)
     }
 
     fn list_contexts(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
@@ -377,216 +357,68 @@ impl_handle_methods! {
     fn root(&self) -> PathBuf
         => Root {};
 
+    fn list_agents(&self, workspace_uuid: impl Into<String>) -> Vec<String>
+        => ListAgents { workspace_uuid: workspace_uuid.into() };
+
+    fn read_agents(&self,workspace_uuid: impl Into<String>, uuids: Vec<String>) -> Vec<Agent>
+        => ReadAgents { workspace_uuid: workspace_uuid.into(), uuids: uuids };
+
     fn create_agent(&self, request: AgentCreateRequest, auto_loop: bool, auto_loop_message: String) -> Agent
         => CreateAgent { request: request, auto_loop: auto_loop, auto_loop_message: auto_loop_message };
 
     fn update_agent(&self, request: AgentUpdateRequest) -> Agent
         => UpdateAgent { request: request };
 
+    fn append_agent_units(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>, units: Vec<Unit>) -> Agent
+        => AppendAgentUnits { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into(), units: units };
+
+    fn set_agent_auto_loop(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>, enabled: bool) -> Agent
+        => SetAgentAutoLoop { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into(), enabled: enabled };
+
+    fn delete_agent(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> ()
+        => DeleteAgent { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
+
+    fn list_contexts(&self, workspace_uuid: impl Into<String>) -> Vec<String>
+        => ListContexts { workspace_uuid: workspace_uuid.into() };
+
+    fn read_contexts(&self, workspace_uuid: impl Into<String>, uuids: Vec<String>) -> Vec<Context>
+        => ReadContexts { workspace_uuid: workspace_uuid.into(), uuids: uuids };
+
     fn create_context(&self, request: ContextCreateRequest) -> Context
         => CreateContext { request: request };
 
+    // never used !
+    fn list_workflows(&self, workspace_uuid: impl Into<String>) -> Vec<String>
+        => ListWorkflows { workspace_uuid: workspace_uuid.into() };
+
     fn create_workflow(&self, request: WorkflowCreateRequest) -> Workflow
         => CreateWorkflow { request: request };
-}
 
-// ---- impl_handle_methods_into!: methods with impl Into<String> params ----
+    fn read_workflow(&self, workspace_uuid: impl Into<String>, uuid: impl Into<String>) -> Workflow
+        => ReadWorkflow { workspace_uuid: workspace_uuid.into(), uuid: uuid.into() };
 
-impl_handle_methods_into! {
-    StorageHandle for StorageMsg, STORAGE_ACTOR;
+    // never used !
+    fn list_units(&self, workspace_uuid: impl Into<String>) -> Vec<String>
+        => ListUnits { workspace_uuid: workspace_uuid.into() };
 
-    fn list_agents(&self, workspace_uuid: impl_into) -> Vec<String>
-        => ListAgents { workspace_uuid: workspace_uuid };
+    fn read_units(&self, workspace_uuid: impl Into<String>, uuids: Vec<String>) -> Vec<Unit>
+        => ReadUnits { workspace_uuid: workspace_uuid.into(), uuids: uuids };
 
-    fn delete_agent(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> ()
-        => DeleteAgent { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
+    // never used !
+    fn list_misc(&self, workspace_uuid: impl Into<String>) -> Vec<String>
+        => ListMisc { workspace_uuid: workspace_uuid.into() };
 
-    fn set_agent_auto_loop(&self, workspace_uuid: impl_into, agent_uuid: impl_into, enabled: bool) -> Agent
-        => SetAgentAutoLoop { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid, enabled: enabled };
+    // never used !
+    fn read_misc(&self, workspace_uuid: impl Into<String>, names: Vec<String>) -> Vec<MiscReadEntry>
+        => ReadMisc { workspace_uuid: workspace_uuid.into(), names: names };
 
-    fn list_units(&self, workspace_uuid: impl_into) -> Vec<String>
-        => ListUnits { workspace_uuid: workspace_uuid };
+    // never used !
+    fn write_misc(&self, workspace_uuid: impl Into<String>, entries: Vec<MiscWriteEntry>) -> Vec<String>
+        => WriteMisc { workspace_uuid: workspace_uuid.into(), entries: entries };
 
-    fn list_contexts(&self, workspace_uuid: impl_into) -> Vec<String>
-        => ListContexts { workspace_uuid: workspace_uuid };
-
-    fn list_workflows(&self, workspace_uuid: impl_into) -> Vec<String>
-        => ListWorkflows { workspace_uuid: workspace_uuid };
-
-    fn read_workflow(&self, workspace_uuid: impl_into, uuid: impl_into) -> Workflow
-        => ReadWorkflow { workspace_uuid: workspace_uuid, uuid: uuid };
-
-    fn list_misc(&self, workspace_uuid: impl_into) -> Vec<String>
-        => ListMisc { workspace_uuid: workspace_uuid };
-}
-
-// ---- Manual handle methods (impl Into<String> + complex types not supported by macro) ----
-
-impl StorageHandle {
-    pub async fn read_agents(
-        &self,
-        workspace_uuid: impl Into<String>,
-        uuids: Vec<String>,
-    ) -> SubsystemResult<Vec<Agent>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ReadAgents {
-                workspace_uuid: w,
-                uuids,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn write_agents(
-        &self,
-        workspace_uuid: impl Into<String>,
-        agents: Vec<Agent>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::WriteAgents {
-                workspace_uuid: w,
-                agents,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn append_agent_units(
-        &self,
-        workspace_uuid: impl Into<String>,
-        agent_uuid: impl Into<String>,
-        units: Vec<Unit>,
-    ) -> SubsystemResult<Agent> {
-        let w = workspace_uuid.into();
-        let a = agent_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::AppendAgentUnits {
-                workspace_uuid: w,
-                agent_uuid: a,
-                units,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn read_units(
-        &self,
-        workspace_uuid: impl Into<String>,
-        uuids: Vec<String>,
-    ) -> SubsystemResult<Vec<Unit>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ReadUnits {
-                workspace_uuid: w,
-                uuids,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn write_units(
-        &self,
-        workspace_uuid: impl Into<String>,
-        units: Vec<Unit>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::WriteUnits {
-                workspace_uuid: w,
-                units,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn read_contexts(
-        &self,
-        workspace_uuid: impl Into<String>,
-        uuids: Vec<String>,
-    ) -> SubsystemResult<Vec<Context>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ReadContexts {
-                workspace_uuid: w,
-                uuids,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn read_misc(
-        &self,
-        workspace_uuid: impl Into<String>,
-        names: Vec<String>,
-    ) -> SubsystemResult<Vec<MiscReadEntry>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ReadMisc {
-                workspace_uuid: w,
-                names,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn write_misc(
-        &self,
-        workspace_uuid: impl Into<String>,
-        entries: Vec<MiscWriteEntry>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::WriteMisc {
-                workspace_uuid: w,
-                entries,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
-
-    pub async fn replace_misc(
-        &self,
-        workspace_uuid: impl Into<String>,
-        entries: Vec<MiscReplaceEntry>,
-    ) -> SubsystemResult<Vec<String>> {
-        let w = workspace_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| StorageMsg::ReplaceMisc {
-                workspace_uuid: w,
-                entries,
-                reply,
-            },
-            STORAGE_ACTOR,
-        )
-        .await
-    }
+    // never used !
+    fn replace_misc(&self, workspace_uuid: impl Into<String>, entries: Vec<MiscReplaceEntry>) -> Vec<String>
+        => ReplaceMisc { workspace_uuid: workspace_uuid.into(), entries: entries };
 }
 
 fn atomic_create_file(dst: &Path, data: &[u8]) -> SubsystemResult<()> {

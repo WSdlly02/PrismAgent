@@ -289,116 +289,6 @@ macro_rules! impl_handle_methods {
 }
 
 // ============================================================================
-// impl_handle_methods_into!
-// ============================================================================
-
-/// Generates Handle convenience methods with `impl Into<String>` parameter support.
-///
-/// Like [`impl_handle_methods!`], but supports parameters annotated with
-/// `impl_into` that are automatically wrapped with `.into()` before being
-/// passed to the message variant.
-///
-/// This eliminates the boilerplate of writing `let w = workspace_uuid.into();`
-/// in every method that accepts `impl Into<String>` for ergonomic API reasons.
-///
-/// # Syntax
-///
-/// ```text
-/// impl_handle_methods_into! {
-///     HandleType for MsgType, ACTOR_NAME;
-///
-///     fn method_name(&self, param: impl_into) -> ReturnType
-///         => VariantName { field: param };
-/// }
-/// ```
-///
-/// Parameters declared as `impl_into` are generated as `impl Into<String>` in
-/// the function signature, and an automatic `let param = param.into();` binding
-/// is inserted before the `_request` call. Regular concrete-typed parameters
-/// are passed through unchanged.
-///
-/// The `reply` field is **automatically appended** to each variant — do not
-/// include it in the field list.
-///
-/// # Example
-///
-/// ```ignore
-/// impl_handle_methods_into! {
-///     StorageHandle for StorageMsg, STORAGE_ACTOR;
-///
-///     fn list_agents(&self, workspace_uuid: impl_into) -> Vec<AgentSummary>
-///         => ListAgents { workspace_uuid: workspace_uuid };
-///
-///     fn delete_agent(&self, workspace_uuid: impl_into, agent_uuid: impl_into) -> ()
-///         => DeleteAgent { workspace_uuid: workspace_uuid, agent_uuid: agent_uuid };
-///
-///     fn create_agent(&self, workspace_uuid: impl_into, request: AgentCreateRequest) -> Agent
-///         => CreateAgent { workspace_uuid: workspace_uuid, request: request };
-/// }
-/// ```
-///
-/// Generated code for a method with `impl_into` params:
-///
-/// ```ignore
-/// pub async fn delete_agent(
-///     &self,
-///     workspace_uuid: impl Into<String>,
-///     agent_uuid: impl Into<String>,
-/// ) -> SubsystemResult<()> {
-///     let workspace_uuid = workspace_uuid.into();
-///     let agent_uuid = agent_uuid.into();
-///     crate::macros::_request(&self.tx, |reply| {
-///         StorageMsg::DeleteAgent { workspace_uuid, agent_uuid, reply }
-///     }, STORAGE_ACTOR).await
-/// }
-/// ```
-#[macro_export]
-macro_rules! impl_handle_methods_into {
-    // Entry point: matches Handle + Msg + ACTOR, then delegates each method.
-    // Uses $ptype:tt (single token tree) to match both `impl_into` and
-    // simple concrete types like `String` or `AgentCreateRequest`.
-    // For complex types (e.g. `Vec<String>`), use `impl_handle_methods!` directly.
-    (
-        $Handle:ident for $Msg:ident, $ACTOR:expr;
-        $(
-            fn $method:ident(&self $(, $param:ident : $ptype:tt)*) -> $ret:ty
-                => $Variant:ident { $($fname:ident : $fval:expr),* $(,)? }
-        );* $(;)?
-    ) => {
-        impl $Handle {
-            $(
-                pub async fn $method(
-                    &self
-                    $(, $param: $crate::impl_handle_methods_into!(@sig_type $ptype))*
-                ) -> $crate::error::SubsystemResult<$ret> {
-                    $crate::impl_handle_methods_into!(@into_bindings $($param : $ptype,)*);
-                    $crate::macros::_request(&self.tx, |reply| {
-                        $Msg::$Variant { $($fname: $fval,)* reply }
-                    }, $ACTOR).await
-                }
-            )*
-        }
-    };
-
-    // Helper: transform impl_into → impl Into<String> for the function signature
-    (@sig_type impl_into) => { impl Into<String> };
-    (@sig_type $other:tt) => { $other };
-
-    // TT muncher: generate .into() bindings for impl_into params.
-    // Arm 1: impl_into param → emit `let p = p.into();` and recurse.
-    (@into_bindings $param:ident : impl_into, $($rest:tt)*) => {
-        let $param = $param.into();
-        $crate::impl_handle_methods_into!(@into_bindings $($rest)*);
-    };
-    // Arm 2: concrete-typed param → skip, recurse.
-    (@into_bindings $param:ident : $ptype:tt, $($rest:tt)*) => {
-        $crate::impl_handle_methods_into!(@into_bindings $($rest)*);
-    };
-    // Arm 3: base case — no more params.
-    (@into_bindings) => {};
-}
-
-// ============================================================================
 // impl_actor!
 // ============================================================================
 
@@ -694,7 +584,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: impl_handle_methods_into!
+    // Test 3: impl_handle_methods! with impl Into<String> params
     // -----------------------------------------------------------------------
 
     mod into_methods {
@@ -755,16 +645,16 @@ mod tests {
             }
         }
 
-        impl_handle_methods_into! {
+        impl_handle_methods! {
             IntoHandle for IntoMsg, INTO_ACTOR;
 
             // Single impl_into param
-            fn echo(&self, text: impl_into) -> String
-                => Echo { text: text };
+            fn echo(&self, text: impl Into<String>) -> String
+                => Echo { text: text.into() };
 
             // Multiple impl_into params
-            fn concat(&self, a: impl_into, b: impl_into) -> String
-                => Concat { a: a, b: b };
+            fn concat(&self, a: impl Into<String>, b: impl Into<String>) -> String
+                => Concat { a: a.into(), b: b.into() };
 
             // Concrete type only (no impl_into) — mixed param style
             fn length(&self, text: String) -> usize

@@ -116,23 +116,9 @@ impl_handle_methods! {
 
     fn infer(&self, request: LlmInferRequest) -> LlmInferResponse
         => Infer { request: request };
-}
 
-// ---- Manual handle methods (non-standard patterns) ----
-
-impl LlmHandle {
-    pub async fn cancel(&self, inference_uuid: impl Into<String>) -> SubsystemResult<bool> {
-        let id = inference_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| LlmMsg::Cancel {
-                inference_uuid: id,
-                reply,
-            },
-            LLM_ACTOR,
-        )
-        .await
-    }
+    fn cancel(&self, inference_uuid: impl Into<String>) -> bool
+        => Cancel { inference_uuid: inference_uuid.into() };
 }
 
 async fn run_streaming_inference(

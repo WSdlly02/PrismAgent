@@ -39,11 +39,6 @@ pub enum StorageMsg {
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Agent>>>,
     },
-    WriteAgents {
-        workspace_uuid: String,
-        agents: Vec<Agent>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
-    },
     CreateAgent {
         request: AgentCreateRequest,
         auto_loop: bool,
@@ -79,11 +74,6 @@ pub enum StorageMsg {
         workspace_uuid: String,
         uuids: Vec<String>,
         reply: oneshot::Sender<SubsystemResult<Vec<Unit>>>,
-    },
-    WriteUnits {
-        workspace_uuid: String,
-        units: Vec<Unit>,
-        reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
     ListContexts {
         workspace_uuid: String,

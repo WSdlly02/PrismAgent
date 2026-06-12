@@ -5,7 +5,6 @@ use crate::actors::profile_actor::model::{
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::impl_handle_methods;
-use crate::impl_handle_methods_into;
 use crate::stdlib_assets;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -77,24 +76,18 @@ impl_handle_methods! {
 
     fn list_profiles(&self) -> Vec<String>
         => ListProfiles {};
-}
 
-// ---- impl_handle_methods_into!: methods with impl Into<String> params ----
+    fn profile(&self, name: impl Into<String>) -> Profile
+        => GetProfile { name: name.into() };
 
-impl_handle_methods_into! {
-    ProfileHandle for ProfileMsg, PROFILE_ACTOR;
+    fn model_config(&self, profile_name: impl Into<String>) -> FinalModelConfig
+        => GetModelConfig { profile_name: profile_name.into() };
 
-    fn profile(&self, name: impl_into) -> Profile
-        => GetProfile { name: name };
+    fn prompts(&self, profile_name: impl Into<String>) -> PromptsConfigSection
+        => GetPrompts { profile_name: profile_name.into() };
 
-    fn model_config(&self, profile_name: impl_into) -> FinalModelConfig
-        => GetModelConfig { profile_name: profile_name };
-
-    fn prompts(&self, profile_name: impl_into) -> PromptsConfigSection
-        => GetPrompts { profile_name: profile_name };
-
-    fn tools(&self, profile_name: impl_into) -> ToolsConfigSection
-        => GetTools { profile_name: profile_name };
+    fn tools(&self, profile_name: impl Into<String>) -> ToolsConfigSection
+        => GetTools { profile_name: profile_name.into() };
 }
 
 fn default_profiles_root() -> SubsystemResult<PathBuf> {

@@ -165,23 +165,9 @@ impl_handle_methods! {
 
     fn dispatch_batch(&self, request: ToolBatchRequest) -> ToolBatchResponse
         => DispatchBatch { request: request };
-}
 
-// ---- Manual handle methods ----
-
-impl ToolsHandle {
-    pub async fn cancel(&self, job_uuid: impl Into<String>) -> SubsystemResult<bool> {
-        let id = job_uuid.into();
-        crate::macros::_request(
-            &self.tx,
-            |reply| ToolsMsg::Cancel {
-                job_uuid: id,
-                reply,
-            },
-            TOOLS_ACTOR,
-        )
-        .await
-    }
+    fn cancel(&self, job_uuid: impl Into<String>) -> bool
+        => Cancel { job_uuid: job_uuid.into() };
 }
 
 async fn dispatch_batch(

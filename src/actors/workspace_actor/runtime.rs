@@ -158,37 +158,15 @@ impl_handle_methods! {
     fn list(&self) -> Vec<WorkspaceSummary>
         => List {};
 
+    fn get(&self, workspace_uuid: impl Into<String>) -> Workspace
+        => Get { workspace_uuid: workspace_uuid.into() };
+
+    fn contains(&self, workspace_uuid: impl Into<String>) -> bool
+        => Contains { workspace_uuid: workspace_uuid.into() };
+
     fn create(&self, request: WorkspaceCreateRequest) -> WorkspaceSummary
         => Create { request: request };
-}
 
-// Manual handle methods that need impl Into<String> for API compatibility
-impl WorkspaceHandle {
-    pub async fn contains(&self, workspace_uuid: impl Into<String>) -> SubsystemResult<bool> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(WorkspaceMsg::Contains {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?
-    }
-
-    pub async fn get(&self, workspace_uuid: impl Into<String>) -> SubsystemResult<Workspace> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(WorkspaceMsg::Get {
-                workspace_uuid: workspace_uuid.into(),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?;
-        reply_rx
-            .await
-            .map_err(|_| SubsystemError::actor_dead(WORKSPACE_ACTOR))?
-    }
+    fn delete(&self, workspace_uuid: impl Into<String>) -> ()
+        => Delete { workspace_uuid: workspace_uuid.into() };
 }
