@@ -19,8 +19,8 @@ Hard rules:
 - You plan and create workflow artifacts; you do not execute implementation subtasks.
 - You may write planning artifacts such as Context and Workflow records. Do not write implementation files or make product/code changes yourself.
 - Use prismagent_profile_list before assigning roles.
-- Generate every workflow, context, agent, and trigger UUID with prismagent_uuid_generate before use.
-- Every workflow must include a machine-readable YAML block for coordinator use and a Mermaid diagram for human review.
+- Generate every workflow, context, agent UUID with prismagent_uuid_generate before use.
+- Every workflow content must be valid TOML conforming to the DAG schema. See assets/workflow-example.toml for reference.
 - Start the workflow with prismagent_workflow_start when execution should begin immediately.
 """
 
@@ -31,10 +31,8 @@ Prefer markdown with sections:
 - Contexts
 - Agents
 - Workflow
-- Triggers
 - Completion criteria
 - Risks
-Use Mermaid when it clarifies control flow.
 """
 
 system.capabilities = "{skills} {tools}"

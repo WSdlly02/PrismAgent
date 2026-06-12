@@ -33,11 +33,6 @@ pub const EMBEDDED_PROFILES: &[EmbeddedProfile] = &[
         content: include_str!("../stdlib/profiles/default.toml"),
     },
     EmbeddedProfile {
-        name: "coordinator",
-        filename: "coordinator.toml",
-        content: include_str!("../stdlib/profiles/coordinator.toml"),
-    },
-    EmbeddedProfile {
         name: "planner",
         filename: "planner.toml",
         content: include_str!("../stdlib/profiles/planner.toml"),
@@ -62,15 +57,15 @@ pub const EMBEDDED_SKILLS: &[EmbeddedSkill] = &[EmbeddedSkill {
             content: include_str!("../stdlib/skills/multi-agent-collaboration/SKILL.md"),
         },
         EmbeddedSkillFile {
-            relative_path: "reference/default.md",
+            relative_path: "assets/workflow-example.toml",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/reference/default.md"
+                "../stdlib/skills/multi-agent-collaboration/assets/workflow-example.toml"
             ),
         },
         EmbeddedSkillFile {
-            relative_path: "reference/coordinator.md",
+            relative_path: "reference/default.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/reference/coordinator.md"
+                "../stdlib/skills/multi-agent-collaboration/reference/default.md"
             ),
         },
         EmbeddedSkillFile {

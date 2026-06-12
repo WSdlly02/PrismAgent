@@ -63,8 +63,8 @@ register_tools! {
     // the content of context file will be injected when creating the agent, using render_initial_prompts to render the context units
     prismagent::workflow_create / execute_workflow_create,
     // workflow_read is not needed
-    // the content of workflow file will be injected when creating the coordinator agent
-    // not using render_initial_prompts
+    // the content of workflow file will be executed directly by the workflow actor, without being parsed by the agent, so no need to read the workflow content in the agent
+
     prismagent::workflow_start / execute_workflow_start,
 
     prismagent::skill_dir_get / execute_skill_dir_get,

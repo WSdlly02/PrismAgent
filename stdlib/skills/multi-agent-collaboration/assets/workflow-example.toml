@@ -1,0 +1,99 @@
+[workflow]
+# Must match the outer WorkflowCreateRequest uuid/title when this TOML is used
+# as workflow.content. Mismatches are invalid input.
+uuid = "pertinently-vocal-minivet"
+title = "代码审查工作流"
+planner_uuid = "impulsively-pivotal-scallop"
+planner_context_out = ["ctx-task-1", "ctx-task-2"]
+final_piped_contexts = ["ctx-verify"]
+
+[[context]]
+uuid = "ctx-task-1"
+title = "暂存区分析任务"
+purpose = "executor-1 的任务说明书"
+
+[[context]]
+uuid = "ctx-result-1"
+title = "暂存区分析结果"
+purpose = "executor-1 的产出"
+
+[[context]]
+uuid = "ctx-task-2"
+title = "提交历史分析任务"
+purpose = "executor-2 的任务说明书"
+
+[[context]]
+uuid = "ctx-result-2"
+title = "提交历史分析结果"
+purpose = "executor-2 的产出"
+
+[[context]]
+uuid = "ctx-verify"
+title = "验证结果"
+purpose = "verifier 的产出"
+
+[[agent]]
+uuid = "agent-exec-1"
+profile = "executor"
+name = "git-staging-analyst"
+context_refs = ["ctx-task-1"]
+context_out = ["ctx-result-1"]
+
+[[agent]]
+uuid = "agent-exec-2"
+profile = "executor"
+name = "git-staging-analyst-2"
+context_refs = ["ctx-task-2"]
+context_out = ["ctx-result-2"]
+
+[[agent]]
+uuid = "agent-verify"
+profile = "verifier"
+name = "code-review-verifier"
+context_refs = ["ctx-result-1", "ctx-result-2"]
+context_out = ["ctx-verify"]
+
+[[step]]
+id = "analyze"
+kind = "agent"
+needs = []
+agents = ["agent-exec-1", "agent-exec-2"]
+
+[[step]]
+id = "verify"
+kind = "agent"
+needs = ["analyze"]
+agents = ["agent-verify"]
+
+# ============================
+# Execution semantics
+# ============================
+#
+# 1. workflow_start parses workflow.content as TOML.
+#
+# 2. Validation:
+#    - [workflow].uuid/title must match the outer WorkflowCreateRequest uuid/title.
+#    - planner_uuid must reference an existing agent.
+#    - planner_context_out must be non-empty and every listed context must already exist.
+#    - final_piped_contexts must be non-empty and every listed context must be registered in [[context]].
+#    - every agent.context_refs and agent.context_out must be non-empty.
+#    - every agent.context_refs/context_out entry must be registered in [[context]].
+#    - for each step agent, context_refs must be a subset of:
+#      planner_context_out union context_out produced by agents in all transitive upstream steps.
+#    - every agent.profile must exist in prismagent_profile_list.
+#    - every step.id must be unique.
+#    - every step.kind must be "agent" in the MVP.
+#    - every step.agents entry must reference an [[agent]].
+#    - every step.needs entry must reference an existing step or be empty.
+#    - the step graph must be acyclic.
+#    - final_piped_contexts must be produced by some workflow agent context_out or already exist in planner_context_out.
+#
+# 3. Runtime:
+#    - Start all steps with needs = [].
+#    - Starting an agent step creates all agents listed by that step.
+#    - A step is complete when all context_out of all its agents exist.
+#    - prismagent_task_finish is the advance trigger; context creation alone does not advance the workflow.
+#    - When all steps are complete, WorkflowActor pipes final_piped_contexts to planner_uuid.
+#    - WorkflowActor does not judge failure, retry, or inspect context content.
+#
+# Workflow expresses dependency topology and context flow only.

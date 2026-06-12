@@ -198,8 +198,8 @@ auto_approve = ["fs_tree_list"]
         let profile = handle.profile("default").await.unwrap();
         assert_eq!(profile.model.model_name, "custom-model");
         assert_eq!(profile.model.api_key_env, "CUSTOM_KEY");
-        // coordinator 等仍来自嵌入
+
         let names = handle.list_profiles().await.unwrap();
-        assert!(names.contains(&"coordinator".to_string()));
+        assert!(names.contains(&"planner".to_string()));
     }
 }
