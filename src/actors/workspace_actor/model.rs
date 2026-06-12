@@ -33,6 +33,10 @@ pub enum WorkspaceMsg {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Workspace>>,
     },
+    Delete {
+        workspace_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -121,6 +121,7 @@ export type WorkspaceEvent =
       workflow_uuid: string;
       planner_agent_uuid: string;
     }
+  | { type: "workspace_deleted"; workspace_uuid: string }
   | { type: "error"; message: string };
 
 // WS 消息类型（客户端发送）

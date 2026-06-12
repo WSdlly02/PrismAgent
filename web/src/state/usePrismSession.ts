@@ -7,6 +7,7 @@ import {
   cancelAgent,
   createAgent as createAgentApi,
   deleteAgent as deleteAgentApi,
+  deleteWorkspace as deleteWorkspaceApi,
   listAgents,
   listProfiles,
   listWorkspaces,
@@ -66,6 +67,7 @@ export type PrismSession = {
   addWorkspace: (path: string) => Promise<void>;
   createAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
   deleteAgent: (agent: AgentSummary) => Promise<void>;
+  deleteWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
   approve: (approvalMask: number) => Promise<void>;
@@ -213,6 +215,47 @@ export function usePrismSession(): PrismSession {
     [ensureWs],
   );
 
+  // ---- Unified workspace removal ----
+  // Called by deleteWorkspace() after API success, and by workspace_deleted WS event.
+  const removeWorkspaceLocally = useCallback((workspaceUuid: string) => {
+    // Unsubscribe via WS if this workspace is currently subscribed
+    if (subscribedWorkspaceUuidRef.current === workspaceUuid) {
+      sendOrQueue({ type: "unsubscribe_workspace" });
+      if (subscribedAgentUuidRef.current) {
+        sendOrQueue({ type: "unsubscribe_agent" });
+        subscribedAgentUuidRef.current = null;
+      }
+      subscribedWorkspaceUuidRef.current = null;
+      selectedAgentUuidRef.current = null;
+      setChat(initialChatState());
+      setConnectionStatus("idle");
+    }
+
+    // Clear selected agent if it belongs to this workspace
+    setSelectedAgent((current) => {
+      if (!current) return null;
+      return workspaceAgents[workspaceUuid]?.some(
+        (a) => a.agent_uuid === current.agent_uuid,
+      )
+        ? null
+        : current;
+    });
+
+    // Remove workspace from all state collections
+    setWorkspaces((prev) => prev.filter((ws) => ws.workspace_uuid !== workspaceUuid));
+    setExpandedWorkspaceUuids((prev) => prev.filter((id) => id !== workspaceUuid));
+    setWorkspaceAgents((prev) => {
+      const next = { ...prev };
+      delete next[workspaceUuid];
+      return next;
+    });
+    setWorkspaceLeases((prev) => {
+      const next = { ...prev };
+      delete next[workspaceUuid];
+      return next;
+    });
+  }, [sendOrQueue, workspaceAgents]);
+
   const ensureWorkspaceLease = useCallback(
     async (workspaceUuid: string): Promise<WorkspaceLease> => {
       const existing = workspaceLeases[workspaceUuid];
@@ -321,6 +364,11 @@ export function usePrismSession(): PrismSession {
           setConnectionStatus("idle");
         }
       }
+      return;
+    }
+
+    if (msg.type === "workspace_deleted") {
+      removeWorkspaceLocally(msg.workspace_uuid);
       return;
     }
 
@@ -473,6 +521,15 @@ export function usePrismSession(): PrismSession {
     [ensureWorkspaceLease, workspaceAgents],
   );
 
+  const deleteWorkspace = useCallback(
+    async (workspace: WorkspaceSummary) => {
+      const access = await ensureWorkspaceLease(workspace.workspace_uuid);
+      await deleteWorkspaceApi(access);
+      removeWorkspaceLocally(workspace.workspace_uuid);
+    },
+    [ensureWorkspaceLease, removeWorkspaceLocally],
+  );
+
   const send = useCallback(
     async (text: string) => {
       if (!selectedAgent || !activeSession) {
@@ -601,6 +658,7 @@ export function usePrismSession(): PrismSession {
     addWorkspace,
     createAgent,
     deleteAgent,
+    deleteWorkspace,
     send,
     cancel,
     approve,

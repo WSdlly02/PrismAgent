@@ -38,6 +38,7 @@ impl WorkspaceActor {
                 WorkspaceMsg::Create { request ; reply } => self.create(request).await,
                 WorkspaceMsg::Contains { workspace_uuid ; reply } => self.contains(workspace_uuid).await,
                 WorkspaceMsg::Get { workspace_uuid ; reply } => self.get(workspace_uuid).await,
+                WorkspaceMsg::Delete { workspace_uuid ; reply } => self.delete(workspace_uuid).await,
             );
         }
     }
@@ -117,6 +118,16 @@ impl WorkspaceActor {
             .get(&workspace_uuid)
             .cloned()
             .ok_or_else(|| SubsystemError::not_found("workspace", &workspace_uuid))
+    }
+
+    async fn delete(&mut self, workspace_uuid: String) -> SubsystemResult<()> {
+        self.workspaces.remove(&workspace_uuid);
+        let path = self.root.join(&workspace_uuid);
+        if !path.exists() {
+            return Err(SubsystemError::not_found("workspace", &workspace_uuid));
+        }
+        std::fs::remove_dir_all(&path)?;
+        Ok(())
     }
 }
 

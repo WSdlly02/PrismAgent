@@ -19,9 +19,9 @@ use prismagent::{
         profile_actor::model::{ProfileActor, ProfileHandle, ProfileMsg},
         shell_actor::model::{
             AgentAccessRequest, AgentWriteAccessRequest, AuthorizedAgentCreateRequest,
-            AuthorizedApproveRequest, AuthorizedSendMessageRequest,
-            AuthorizedWorkflowCancelRequest, ConnectionId, ShellActor, ShellHandle, ShellMsg,
-            WorkspaceAccessRequest,
+            AuthorizedApproveRequest, AuthorizedCancelWorkflowRequest,
+            AuthorizedDeleteWorkspaceRequest, AuthorizedSendMessageRequest, ConnectionId,
+            ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest,
         },
         storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
         tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
@@ -103,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/workspaces/add", post(add_workspace))
         .route("/api/workspaces/acquire_lease", post(acquire_lease))
         .route("/api/workspaces/release_lease", post(release_lease))
+        .route("/api/workspaces/delete", post(delete_workspace))
         .route("/api/profiles/list", get(list_profiles))
         .route("/api/workflows/cancel", post(workflow_cancel))
         .route("/api/agents/list", get(list_agents))
@@ -448,13 +449,21 @@ async fn release_lease(
     Ok(Json(json!({ "released": true })))
 }
 
+async fn delete_workspace(
+    State(state): State<AppState>,
+    Json(request): Json<AuthorizedDeleteWorkspaceRequest>,
+) -> ApiResult<Json<Value>> {
+    state.shell.delete_workspace(request).await?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
 async fn list_profiles(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_profiles().await?)))
 }
 
 async fn workflow_cancel(
     State(state): State<AppState>,
-    Json(request): Json<AuthorizedWorkflowCancelRequest>,
+    Json(request): Json<AuthorizedCancelWorkflowRequest>,
 ) -> ApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.workflow_cancel(request).await?)))
 }

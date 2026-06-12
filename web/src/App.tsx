@@ -33,6 +33,7 @@ export function App() {
           onAddWorkspace={session.addWorkspace}
           onCreateAgent={session.createAgent}
           onDeleteAgent={session.deleteAgent}
+          onDeleteWorkspace={session.deleteWorkspace}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
         />

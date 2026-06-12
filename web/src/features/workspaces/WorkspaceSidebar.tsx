@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { AgentCreateInput, AgentSummary, WorkspaceSummary } from "../../api/types";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 type WorkspaceSidebarProps = {
   workspaces: WorkspaceSummary[];
@@ -12,6 +13,7 @@ type WorkspaceSidebarProps = {
   onAddWorkspace: (path: string) => Promise<void>;
   onCreateAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
   onDeleteAgent: (agent: AgentSummary) => Promise<void>;
+  onDeleteWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
 };
@@ -41,6 +43,7 @@ export function WorkspaceSidebar({
   onAddWorkspace,
   onCreateAgent,
   onDeleteAgent,
+  onDeleteWorkspace,
   collapsed,
   onToggleCollapse,
 }: WorkspaceSidebarProps) {
@@ -50,6 +53,8 @@ export function WorkspaceSidebar({
   const [profile, setProfile] = useState("");
   const [contextRefs, setContextRefs] = useState("");
   const [contextOut, setContextOut] = useState("");
+  const [wsToDelete, setWsToDelete] = useState<WorkspaceSummary | null>(null);
+  const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
 
   async function submitWorkspace(event: React.FormEvent) {
     event.preventDefault();
@@ -125,23 +130,34 @@ export function WorkspaceSidebar({
 
             return (
               <div className="ws-folder" key={workspace.workspace_uuid}>
-                {/* 文件夹行：双击展开/折叠 */}
-                <button
-                  className="ws-folder-row"
-                  onDoubleClick={() => void onSelectWorkspace(workspace)}
-                  type="button"
-                >
-                  <span className="ws-folder-icon">{isExpanded ? "📂" : "📁"}</span>
-                  <span className="resource-main">
-                    <span className="resource-name" title={workspace.workspace_path}>
-                      {shortPath(workspace.workspace_path)}
+                {/* 文件夹行：双击展开/折叠，× 删除 */}
+                <div className="ws-folder-row-wrapper">
+                  <button
+                    className="ws-folder-row"
+                    onDoubleClick={() => void onSelectWorkspace(workspace)}
+                    type="button"
+                  >
+                    <span className="ws-folder-icon">{isExpanded ? "📂" : "📁"}</span>
+                    <span className="resource-main">
+                      <span className="resource-name" title={workspace.workspace_path}>
+                        {shortPath(workspace.workspace_path)}
+                      </span>
+                      <span className="resource-meta">
+                        {workspace.locked_by ? `locked by ${workspace.locked_by}` : "available"}
+                      </span>
                     </span>
-                    <span className="resource-meta">
-                      {workspace.locked_by ? `locked by ${workspace.locked_by}` : "available"}
-                    </span>
-                  </span>
-                  <span className="ws-count">{children.length}</span>
-                </button>
+                    <span className="ws-count">{children.length}</span>
+                  </button>
+                  <button
+                    aria-label={`Delete workspace ${shortPath(workspace.workspace_path)}`}
+                    className="ws-folder-delete"
+                    onClick={() => setWsToDelete(workspace)}
+                    title="Delete workspace"
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </div>
 
                 {/* 展开后显示 agents */}
                 {isExpanded ? (
@@ -221,7 +237,7 @@ export function WorkspaceSidebar({
                           aria-label={`Delete agent ${agent.agent_name}`}
                           className="ws-agent-delete"
                           disabled={agent.status !== "idle"}
-                          onClick={() => void onDeleteAgent(agent)}
+                          onClick={() => setAgentToDelete(agent)}
                           title={agent.status === "idle" ? "Delete agent" : "Agent must be idle"}
                           type="button"
                         >
@@ -270,6 +286,43 @@ export function WorkspaceSidebar({
           </form>
         </div>
       ) : null}
+
+      {/* Workspace 删除确认弹窗 */}
+      <ConfirmDialog
+        open={wsToDelete !== null}
+        title="Delete Workspace"
+        onConfirm={async () => {
+          if (!wsToDelete) return;
+          await onDeleteWorkspace(wsToDelete);
+          setWsToDelete(null);
+        }}
+        onCancel={() => setWsToDelete(null)}
+      >
+        <p>
+          This will permanently delete all agents, messages, and data in this
+          workspace.
+        </p>
+        <p>
+          <strong>{wsToDelete?.workspace_path ?? ""}</strong>
+        </p>
+      </ConfirmDialog>
+
+      {/* Agent 删除确认弹窗 */}
+      <ConfirmDialog
+        open={agentToDelete !== null}
+        title="Delete Agent"
+        onConfirm={async () => {
+          if (!agentToDelete) return;
+          await onDeleteAgent(agentToDelete);
+          setAgentToDelete(null);
+        }}
+        onCancel={() => setAgentToDelete(null)}
+      >
+        <p>This will permanently delete this agent and all its messages.</p>
+        <p>
+          <strong>{agentToDelete?.agent_name ?? ""}</strong>
+        </p>
+      </ConfirmDialog>
     </div>
   );
 }

@@ -103,6 +103,13 @@ export function sendMessage(
   });
 }
 
+export function deleteWorkspace(access: WorkspaceLease) {
+  return apiJson<{ deleted: true }>("/api/workspaces/delete", {
+    method: "POST",
+    body: JSON.stringify(access),
+  });
+}
+
 export function approveRequest(
   access: WorkspaceLease,
   agentUuid: string,

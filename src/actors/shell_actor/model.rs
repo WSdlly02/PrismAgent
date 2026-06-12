@@ -79,6 +79,9 @@ pub enum WsEvent {
         workflow_uuid: String,
         planner_agent_uuid: String,
     },
+    WorkspaceDeleted {
+        workspace_uuid: String,
+    },
 
     // ---- Agent events ----
     UnitAppend {
@@ -178,9 +181,13 @@ pub enum ShellMsg {
         request: AgentWriteAccessRequest,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
-    WorkflowCancel {
-        request: AuthorizedWorkflowCancelRequest,
+    CancelWorkflow {
+        request: AuthorizedCancelWorkflowRequest,
         reply: oneshot::Sender<SubsystemResult<WorkflowCancelResponse>>,
+    },
+    DeleteWorkspace {
+        request: AuthorizedDeleteWorkspaceRequest,
+        reply: oneshot::Sender<SubsystemResult<()>>,
     },
 
     // ---- Event emission ----
@@ -209,6 +216,12 @@ pub struct WorkspaceWriteAccessRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorizedDeleteWorkspaceRequest {
+    pub workspace_uuid: String,
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentWriteAccessRequest {
     #[serde(flatten)]
     pub workspace: WorkspaceWriteAccessRequest,
@@ -231,7 +244,7 @@ pub struct AuthorizedApproveRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthorizedWorkflowCancelRequest {
+pub struct AuthorizedCancelWorkflowRequest {
     #[serde(flatten)]
     pub workspace: WorkspaceWriteAccessRequest,
     pub workflow_uuid: String,

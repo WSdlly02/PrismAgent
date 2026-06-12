@@ -1,12 +1,13 @@
 use crate::actor_dispatch_mixed;
 use crate::actors::agent_actor::model::{
-    AgentSnapshot, AgentSummary, ApproveRequest, SendMessageRequest,
+    AgentSnapshot, AgentStatus, AgentSummary, ApproveRequest, SendMessageRequest,
 };
 use crate::actors::shell_actor::model::{
     AgentAccessRequest, AgentWriteAccessRequest, AuthorizedAgentCreateRequest,
-    AuthorizedApproveRequest, AuthorizedSendMessageRequest, AuthorizedWorkflowCancelRequest,
-    ConnectionId, ConnectionSession, EventTarget, SHELL_ACTOR, ShellActor, ShellHandle, ShellMsg,
-    WorkspaceAccessRequest, WorkspaceWriteAccessRequest, WsEvent,
+    AuthorizedApproveRequest, AuthorizedCancelWorkflowRequest, AuthorizedDeleteWorkspaceRequest,
+    AuthorizedSendMessageRequest, ConnectionId, ConnectionSession, EventTarget, SHELL_ACTOR,
+    ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest, WorkspaceWriteAccessRequest,
+    WsEvent,
 };
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::workflow_actor::model::{WorkflowCancelRequest, WorkflowCancelResponse};
@@ -58,7 +59,8 @@ impl ShellActor {
                     ShellMsg::SendMessage { request ; reply } => self.send_message(request).await,
                     ShellMsg::ApproveRequest { request ; reply } => self.approve_request(request).await,
                     ShellMsg::Cancel { request ; reply } => self.cancel(request).await,
-                    ShellMsg::WorkflowCancel { request ; reply } => self.workflow_cancel(request).await,
+                    ShellMsg::CancelWorkflow { request ; reply } => self.workflow_cancel(request).await,
+                    ShellMsg::DeleteWorkspace { request ; reply } => self.delete_workspace(request).await,
                 }
                 fire {
                     ShellMsg::UnregisterConnection { connection_id } => self.unregister_connection(connection_id),
@@ -415,7 +417,7 @@ impl ShellActor {
 
     async fn workflow_cancel(
         &self,
-        request: AuthorizedWorkflowCancelRequest,
+        request: AuthorizedCancelWorkflowRequest,
     ) -> SubsystemResult<WorkflowCancelResponse> {
         self.authorize_workspace_write(&request.workspace)?;
         self.handles
@@ -426,6 +428,68 @@ impl ShellActor {
                 reason: request.reason,
             })
             .await
+    }
+
+    async fn delete_workspace(
+        &mut self,
+        request: AuthorizedDeleteWorkspaceRequest,
+    ) -> SubsystemResult<()> {
+        // 1. Verify lease token
+        self.authorize_workspace_write(&WorkspaceWriteAccessRequest {
+            workspace_uuid: request.workspace_uuid.clone(),
+            lease_token: request.lease_token.clone(),
+        })?;
+
+        // 2. List all agents in this workspace
+        let agents = self
+            .handles
+            .agent
+            .list(request.workspace_uuid.clone())
+            .await?;
+
+        // 3. Check each agent's status — block if any not Idle
+        for agent in &agents {
+            if agent.status != AgentStatus::Idle {
+                return Err(SubsystemError::Conflict {
+                    resource: "agent_status",
+                    id: format!(
+                        "{} (status: {:?}, agent: {})",
+                        agent.agent_uuid, agent.status, agent.agent_name
+                    ),
+                });
+            }
+        }
+
+        // 4. Delete each agent
+        for agent in &agents {
+            self.handles
+                .agent
+                .delete(request.workspace_uuid.clone(), agent.agent_uuid.clone())
+                .await?;
+        }
+
+        // 5. Delete workspace files. Only after this succeeds is the workspace
+        // considered deleted from the client's point of view.
+        self.handles
+            .workspace
+            .delete(request.workspace_uuid.clone())
+            .await?;
+
+        // 6. Emit WS notification to all subscribers
+        self.emit_event(
+            EventTarget::Workspace(request.workspace_uuid.clone()),
+            WsEvent::WorkspaceDeleted {
+                workspace_uuid: request.workspace_uuid.clone(),
+            },
+        );
+
+        // 7. Remove lease
+        self.leases.remove(&request.workspace_uuid);
+
+        // 8. Clean workspace_subscribers
+        self.workspace_subscribers.remove(&request.workspace_uuid);
+
+        Ok(())
     }
 
     // ========== Authorization ==========
@@ -549,8 +613,11 @@ impl_handle_methods! {
     fn cancel(&self, request: AgentWriteAccessRequest) -> ()
         => Cancel { request: request };
 
-    fn workflow_cancel(&self, request: AuthorizedWorkflowCancelRequest) -> WorkflowCancelResponse
-        => WorkflowCancel { request: request };
+    fn workflow_cancel(&self, request: AuthorizedCancelWorkflowRequest) -> WorkflowCancelResponse
+        => CancelWorkflow { request: request };
+
+    fn delete_workspace(&self, request: AuthorizedDeleteWorkspaceRequest) -> ()
+        => DeleteWorkspace { request: request };
 }
 
 // ========== ShellHandle non-standard methods (manual) ==========
