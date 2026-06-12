@@ -73,11 +73,11 @@ pub enum WsEvent {
     },
     WorkflowStarted {
         workflow_uuid: String,
-        coordinator_agent_uuid: String,
+        planner_agent_uuid: String,
     },
     WorkflowCancelRequested {
         workflow_uuid: String,
-        coordinator_agent_uuid: String,
+        planner_agent_uuid: String,
     },
 
     // ---- Agent events ----

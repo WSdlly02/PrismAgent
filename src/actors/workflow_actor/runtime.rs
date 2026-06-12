@@ -1,15 +1,21 @@
 use crate::actor_dispatch;
 use crate::actors::agent_actor::model::AgentHandle;
-use crate::actors::agent_actor::model::{AgentSummary, MessageBody, SendMessageRequest};
+use crate::actors::agent_actor::model::{
+    AgentSummary, MessageBody, SelfUpdateRequest, SendMessageRequest,
+};
 use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::agent::AgentCreateRequest;
 use crate::actors::storage_actor::model::context::{Context, ContextCreateRequest};
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
+use crate::actors::workflow_actor::dag::{
+    WorkflowRuntime, WorkflowSpec, parse_workflow_spec, require_registered, unique_agents,
+    unique_contexts, unique_steps, validate_context_flow, validate_runtime_id, validate_step_graph,
+};
 use crate::actors::workflow_actor::model::{
     AgentView, ContextStatus, ListAgentsRequest, ListAgentsResponse, SelfShowRequest,
     SelfShowResponse, TaskFinishRequest, TaskFinishResponse, WORKFLOW_ACTOR, WorkflowActor,
-    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg, WorkflowRuntime,
-    WorkflowStartRequest, WorkflowTrigger, WorkflowTriggerCreateRequest,
+    WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg,
+    WorkflowStartRequest,
 };
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
@@ -25,7 +31,6 @@ impl WorkflowActor {
             rx,
             handles,
             runtimes: std::collections::HashMap::new(),
-            triggers: std::collections::HashMap::new(),
         }
     }
 
@@ -41,7 +46,6 @@ impl WorkflowActor {
                 WorkflowMsg::WorkflowStart { request ; reply } => self.workflow_start(request).await,
                 WorkflowMsg::WorkflowCancel { request ; reply } => self.workflow_cancel(request).await,
                 WorkflowMsg::ContextCreate { request ; reply } => self.context_create(request).await,
-                WorkflowMsg::TriggerCreate { request ; reply } => self.trigger_create(request).await,
                 WorkflowMsg::TaskFinish { request ; reply } => self.task_finish(request).await,
                 WorkflowMsg::SelfShow { request ; reply } => self.self_show(request).await,
                 WorkflowMsg::ListAgents { request ; reply } => self.list_agents(request).await,
@@ -53,6 +57,7 @@ impl WorkflowActor {
         &mut self,
         request: WorkflowStartRequest,
     ) -> SubsystemResult<WorkflowRuntime> {
+        validate_runtime_id(&request.workflow_uuid, "workflow uuid")?;
         let workflow = self
             .handles
             .storage
@@ -61,48 +66,28 @@ impl WorkflowActor {
                 request.workflow_uuid.clone(),
             )
             .await?;
-        let agent = self
-            .handles
-            .agent
-            .create(AgentCreateRequest {
-                workspace_uuid: request.workspace_uuid.clone(),
-                uuid: request.coordinator_uuid.clone(),
-                name: request.coordinator_name,
-                profile: request.coordinator_profile,
-                context_refs: Vec::new(),
-                context_out: Vec::new(),
-            })
+        let spec = parse_workflow_spec(&workflow)?;
+        self.validate_workflow_spec(&request.workspace_uuid, &workflow, &spec)
             .await?;
-        let runtime = WorkflowRuntime {
-            workspace_uuid: request.workspace_uuid.clone(),
-            workflow_uuid: workflow.uuid.clone(),
-            coordinator_agent_uuid: agent.uuid.clone(),
-        };
-        self.runtimes.insert(
-            (
-                runtime.workspace_uuid.clone(),
-                runtime.workflow_uuid.clone(),
-            ),
-            runtime.clone(),
+        self.sync_planner_context_out(&spec).await?;
+        let runtime =
+            WorkflowRuntime::new(request.workspace_uuid.clone(), workflow.uuid.clone(), spec);
+        let key = (
+            runtime.workspace_uuid.clone(),
+            runtime.workflow_uuid.clone(),
         );
-        self.handles
-            .agent
-            .send_message(SendMessageRequest {
-                agent_uuid: agent.uuid,
-                message_body: MessageBody {
-                    text: format!(
-                        "# Workflow {}\n\n{}\n\nStart coordinating this workflow. Create agents, contexts, and triggers as needed.",
-                        workflow.uuid, workflow.content
-                    ),
-                    attachments: Vec::new(),
-                },
-            })
-            .await?;
+        self.runtimes.insert(key.clone(), runtime);
+        self.advance_workflow(&key).await?;
+        let runtime = self
+            .runtimes
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &workflow.uuid))?;
         self.emit_workspace_event(
             &runtime.workspace_uuid,
             WsEvent::WorkflowStarted {
                 workflow_uuid: runtime.workflow_uuid.clone(),
-                coordinator_agent_uuid: runtime.coordinator_agent_uuid.clone(),
+                planner_agent_uuid: runtime.planner_uuid.clone(),
             },
         );
         Ok(runtime)
@@ -116,36 +101,24 @@ impl WorkflowActor {
             request.workspace_uuid.clone(),
             request.workflow_uuid.clone(),
         );
-        let runtime =
-            self.runtimes.get(&key).cloned().ok_or_else(|| {
-                SubsystemError::not_found("workflow_runtime", &request.workflow_uuid)
-            })?;
-        self.handles
-            .agent
-            .send_message(SendMessageRequest {
-                agent_uuid: runtime.coordinator_agent_uuid.clone(),
-                message_body: MessageBody {
-                    text: format!(
-                        "# Workflow Cancellation\n\nWorkflow `{}` has been cancelled by the user.\n\nReason:\n{}\n\nCoordinate a clean cancellation:\n1. Use prismagent_agent_list to inspect related agents.\n2. Use prismagent_agent_terminate for agents that should stop cleanly.\n3. Ensure required context_out documents are written if cleanup requires them.\n4. Let workflow triggers fire normally as cleanup contexts are produced.\n5. When coordinator cleanup is complete, wait for the next trigger or report completion as appropriate.",
-                        runtime.workflow_uuid,
-                        request.reason.trim()
-                    ),
-                    attachments: Vec::new(),
-                },
-            })
-            .await?;
-        self.emit_workspace_event(
-            &runtime.workspace_uuid,
-            WsEvent::WorkflowCancelRequested {
-                workflow_uuid: runtime.workflow_uuid.clone(),
-                coordinator_agent_uuid: runtime.coordinator_agent_uuid.clone(),
-            },
-        );
-        Ok(WorkflowCancelResponse {
-            workspace_uuid: runtime.workspace_uuid,
-            workflow_uuid: runtime.workflow_uuid,
-            coordinator_agent_uuid: runtime.coordinator_agent_uuid,
-        })
+        if !self.runtimes.contains_key(&key) {
+            return Err(SubsystemError::not_found(
+                "workflow_runtime",
+                &request.workflow_uuid,
+            ));
+        }
+        // TODO: implement graceful DAG workflow cancellation.
+        //
+        // Expected semantics:
+        // 1. Keep the workflow runtime instead of removing it.
+        // 2. Find agents in currently running steps.
+        // 3. Update their auto_loop_message so they still create declared context_out
+        //    cancellation summaries and call prismagent_task_finish.
+        // 4. Cancel current inference/tool work, then send a message to restart cleanup.
+        // 5. Let task_finish drive the normal advance/completion path.
+        Err(SubsystemError::invalid_input(
+            "workflow_cancel is not implemented for DAG workflows yet",
+        ))
     }
 
     async fn workflow_create(
@@ -174,53 +147,7 @@ impl WorkflowActor {
                 title: context.title.clone(),
             },
         );
-        self.check_context_triggers(&context.uuid).await;
         Ok(context)
-    }
-
-    async fn trigger_create(
-        &mut self,
-        request: WorkflowTriggerCreateRequest,
-    ) -> SubsystemResult<WorkflowTrigger> {
-        validate_runtime_id(&request.uuid, "trigger uuid")?;
-        validate_runtime_id(&request.workflow_uuid, "workflow uuid")?;
-        validate_runtime_id(&request.coordinator_agent_uuid, "coordinator agent uuid")?;
-        if request.message.trim().is_empty() {
-            return Err(SubsystemError::invalid_input(
-                "trigger message must not be empty",
-            ));
-        }
-        if request.context_uuids.is_empty() {
-            return Err(SubsystemError::invalid_input(
-                "trigger context_uuids must not be empty",
-            ));
-        }
-        for context_uuid in &request.context_uuids {
-            validate_runtime_id(context_uuid, "context uuid")?;
-        }
-        let trigger = WorkflowTrigger {
-            uuid: request.uuid,
-            workspace_uuid: request.workspace_uuid,
-            workflow_uuid: request.workflow_uuid,
-            coordinator_agent_uuid: request.coordinator_agent_uuid,
-            context_uuids: request.context_uuids,
-            fired_context_uuids: HashSet::new(),
-            message: request.message,
-            enabled: true,
-        };
-        if self.triggers.contains_key(&trigger.uuid) {
-            return Err(SubsystemError::Conflict {
-                resource: "workflow_trigger",
-                id: trigger.uuid,
-            });
-        }
-        let trigger_uuid = trigger.uuid.clone();
-        self.triggers.insert(trigger_uuid.clone(), trigger);
-        self.check_existing_trigger_contexts(&trigger_uuid).await?;
-        self.triggers
-            .get(&trigger_uuid)
-            .cloned()
-            .ok_or_else(|| SubsystemError::not_found("workflow_trigger", trigger_uuid))
     }
 
     async fn task_finish(
@@ -263,6 +190,7 @@ impl WorkflowActor {
             .agent
             .set_auto_loop(request.agent_uuid.clone(), false)
             .await?;
+        self.advance_workflows(&request.workspace_uuid).await?;
         Ok(TaskFinishResponse {
             agent_uuid: agent.uuid,
             auto_loop: agent.auto_loop,
@@ -303,59 +231,233 @@ impl WorkflowActor {
         })
     }
 
-    async fn check_existing_trigger_contexts(&mut self, trigger_uuid: &str) -> SubsystemResult<()> {
-        let Some(trigger) = self.triggers.get(trigger_uuid).cloned() else {
-            return Ok(());
-        };
-        let existing = self
+    async fn validate_workflow_spec(
+        &self,
+        workspace_uuid: &str,
+        workflow: &Workflow,
+        spec: &WorkflowSpec,
+    ) -> SubsystemResult<()> {
+        if spec.workflow.uuid != workflow.uuid {
+            return Err(SubsystemError::invalid_input(format!(
+                "workflow uuid mismatch: outer={}, content={}",
+                workflow.uuid, spec.workflow.uuid
+            )));
+        }
+        if spec.workflow.title != workflow.title {
+            return Err(SubsystemError::invalid_input(format!(
+                "workflow title mismatch: outer={}, content={}",
+                workflow.title, spec.workflow.title
+            )));
+        }
+        validate_runtime_id(&spec.workflow.planner_uuid, "planner uuid")?;
+        self.handles
+            .storage
+            .read_agents(
+                workspace_uuid.to_string(),
+                vec![spec.workflow.planner_uuid.clone()],
+            )
+            .await?;
+
+        let registered_contexts = unique_contexts(spec)?;
+        let existing_contexts = self
             .handles
             .storage
-            .list_contexts(trigger.workspace_uuid)
+            .list_contexts(workspace_uuid.to_string())
             .await?
             .into_iter()
             .collect::<HashSet<_>>();
-        for context_uuid in trigger.context_uuids {
-            if existing.contains(&context_uuid) {
-                self.fire_trigger(trigger_uuid, &context_uuid).await;
+        if spec.workflow.planner_context_out.is_empty() {
+            return Err(SubsystemError::invalid_input(
+                "workflow.planner_context_out must not be empty",
+            ));
+        }
+        for context_uuid in &spec.workflow.planner_context_out {
+            require_registered(&registered_contexts, "planner_context_out", context_uuid)?;
+            if !existing_contexts.contains(context_uuid) {
+                return Err(SubsystemError::not_found("context", context_uuid));
+            }
+        }
+        if spec.workflow.final_piped_contexts.is_empty() {
+            return Err(SubsystemError::invalid_input(
+                "workflow.final_piped_contexts must not be empty",
+            ));
+        }
+        for context_uuid in &spec.workflow.final_piped_contexts {
+            require_registered(&registered_contexts, "final_piped_contexts", context_uuid)?;
+        }
+
+        let profiles = self
+            .handles
+            .profile
+            .list_profiles()
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let agents = unique_agents(spec, &registered_contexts, &profiles)?;
+        let steps = unique_steps(spec, &agents)?;
+        validate_step_graph(&steps)?;
+        validate_context_flow(spec, &agents, &steps)?;
+
+        let produced_contexts = agents
+            .values()
+            .flat_map(|agent| agent.context_out.iter().cloned())
+            .chain(spec.workflow.planner_context_out.iter().cloned())
+            .collect::<HashSet<_>>();
+        for context_uuid in &spec.workflow.final_piped_contexts {
+            if !produced_contexts.contains(context_uuid) {
+                return Err(SubsystemError::invalid_input(format!(
+                    "final_piped_contexts references unproduced context: {context_uuid}"
+                )));
             }
         }
         Ok(())
     }
 
-    async fn check_context_triggers(&mut self, context_uuid: &str) {
-        let trigger_uuids = self
-            .triggers
-            .iter()
-            .filter(|(_, trigger)| {
-                trigger.enabled && trigger.context_uuids.iter().any(|id| id == context_uuid)
+    async fn sync_planner_context_out(&self, spec: &WorkflowSpec) -> SubsystemResult<()> {
+        self.handles
+            .agent
+            .self_update(SelfUpdateRequest {
+                agent_uuid: spec.workflow.planner_uuid.clone(),
+                context_refs: None,
+                context_out: Some(spec.workflow.planner_context_out.clone()),
+                auto_loop: None,
+                auto_loop_message: None,
             })
-            .map(|(uuid, _)| uuid.clone())
-            .collect::<Vec<_>>();
-        for trigger_uuid in trigger_uuids {
-            self.fire_trigger(&trigger_uuid, context_uuid).await;
-        }
+            .await?;
+        Ok(())
     }
 
-    async fn fire_trigger(&mut self, trigger_uuid: &str, context_uuid: &str) {
-        let Some(trigger) = self.triggers.get(trigger_uuid) else {
-            return;
+    async fn advance_workflows(&mut self, workspace_uuid: &str) -> SubsystemResult<()> {
+        let keys = self
+            .runtimes
+            .keys()
+            .filter(|(runtime_workspace_uuid, _)| runtime_workspace_uuid == workspace_uuid)
+            .cloned()
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.advance_workflow(&key).await?;
+        }
+        Ok(())
+    }
+
+    async fn advance_workflow(&mut self, key: &(String, String)) -> SubsystemResult<()> {
+        loop {
+            let existing_contexts = {
+                let workspace_uuid = &key.0;
+                self.handles
+                    .storage
+                    .list_contexts(workspace_uuid.clone())
+                    .await?
+                    .into_iter()
+                    .collect::<HashSet<_>>()
+            };
+
+            let ready_steps = if let Some(runtime) = self.runtimes.get_mut(key) {
+                runtime.mark_completed_steps(&existing_contexts);
+                runtime.ready_step_ids()
+            } else {
+                return Err(SubsystemError::not_found("workflow_runtime", &key.1));
+            };
+
+            if ready_steps.is_empty() {
+                break;
+            }
+            for step_id in ready_steps {
+                self.start_agent_step(key, &step_id).await?;
+            }
+        }
+
+        let should_complete = {
+            let runtime = self
+                .runtimes
+                .get(key)
+                .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &key.1))?;
+            !runtime.completed && runtime.all_steps_done()
         };
-        if trigger.fired_context_uuids.contains(context_uuid) {
-            return;
+        if should_complete {
+            self.complete_workflow(key).await?;
         }
-        let agent_uuid = trigger.coordinator_agent_uuid.clone();
-        let message = trigger
-            .message
-            .replace("{context_uuid}", context_uuid)
-            .replace("{workflow_uuid}", &trigger.workflow_uuid);
-        if let Some(trigger) = self.triggers.get_mut(trigger_uuid) {
-            trigger.fired_context_uuids.insert(context_uuid.to_string());
+        Ok(())
+    }
+
+    async fn start_agent_step(
+        &mut self,
+        key: &(String, String),
+        step_id: &str,
+    ) -> SubsystemResult<()> {
+        let (workspace_uuid, agents) = {
+            let runtime = self
+                .runtimes
+                .get(key)
+                .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &key.1))?;
+            let agents = runtime.step_agents(step_id)?;
+            (runtime.workspace_uuid.clone(), agents)
+        };
+
+        for agent in agents {
+            self.handles
+                .agent
+                .create(AgentCreateRequest {
+                    workspace_uuid: workspace_uuid.clone(),
+                    uuid: agent.uuid,
+                    name: agent.name,
+                    profile: agent.profile,
+                    context_refs: agent.context_refs,
+                    context_out: agent.context_out,
+                })
+                .await?;
         }
+        if let Some(runtime) = self.runtimes.get_mut(key) {
+            runtime.mark_step_running(step_id)?;
+        }
+        Ok(())
+    }
+
+    async fn complete_workflow(&mut self, key: &(String, String)) -> SubsystemResult<()> {
+        let (workspace_uuid, workflow_uuid, planner_uuid, final_contexts) = {
+            let runtime = self
+                .runtimes
+                .get(key)
+                .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &key.1))?;
+            (
+                runtime.workspace_uuid.clone(),
+                runtime.workflow_uuid.clone(),
+                runtime.planner_uuid.clone(),
+                runtime.spec.workflow.final_piped_contexts.clone(),
+            )
+        };
+        let message = self
+            .render_final_piped_message(&workspace_uuid, &workflow_uuid, final_contexts)
+            .await?;
         let agent = self.handles.agent.clone();
-        let context_uuid = context_uuid.to_string();
-        tokio::spawn(async move {
-            deliver_trigger_message(agent, agent_uuid, context_uuid, message).await;
-        });
+        tokio::spawn(async move { deliver_message_with_retry(agent, planner_uuid, message).await });
+        if let Some(runtime) = self.runtimes.get_mut(key) {
+            runtime.mark_completed();
+        }
+        Ok(())
+    }
+
+    async fn render_final_piped_message(
+        &self,
+        workspace_uuid: &str,
+        workflow_uuid: &str,
+        context_uuids: Vec<String>,
+    ) -> SubsystemResult<String> {
+        let contexts = self
+            .handles
+            .storage
+            .read_contexts(workspace_uuid.to_string(), context_uuids)
+            .await?;
+        let mut message = format!(
+            "# Workflow Completed\n\nWorkflow `{workflow_uuid}` completed. Final contexts are piped below.\n"
+        );
+        for context in contexts {
+            message.push_str(&format!(
+                "\n\n## Context `{}`: {}\n\n{}",
+                context.uuid, context.title, context.content
+            ));
+        }
+        Ok(message)
     }
 
     fn emit_workspace_event(&self, workspace_uuid: &str, event: WsEvent) {
@@ -366,21 +468,14 @@ impl WorkflowActor {
     }
 }
 
-async fn deliver_trigger_message(
-    agent: AgentHandle,
-    agent_uuid: String,
-    context_uuid: String,
-    message: String,
-) {
+async fn deliver_message_with_retry(agent: AgentHandle, agent_uuid: String, message: String) {
     let mut delay = Duration::from_secs(1);
     loop {
         let result = agent
             .send_message(SendMessageRequest {
                 agent_uuid: agent_uuid.clone(),
                 message_body: MessageBody {
-                    text: format!(
-                        "Workflow trigger fired for context {context_uuid}.\n\n{message}\nNotice: The trigger message may be delayed"
-                    ),
+                    text: message.clone(),
                     attachments: Vec::new(),
                 },
             })
@@ -391,14 +486,13 @@ async fn deliver_trigger_message(
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(Duration::from_secs(10));
                 eprintln!(
-                    "Failed to deliver trigger message for context {context_uuid} to agent {agent_uuid}\nretrying in {delay:?}... (error: {result:?})"
+                    "Failed to deliver complete message to agent {agent_uuid}\nretrying in {delay:?}... (error: {result:?})"
                 );
             }
             Err(_) => return,
         }
     }
 }
-
 // ---- Handle methods (macro-generated) ----
 
 impl_handle_methods! {
@@ -419,9 +513,6 @@ impl_handle_methods! {
     fn context_create(&self, request: ContextCreateRequest) -> Context
         => ContextCreate { request: request };
 
-    fn trigger_create(&self, request: WorkflowTriggerCreateRequest) -> WorkflowTrigger
-        => TriggerCreate { request: request };
-
     fn task_finish(&self, request: TaskFinishRequest) -> TaskFinishResponse
         => TaskFinish { request: request };
 
@@ -433,22 +524,6 @@ impl_handle_methods! {
 }
 
 // ---- Free functions ----
-
-fn validate_runtime_id(value: &str, field: &'static str) -> SubsystemResult<()> {
-    if !value.trim().is_empty()
-        && !value.contains('/')
-        && !value.contains('\\')
-        && value != "."
-        && value != ".."
-        && !value.ends_with(".json")
-    {
-        Ok(())
-    } else {
-        Err(SubsystemError::invalid_input(format!(
-            "invalid {field}: {value}"
-        )))
-    }
-}
 
 fn uuid_generate(count: usize) -> SubsystemResult<Vec<String>> {
     if count == 0 || count > 64 {

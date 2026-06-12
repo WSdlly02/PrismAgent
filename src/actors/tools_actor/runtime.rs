@@ -57,10 +57,7 @@ register_tools! {
     web::fetch / execute_fetch,
     prismagent::uuid_generate / execute_uuid_generate,
     prismagent::agent_list / execute_agent_list,
-    prismagent::agent_create / execute_agent_create,
-    prismagent::agent_message_send / execute_agent_message_send,
-    prismagent::agent_terminate / execute_agent_terminate,
-    prismagent::agent_update / execute_agent_update,
+
     prismagent::context_create / execute_context_create,
     // context_read is not needed
     // the content of context file will be injected when creating the agent, using render_initial_prompts to render the context units
@@ -69,10 +66,10 @@ register_tools! {
     // the content of workflow file will be injected when creating the coordinator agent
     // not using render_initial_prompts
     prismagent::workflow_start / execute_workflow_start,
-    prismagent::trigger_create / execute_trigger_create,
 
     prismagent::skill_dir_get / execute_skill_dir_get,
     prismagent::profile_list / execute_profile_list,
+
     // equivalent to agent_list
     prismagent::self_show / execute_self_show,
     prismagent::self_update / execute_self_update,
