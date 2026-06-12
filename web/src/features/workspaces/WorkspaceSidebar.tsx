@@ -18,7 +18,6 @@ type WorkspaceSidebarProps = {
 
 const PROFILE_HINTS: Record<string, string> = {
   default: "通用助手，可读文件、搜索网页、调用工具",
-  coordinator: "协调者，管理工作流执行与agent调度",
   planner: "规划者，将目标拆解为工作流",
   executor: "执行者，执行具体任务（自动循环）",
   verifier: "验证者，审查执行结果（自动循环）",

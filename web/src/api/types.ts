@@ -114,12 +114,12 @@ export type WorkspaceEvent =
   | {
       type: "workflow_started";
       workflow_uuid: string;
-      coordinator_agent_uuid: string;
+      planner_agent_uuid: string;
     }
   | {
       type: "workflow_cancel_requested";
       workflow_uuid: string;
-      coordinator_agent_uuid: string;
+      planner_agent_uuid: string;
     }
   | { type: "error"; message: string };
 
