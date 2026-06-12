@@ -63,27 +63,27 @@ pub const EMBEDDED_SKILLS: &[EmbeddedSkill] = &[EmbeddedSkill {
             ),
         },
         EmbeddedSkillFile {
-            relative_path: "reference/default.md",
+            relative_path: "references/default.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/reference/default.md"
+                "../stdlib/skills/multi-agent-collaboration/references/default.md"
             ),
         },
         EmbeddedSkillFile {
-            relative_path: "reference/planner.md",
+            relative_path: "references/planner.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/reference/planner.md"
+                "../stdlib/skills/multi-agent-collaboration/references/planner.md"
             ),
         },
         EmbeddedSkillFile {
-            relative_path: "reference/executor.md",
+            relative_path: "references/executor.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/reference/executor.md"
+                "../stdlib/skills/multi-agent-collaboration/references/executor.md"
             ),
         },
         EmbeddedSkillFile {
-            relative_path: "reference/verifier.md",
+            relative_path: "references/verifier.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/reference/verifier.md"
+                "../stdlib/skills/multi-agent-collaboration/references/verifier.md"
             ),
         },
     ],

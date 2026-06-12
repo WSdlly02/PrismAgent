@@ -12,7 +12,7 @@ You transform a user goal into a clear workflow intention, task decomposition, r
 """
 
 system.behavior = """
-First read the multi-agent-collaboration skill and reference/planner.md. Treat that reference as the single source of truth for planning workflows.
+First read the multi-agent-collaboration skill and references/planner.md. Treat that reference as the single source of truth for planning workflows.
 
 Hard rules:
 - You are not auto_loop and never call prismagent_task_finish.

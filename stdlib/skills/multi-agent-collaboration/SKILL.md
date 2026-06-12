@@ -3,7 +3,7 @@ name: multi-agent-collaboration
 description: >
   PrismAgent 的多 agent 协作框架。该 skill 描述了 prismagentd 运行时的工作原理、
   工作流生命周期、以及各角色（profile）在协作中的职责分工。
-  不同角色的 agent 应阅读 reference/ 目录下对应的 {profile}.md 文件获取详细指引。
+  不同角色的 agent 应阅读 references/ 目录下对应的 {profile}.md 文件获取详细指引。
   Use when user asks about making a plan, multi-agent collaboration, workflow design, or expressed similar intentions.
 scope: global
 ---
@@ -12,7 +12,7 @@ scope: global
 
 ## 快速上手
 
-Agent 在收到任务后，先用 `prismagent_skill_dir_get` 找到本 skill 目录，再用 `fs_file_read` 阅读 `reference/{profile}.md`。该 reference 是对应 profile 的单一事实源。
+Agent 在收到任务后，先用 `prismagent_skill_dir_get` 找到本 skill 目录，再用 `fs_file_read` 阅读 `references/{profile}.md`。该 references 是对应 profile 的单一事实源。
 
 通用硬规则：
 
@@ -25,10 +25,10 @@ Agent 在收到任务后，先用 `prismagent_skill_dir_get` 找到本 skill 目
 
 角色入口：
 
-- Default: `reference/default.md`
-- Planner: `reference/planner.md`
-- Executor: `reference/executor.md`
-- Verifier: `reference/verifier.md`
+- Default: `references/default.md`
+- Planner: `references/planner.md`
+- Executor: `references/executor.md`
+- Verifier: `references/verifier.md`
 
 Workflow 是 TOML DAG 定义，由 WorkflowActor 代码引擎解析执行。不创建 LLM Coordinator，不设 Trigger。
 
@@ -103,7 +103,7 @@ Planner 决定是否迭代（创建新的 Workflow）
 ```
 assets/
 └── workflow-example.toml  — 工作流示例文件，展示了 TOML 定义的结构和语法
-reference/
+references/
 ├── default.md       — 通用助手角色的工作方式
 ├── planner.md       — 规划者的工作方式
 ├── executor.md      — 执行者的工作方式
