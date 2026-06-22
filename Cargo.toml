@@ -29,6 +29,7 @@ petname = { version = "3.0.0", default-features = false, features = [
   "macros",
 ] }
 include_dir = "0.7"
+base64 = "0.22.1"
 
 
 [profile.release]

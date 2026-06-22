@@ -1,3 +1,4 @@
+use crate::actors::llm_actor::adapters;
 use crate::actors::llm_actor::model::{
     LLM_ACTOR, LlmActor, LlmHandle, LlmInferRequest, LlmInferResponse, LlmMsg, LlmStreamEvent,
 };
@@ -5,10 +6,8 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::impl_handle_methods;
 use futures_util::StreamExt;
-use genai::ServiceTarget;
-use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent};
-use genai::resolver::{AuthData, AuthResolver, Endpoint};
+use genai::resolver::{AuthData, AuthResolver};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
@@ -67,39 +66,17 @@ impl LlmActor {
                     .with_capture_reasoning_content(true)
                     .with_capture_tool_calls(true);
 
-                // Mimo token plan 特殊支持
-                let is_mimo = provider == "mimo";
-                let mimo_use_token_plan =
-                    std::env::var("MIMO_USE_TOKEN_PLAN").unwrap_or_default() == "1";
-
-                // Sensenova 特殊支持
-                let is_sensenova = provider == "sensenova";
-
-                // 只有名字无法被 genai 自动识别的 provider 才需要绑定适配器
-                // sensenova 模型名不在任何已知前缀里，会 fallback 到 Ollama，需要显式绑定
-                // mimo-* 前缀能被自动识别为 AdapterKind::Mimo，不需要绑定
-                let mut builder = genai::Client::builder();
-                if is_sensenova {
-                    builder = builder.with_adapter_kind(AdapterKind::OpenAI);
-                }
-
-                builder
+                let builder = genai::Client::builder()
                     .with_auth_resolver(AuthResolver::from_resolver_fn(move |_| {
-                        Ok(Some(AuthData::from_single(api_key.clone())))
+                        Ok(Some(AuthData::from_single(api_key)))
                     }))
-                    .with_service_target_resolver_fn(move |mut target: ServiceTarget| {
-                        if is_mimo && mimo_use_token_plan {
-                            target.endpoint =
-                                Endpoint::from_static("https://token-plan-cn.xiaomimimo.com/v1/");
-                        }
-                        if is_sensenova {
-                            target.endpoint =
-                                Endpoint::from_static("https://token.sensenova.cn/v1/");
-                        }
-                        Ok(target)
-                    })
-                    .with_chat_options(options)
-                    .build()
+                    .with_chat_options(options);
+                match provider {
+                    "mimo" => adapters::mimo::build_mimo_client(builder),
+                    "sensenova" => adapters::sensenova::build_sensenova_client(builder),
+                    // "codex-oauth" => adapters::codex_oauth::build_codex_oauth_client(builder), not implemented yet!
+                    _ => builder.build(),
+                }
             })
             .clone()
     }
