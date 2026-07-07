@@ -9,7 +9,10 @@ const baseUnit: Unit = {
   content: {
     role: "assistant",
     content: [
-      { ReasoningContent: "thinking through the next step" },
+      {
+        ReasoningContent:
+          "private <pub>thinking through the next step</pub> hidden",
+      },
       { Text: "final answer" },
     ],
   },
@@ -33,12 +36,14 @@ describe("MessageTimeline", () => {
 
     expect(reasoning?.textContent).toContain("thinking through the next step");
     expect(assistant?.textContent).toContain("final answer");
+    expect(reasoning?.textContent).not.toContain("private");
+    expect(reasoning?.textContent).not.toContain("hidden");
   });
 
   it("renders streaming reasoning separately from streaming answer text", () => {
     const { container } = render(
       <MessageTimeline
-        streamingReasoningText="live reasoning"
+        streamingReasoningText="private <pub>live reasoning</pub>"
         streamingText="live answer"
         units={[]}
       />,
@@ -51,5 +56,63 @@ describe("MessageTimeline", () => {
     expect(container.querySelector('[data-role="assistant"]')?.textContent).toContain(
       "live answer",
     );
+  });
+
+  it("renders multiple public reasoning blocks as separate bubbles", () => {
+    const unit: Unit = {
+      ...baseUnit,
+      content: {
+        role: "assistant",
+        content: [
+          {
+            ReasoningContent:
+              "<pub>first public thought</pub> private <pub>second public thought</pub>",
+          },
+          { Text: "done" },
+        ],
+      },
+    };
+
+    const { container } = render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText=""
+        units={[unit]}
+      />,
+    );
+
+    const reasoning = [...container.querySelectorAll('[data-role="reasoning"]')];
+    expect(reasoning).toHaveLength(2);
+    expect(reasoning[0].textContent).toContain("first public thought");
+    expect(reasoning[1].textContent).toContain("second public thought");
+  });
+
+  it("ignores incomplete and unmatched public reasoning tags", () => {
+    const unit: Unit = {
+      ...baseUnit,
+      content: {
+        role: "assistant",
+        content: [
+          {
+            ReasoningContent:
+              "private <pub>unfinished public thought </pub> orphan </pub> <pub>not closed",
+          },
+          { Text: "done" },
+        ],
+      },
+    };
+
+    const { container } = render(
+      <MessageTimeline
+        streamingReasoningText="stream private <pub>not closed yet"
+        streamingText=""
+        units={[unit]}
+      />,
+    );
+
+    const reasoning = [...container.querySelectorAll('[data-role="reasoning"]')];
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0].textContent).toContain("unfinished public thought");
+    expect(reasoning[0].textContent).not.toContain("not closed");
   });
 });
