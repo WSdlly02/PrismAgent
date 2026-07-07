@@ -23,14 +23,29 @@ describe("session model", () => {
     ).toBe("hello");
   });
 
+  it("accumulates reasoning deltas separately from visible answer text", () => {
+    const next = applyAgentEvent(initialChatState(), {
+      type: "reasoning_delta",
+      text: "thinking",
+    });
+
+    expect(next.streamingReasoningText).toBe("thinking");
+    expect(next.streamingText).toBe("");
+  });
+
   it("appends committed units and clears streaming drafts", () => {
     const next = applyAgentEvent(
-      { ...initialChatState(), streamingText: "draft" },
+      {
+        ...initialChatState(),
+        streamingText: "draft",
+        streamingReasoningText: "reasoning draft",
+      },
       { type: "unit_append", unit },
     );
 
     expect(next.units).toEqual([unit]);
     expect(next.streamingText).toBe("");
+    expect(next.streamingReasoningText).toBe("");
   });
 
   it("replaces only the active pending user unit when the backend user unit arrives", () => {

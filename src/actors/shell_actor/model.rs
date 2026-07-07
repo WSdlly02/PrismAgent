@@ -90,6 +90,9 @@ pub enum WsEvent {
     StreamDelta {
         text: String,
     },
+    ReasoningDelta {
+        text: String,
+    },
     ApproveRequest {
         request: PendingApproval,
     },

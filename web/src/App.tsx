@@ -45,6 +45,7 @@ export function App() {
           error={session.error}
           pendingApproval={session.pendingApproval}
           statusLabel={session.statusLabel}
+          streamingReasoningText={session.streamingReasoningText}
           streamingText={session.streamingText}
           units={session.units}
           onApprove={session.approve}

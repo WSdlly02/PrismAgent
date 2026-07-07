@@ -52,12 +52,3 @@ pub enum LlmStreamEvent {
     ToolCallDelta { name: Option<String> },
     Finished,
 }
-
-impl LlmStreamEvent {
-    pub fn display_text(&self) -> Option<&str> {
-        match self {
-            Self::TextDelta { text } | Self::ReasoningDelta { text } => Some(text),
-            _ => None,
-        }
-    }
-}

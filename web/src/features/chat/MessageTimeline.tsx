@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Unit } from "../../api/types";
@@ -6,6 +6,7 @@ import type { Unit } from "../../api/types";
 type MessageTimelineProps = {
   units: Unit[];
   streamingText: string;
+  streamingReasoningText: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,25 @@ function collectText(unit: Unit): string {
   return content
     .filter((part) => typeof part.Text === "string")
     .map((part) => part.Text)
+    .join("\n");
+}
+
+function collectReasoningText(unit: Unit): string {
+  const content = unit.content.content;
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((part) => {
+      if (typeof part.ReasoningContent === "string") {
+        return part.ReasoningContent;
+      }
+      if (typeof part.reasoning_content === "string") {
+        return part.reasoning_content;
+      }
+      return "";
+    })
+    .filter(Boolean)
     .join("\n");
 }
 
@@ -114,7 +134,11 @@ function isToolResponseMessage(unit: Unit): boolean {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
-export function MessageTimeline({ units, streamingText }: MessageTimelineProps) {
+export function MessageTimeline({
+  units,
+  streamingText,
+  streamingReasoningText,
+}: MessageTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
@@ -132,40 +156,56 @@ export function MessageTimeline({ units, streamingText }: MessageTimelineProps) 
     if (isNearBottom.current && typeof bottom?.scrollIntoView === "function") {
       bottom.scrollIntoView({ behavior: "smooth" });
     }
-  }, [units, streamingText]);
+  }, [units, streamingText, streamingReasoningText]);
 
   // 过滤掉 internal 的消息
   const visibleUnits = units.filter((u) => !isInternal(u));
 
   return (
     <div className="message-timeline" onScroll={handleScroll} ref={containerRef}>
-      {visibleUnits.length === 0 && !streamingText ? (
+      {visibleUnits.length === 0 && !streamingText && !streamingReasoningText ? (
         <div className="empty-chat">No messages</div>
       ) : null}
 
       {visibleUnits.map((unit) => {
         const role = unit.content.role.toLowerCase();
+        const reasoningText = collectReasoningText(unit);
+        const reasoningMessage = reasoningText ? (
+          <article className="message" data-role="reasoning">
+            <header>
+              <span>reasoning</span>
+              <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
+            </header>
+            <div
+              className="markdown-body"
+              dangerouslySetInnerHTML={{ __html: renderMd(reasoningText) }}
+            />
+          </article>
+        ) : null;
 
         // --- 工具调用消息（assistant 中含有 ToolCall）---
         if (isToolCallMessage(unit)) {
           const text = collectText(unit);
           const calls = toolCallSummary(unit);
           return (
-            <article className="message" data-role="tool_call" key={unit.uuid}>
-              <header>
-                <span>tool calls</span>
-                <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-              </header>
-              {text ? (
-                <div
-                  className="markdown-body"
-                  dangerouslySetInnerHTML={{ __html: renderMd(text) }}
-                />
-              ) : null}
-              {calls.map((c, i) => (
-                <pre className="tool-summary" key={i}>{c}</pre>
-              ))}
-            </article>
+            <Fragment key={unit.uuid}>
+              {reasoningMessage}
+              <article className="message" data-role="tool_call">
+                <header>
+                  <span>tool calls</span>
+                  <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
+                </header>
+                {text ? (
+                  <div
+                    className="markdown-body"
+                    dangerouslySetInnerHTML={{ __html: renderMd(text) }}
+                  />
+                ) : null}
+                {calls.map((c, i) => (
+                  <pre className="tool-summary" key={i}>{c}</pre>
+                ))}
+              </article>
+            </Fragment>
           );
         }
 
@@ -173,32 +213,54 @@ export function MessageTimeline({ units, streamingText }: MessageTimelineProps) 
         if (isToolResponseMessage(unit)) {
           const summaries = toolResponseSummary(unit);
           return (
-            <article className="message" data-role="tool" key={unit.uuid}>
-              <header>
-                <span>tool result</span>
-                <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-              </header>
-              {summaries.map((s, i) => (
-                <pre className="tool-summary" key={i}>{s}</pre>
-              ))}
-            </article>
+            <Fragment key={unit.uuid}>
+              {reasoningMessage}
+              <article className="message" data-role="tool">
+                <header>
+                  <span>tool result</span>
+                  <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
+                </header>
+                {summaries.map((s, i) => (
+                  <pre className="tool-summary" key={i}>{s}</pre>
+                ))}
+              </article>
+            </Fragment>
           );
         }
 
         // --- 普通消息（user / assistant）渲染 Markdown ---
+        const text = collectText(unit);
         return (
-          <article className="message" data-role={role} key={unit.uuid}>
-            <header>
-              <span>{role}</span>
-              <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-            </header>
-            <div
-              className="markdown-body"
-              dangerouslySetInnerHTML={{ __html: renderMd(collectText(unit)) }}
-            />
-          </article>
+          <Fragment key={unit.uuid}>
+            {reasoningMessage}
+            {text ? (
+              <article className="message" data-role={role}>
+                <header>
+                  <span>{role}</span>
+                  <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
+                </header>
+                <div
+                  className="markdown-body"
+                  dangerouslySetInnerHTML={{ __html: renderMd(text) }}
+                />
+              </article>
+            ) : null}
+          </Fragment>
         );
       })}
+
+      {streamingReasoningText ? (
+        <article className="message message-streaming" data-role="reasoning">
+          <header>
+            <span>reasoning</span>
+            <time>streaming</time>
+          </header>
+          <div
+            className="markdown-body"
+            dangerouslySetInnerHTML={{ __html: renderMd(streamingReasoningText) }}
+          />
+        </article>
+      ) : null}
 
       {streamingText ? (
         <article className="message message-streaming" data-role="assistant">

@@ -19,6 +19,7 @@ function session(loadFn: () => Promise<void>): PrismSession {
     session: null,
     units: [],
     streamingText: "",
+    streamingReasoningText: "",
     pendingApproval: null,
     statusLabel: "idle",
     connectionStatus: "idle",

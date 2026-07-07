@@ -121,6 +121,7 @@ pub struct AgentSummary {
 pub enum AgentEvent {
     UnitAppend { unit: Unit },
     StreamDelta { text: String },
+    ReasoningDelta { text: String },
     ApproveRequest { request: PendingApproval },
     StatusChanged { status: AgentStatus },
     Error { message: String },

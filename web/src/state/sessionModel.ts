@@ -8,6 +8,7 @@ import type {
 export type ChatState = {
   units: Unit[];
   streamingText: string;
+  streamingReasoningText: string;
   pendingApproval: PendingApproval | null;
   pendingUserUuid: string | null;
   status: AgentStatus | null;
@@ -18,6 +19,7 @@ export function initialChatState(): ChatState {
   return {
     units: [],
     streamingText: "",
+    streamingReasoningText: "",
     pendingApproval: null,
     pendingUserUuid: null,
     status: null,
@@ -32,6 +34,11 @@ export function applyAgentEvent(
   switch (event.type) {
     case "stream_delta":
       return { ...state, streamingText: state.streamingText + event.text };
+    case "reasoning_delta":
+      return {
+        ...state,
+        streamingReasoningText: state.streamingReasoningText + event.text,
+      };
     case "unit_append": {
       const incomingRole = event.unit.content.role.toLowerCase();
       const units = incomingRole === "user" && state.pendingUserUuid
@@ -42,6 +49,7 @@ export function applyAgentEvent(
         units: [...units, event.unit],
         pendingUserUuid: incomingRole === "user" ? null : state.pendingUserUuid,
         streamingText: "",
+        streamingReasoningText: "",
       };
     }
     case "approve_request":

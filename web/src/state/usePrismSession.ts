@@ -57,6 +57,7 @@ export type PrismSession = {
   session: { workspace_uuid: string } | null;
   units: Unit[];
   streamingText: string;
+  streamingReasoningText: string;
   pendingApproval: PendingApproval | null;
   statusLabel: string;
   connectionStatus: "idle" | "connecting" | "connected" | "error";
@@ -383,7 +384,10 @@ export function usePrismSession(): PrismSession {
     }
 
     // --- Agent events ---
-    if (msg.type === "stream_delta" && ignoreStreamUntilNextStatusRef.current) {
+    if (
+      (msg.type === "stream_delta" || msg.type === "reasoning_delta") &&
+      ignoreStreamUntilNextStatusRef.current
+    ) {
       return;
     }
     if (msg.type === "status_changed") {
@@ -585,7 +589,12 @@ export function usePrismSession(): PrismSession {
         chat.pendingApproval.request_uuid,
         approvalMask,
       );
-      setChat((current) => ({ ...current, pendingApproval: null, streamingText: "" }));
+      setChat((current) => ({
+        ...current,
+        pendingApproval: null,
+        streamingText: "",
+        streamingReasoningText: "",
+      }));
     },
     [activeSession, chat.pendingApproval, ensureWorkspaceLease, selectedAgent],
   );
@@ -609,6 +618,7 @@ export function usePrismSession(): PrismSession {
           : current.units,
         pendingUserUuid: null,
         streamingText: "",
+        streamingReasoningText: "",
       }));
       try {
         const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
@@ -620,7 +630,11 @@ export function usePrismSession(): PrismSession {
       return;
     }
 
-    setChat((current) => ({ ...current, streamingText: "" }));
+    setChat((current) => ({
+      ...current,
+      streamingText: "",
+      streamingReasoningText: "",
+    }));
     const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
     await cancelAgent(access, selectedAgent.agent_uuid);
   }, [activeSession, approve, chat.status, ensureWorkspaceLease, selectedAgent]);
@@ -648,6 +662,7 @@ export function usePrismSession(): PrismSession {
     selectedWorkspace,
     units: chat.units,
     streamingText: chat.streamingText,
+    streamingReasoningText: chat.streamingReasoningText,
     pendingApproval: chat.pendingApproval,
     statusLabel: chat.status ?? selectedAgent?.status ?? "idle",
     connectionStatus,

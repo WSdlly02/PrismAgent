@@ -35,6 +35,8 @@ export type AgentSummary = {
 export type ChatPart = {
   Text?: string;
   text?: string;
+  ReasoningContent?: string;
+  reasoning_content?: string;
   [key: string]: unknown;
 };
 
@@ -92,6 +94,7 @@ export type PendingApproval = {
 export type AgentEvent =
   | { type: "unit_append"; unit: Unit }
   | { type: "stream_delta"; text: string }
+  | { type: "reasoning_delta"; text: string }
   | { type: "approve_request"; request: PendingApproval }
   | { type: "status_changed"; status: AgentStatus }
   | { type: "error"; message: string };

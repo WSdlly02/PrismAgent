@@ -534,6 +534,18 @@ textarea {
   background: #f1f6fa;
 }
 
+.message[data-role="reasoning"] {
+  max-width: min(760px, 86%);
+  border-color: #d7cce5;
+  border-style: dashed;
+  background: #fbf8ff;
+}
+
+.message[data-role="reasoning"] .markdown-body {
+  color: #4f435e;
+  font-size: 13px;
+}
+
 .tool-summary {
   margin-top: 6px !important;
   padding: 6px 10px;

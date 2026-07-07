@@ -8,6 +8,7 @@ type ChatPaneProps = {
   agent: AgentSummary | null;
   units: Unit[];
   streamingText: string;
+  streamingReasoningText: string;
   pendingApproval: PendingApproval | null;
   statusLabel: string;
   connectionStatus: string;
@@ -21,6 +22,7 @@ export function ChatPane({
   agent,
   units,
   streamingText,
+  streamingReasoningText,
   pendingApproval,
   statusLabel,
   connectionStatus,
@@ -74,7 +76,11 @@ export function ChatPane({
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <MessageTimeline units={units} streamingText={streamingText} />
+      <MessageTimeline
+        units={units}
+        streamingReasoningText={streamingReasoningText}
+        streamingText={streamingText}
+      />
 
       {pendingApproval ? (
         <ApprovalCard

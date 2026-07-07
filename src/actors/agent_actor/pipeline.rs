@@ -280,13 +280,18 @@ async fn call_llm_with_units(
     let shell = handles.shell.clone();
     let stream_forwarder = tokio::spawn(async move {
         while let Some(event) = stream_rx.recv().await {
-            if let Some(text) = event.display_text() {
-                let _ = shell.emit_agent_event(
-                    agent_uuid.clone(),
-                    WsEvent::StreamDelta {
-                        text: text.to_string(),
-                    },
-                );
+            match event {
+                LlmStreamEvent::TextDelta { text } => {
+                    let _ =
+                        shell.emit_agent_event(agent_uuid.clone(), WsEvent::StreamDelta { text });
+                }
+                LlmStreamEvent::ReasoningDelta { text } => {
+                    let _ = shell
+                        .emit_agent_event(agent_uuid.clone(), WsEvent::ReasoningDelta { text });
+                }
+                LlmStreamEvent::Started
+                | LlmStreamEvent::ToolCallDelta { .. }
+                | LlmStreamEvent::Finished => {}
             }
         }
     });
