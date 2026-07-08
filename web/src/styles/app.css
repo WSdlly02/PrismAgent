@@ -504,6 +504,26 @@ textarea {
   padding: 18px;
 }
 
+.jump-to-bottom {
+  position: sticky;
+  bottom: 0;
+  align-self: flex-end;
+  z-index: 2;
+  border: 1px solid #c8d2dd;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #20252b;
+  box-shadow: 0 8px 24px #15191e1a;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.jump-to-bottom:hover {
+  border-color: #1d6f66;
+  color: #1d6f66;
+}
+
 .empty-chat {
   display: grid;
   height: 100%;

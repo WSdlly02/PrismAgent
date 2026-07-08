@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Unit } from "../../api/types";
@@ -115,6 +115,8 @@ function isToolResponseMessage(unit: Unit): boolean {
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
+const JUMP_BUTTON_THRESHOLD_PX = 100;
+
 export function MessageTimeline({
   units,
   streamingText,
@@ -122,28 +124,113 @@ export function MessageTimeline({
 }: MessageTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const isNearBottom = useRef(true);
+  const autoScroll = useRef(false);
+  const wasStreaming = useRef(false);
+  const touchStartY = useRef<number | null>(null);
+  const [showJumpButton, setShowJumpButton] = useState(false);
+  const isStreaming = Boolean(streamingText || streamingReasoningText);
+
+  function distanceFromBottom(el: HTMLDivElement): number {
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
+  }
+
+  function isNearBottom(el: HTMLDivElement): boolean {
+    return distanceFromBottom(el) < JUMP_BUTTON_THRESHOLD_PX;
+  }
+
+  function updateJumpButton(el: HTMLDivElement) {
+    setShowJumpButton(distanceFromBottom(el) >= JUMP_BUTTON_THRESHOLD_PX);
+  }
 
   function handleScroll() {
     const el = containerRef.current;
     if (!el) {
       return;
     }
-    isNearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    updateJumpButton(el);
+    if (isStreaming && isNearBottom(el)) {
+      autoScroll.current = true;
+    }
+  }
+
+  function pauseAutoScroll() {
+    autoScroll.current = false;
+  }
+
+  function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (event.deltaY < 0) {
+      pauseAutoScroll();
+    }
+  }
+
+  function handleTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    touchStartY.current = event.touches[0]?.clientY ?? null;
+  }
+
+  function handleTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    const startY = touchStartY.current;
+    const currentY = event.touches[0]?.clientY;
+    if (startY == null || currentY == null) {
+      return;
+    }
+    if (currentY > startY) {
+      pauseAutoScroll();
+    }
+    touchStartY.current = currentY;
+  }
+
+  function scrollToBottom(behavior: ScrollBehavior) {
+    const bottom = bottomRef.current;
+    if (typeof bottom?.scrollIntoView === "function") {
+      bottom.scrollIntoView({ behavior });
+    }
+  }
+
+  function handleJumpToBottom() {
+    autoScroll.current = true;
+    setShowJumpButton(false);
+    scrollToBottom("smooth");
   }
 
   useEffect(() => {
-    const bottom = bottomRef.current;
-    if (isNearBottom.current && typeof bottom?.scrollIntoView === "function") {
-      bottom.scrollIntoView({ behavior: "smooth" });
+    const el = containerRef.current;
+    if (!el) {
+      return;
     }
-  }, [units, streamingText, streamingReasoningText]);
+
+    if (isStreaming && !wasStreaming.current) {
+      autoScroll.current = isNearBottom(el);
+    }
+    if (!isStreaming) {
+      autoScroll.current = false;
+    }
+
+    updateJumpButton(el);
+    if (isStreaming && autoScroll.current) {
+      requestAnimationFrame(() => {
+        scrollToBottom("auto");
+        const current = containerRef.current;
+        if (current) {
+          updateJumpButton(current);
+        }
+      });
+    }
+
+    wasStreaming.current = isStreaming;
+  }, [isStreaming, streamingText, streamingReasoningText]);
 
   // 过滤掉 internal 的消息
   const visibleUnits = units.filter((u) => !isInternal(u));
 
   return (
-    <div className="message-timeline" onScroll={handleScroll} ref={containerRef}>
+    <div
+      className="message-timeline"
+      onScroll={handleScroll}
+      onTouchMove={handleTouchMove}
+      onTouchStart={handleTouchStart}
+      onWheel={handleWheel}
+      ref={containerRef}
+    >
       {visibleUnits.length === 0 && !streamingText && !streamingReasoningText ? (
         <div className="empty-chat">No messages</div>
       ) : null}
@@ -238,6 +325,17 @@ export function MessageTimeline({
             dangerouslySetInnerHTML={{ __html: renderMd(streamingText) }}
           />
         </article>
+      ) : null}
+
+      {showJumpButton ? (
+        <button
+          aria-label="Jump to bottom"
+          className="jump-to-bottom"
+          onClick={handleJumpToBottom}
+          type="button"
+        >
+          ↓
+        </button>
       ) : null}
 
       <div ref={bottomRef} />
