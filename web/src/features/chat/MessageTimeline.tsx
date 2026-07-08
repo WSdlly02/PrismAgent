@@ -38,37 +38,6 @@ function collectText(unit: Unit): string {
     .join("\n");
 }
 
-function collectReasoningText(unit: Unit): string {
-  const content = unit.content.content;
-  if (!Array.isArray(content)) {
-    return "";
-  }
-  return content
-    .map((part) => {
-      if (typeof part.ReasoningContent === "string") {
-        return part.ReasoningContent;
-      }
-      if (typeof part.reasoning_content === "string") {
-        return part.reasoning_content;
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
-}
-
-function extractPublicReasoningBlocks(text: string): string[] {
-  const blocks: string[] = [];
-  const pattern = /<pub>([\s\S]*?)<\/pub>/g;
-  for (const match of text.matchAll(pattern)) {
-    const content = match[1].trim();
-    if (content) {
-      blocks.push(content);
-    }
-  }
-  return blocks;
-}
-
 // ---------------------------------------------------------------------------
 // 工具调用摘要：🔧 fn_name(args…)
 // ---------------------------------------------------------------------------
@@ -172,33 +141,15 @@ export function MessageTimeline({
 
   // 过滤掉 internal 的消息
   const visibleUnits = units.filter((u) => !isInternal(u));
-  const streamingReasoningBlocks = extractPublicReasoningBlocks(streamingReasoningText);
 
   return (
     <div className="message-timeline" onScroll={handleScroll} ref={containerRef}>
-      {visibleUnits.length === 0 && !streamingText && streamingReasoningBlocks.length === 0 ? (
+      {visibleUnits.length === 0 && !streamingText && !streamingReasoningText ? (
         <div className="empty-chat">No messages</div>
       ) : null}
 
       {visibleUnits.map((unit) => {
         const role = unit.content.role.toLowerCase();
-        const reasoningBlocks = extractPublicReasoningBlocks(collectReasoningText(unit));
-        const reasoningMessages = reasoningBlocks.map((block, index) => (
-          <article
-            className="message"
-            data-role="reasoning"
-            key={`${unit.uuid}-reasoning-${index}`}
-          >
-            <header>
-              <span>reasoning</span>
-              <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-            </header>
-            <div
-              className="markdown-body"
-              dangerouslySetInnerHTML={{ __html: renderMd(block) }}
-            />
-          </article>
-        ));
 
         // --- 工具调用消息（assistant 中含有 ToolCall）---
         if (isToolCallMessage(unit)) {
@@ -206,7 +157,6 @@ export function MessageTimeline({
           const calls = toolCallSummary(unit);
           return (
             <Fragment key={unit.uuid}>
-              {reasoningMessages}
               <article className="message" data-role="tool_call">
                 <header>
                   <span>tool calls</span>
@@ -231,7 +181,6 @@ export function MessageTimeline({
           const summaries = toolResponseSummary(unit);
           return (
             <Fragment key={unit.uuid}>
-              {reasoningMessages}
               <article className="message" data-role="tool">
                 <header>
                   <span>tool result</span>
@@ -249,7 +198,6 @@ export function MessageTimeline({
         const text = collectText(unit);
         return (
           <Fragment key={unit.uuid}>
-            {reasoningMessages}
             {text ? (
               <article className="message" data-role={role}>
                 <header>
@@ -266,22 +214,18 @@ export function MessageTimeline({
         );
       })}
 
-      {streamingReasoningBlocks.map((block, index) => (
-        <article
-          className="message message-streaming"
-          data-role="reasoning"
-          key={`streaming-reasoning-${index}`}
-        >
+      {streamingReasoningText ? (
+        <article className="message message-streaming" data-role="reasoning">
           <header>
             <span>reasoning</span>
             <time>streaming</time>
           </header>
           <div
             className="markdown-body"
-            dangerouslySetInnerHTML={{ __html: renderMd(block) }}
+            dangerouslySetInnerHTML={{ __html: renderMd(streamingReasoningText) }}
           />
         </article>
-      ))}
+      ) : null}
 
       {streamingText ? (
         <article className="message message-streaming" data-role="assistant">
