@@ -126,6 +126,7 @@ export function MessageTimeline({
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(false);
   const wasStreaming = useRef(false);
+  const didSyncInitialContent = useRef(false);
   const touchStartY = useRef<number | null>(null);
   const [showJumpButton, setShowJumpButton] = useState(false);
   const isStreaming = Boolean(streamingText || streamingReasoningText);
@@ -186,6 +187,16 @@ export function MessageTimeline({
     }
   }
 
+  function syncAfterScrollFrame() {
+    requestAnimationFrame(() => {
+      const current = containerRef.current;
+      scrollToBottom("auto");
+      if (current) {
+        updateJumpButton(current);
+      }
+    });
+  }
+
   function handleJumpToBottom() {
     autoScroll.current = true;
     setShowJumpButton(false);
@@ -203,21 +214,22 @@ export function MessageTimeline({
     }
     if (!isStreaming) {
       autoScroll.current = false;
+      updateJumpButton(el);
+      if (!didSyncInitialContent.current && units.length > 0) {
+        didSyncInitialContent.current = true;
+        syncAfterScrollFrame();
+      }
+      wasStreaming.current = isStreaming;
+      return;
     }
 
     updateJumpButton(el);
     if (isStreaming && autoScroll.current) {
-      requestAnimationFrame(() => {
-        scrollToBottom("auto");
-        const current = containerRef.current;
-        if (current) {
-          updateJumpButton(current);
-        }
-      });
+      syncAfterScrollFrame();
     }
 
     wasStreaming.current = isStreaming;
-  }, [isStreaming, streamingText, streamingReasoningText]);
+  }, [isStreaming, units, streamingText, streamingReasoningText]);
 
   // 过滤掉 internal 的消息
   const visibleUnits = units.filter((u) => !isInternal(u));

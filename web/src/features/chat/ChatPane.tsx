@@ -77,6 +77,7 @@ export function ChatPane({
       {error ? <div className="error-banner">{error}</div> : null}
 
       <MessageTimeline
+        key={agent?.agent_uuid ?? "no-agent"}
         units={units}
         streamingReasoningText={streamingReasoningText}
         streamingText={streamingText}

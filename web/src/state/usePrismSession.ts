@@ -467,12 +467,16 @@ export function usePrismSession(): PrismSession {
       subscribedAgentUuidRef.current = agent.agent_uuid;
       selectedAgentUuidRef.current = agent.agent_uuid;
       setSelectedAgent(agent);
+      setChat(initialChatState());
       setConnectionStatus("connecting");
       setError(null);
       ignoreStreamUntilNextStatusRef.current = false;
 
       // Fetch snapshot via REST
       const snapshot = await agentSnapshot(wsUuid, agent.agent_uuid);
+      if (selectedAgentUuidRef.current !== agent.agent_uuid) {
+        return;
+      }
       setChat({
         ...initialChatState(),
         units: snapshot.units,
