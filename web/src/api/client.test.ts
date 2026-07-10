@@ -157,6 +157,10 @@ describe("api client", () => {
       jsonResponse({ error: "workspace locked" }, { status: 409 }),
     );
 
-    await expect(listProfiles()).rejects.toThrow("workspace locked");
+    await expect(listProfiles()).rejects.toMatchObject({
+      name: "ApiError",
+      message: "workspace locked",
+      status: 409,
+    });
   });
 });

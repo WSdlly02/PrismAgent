@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiError,
   addWorkspace as addWorkspaceApi,
   acquireLease,
   agentSnapshot,
@@ -29,8 +30,9 @@ import type {
 import { applyAgentEvent, initialChatState } from "./sessionModel";
 
 const PENDING_UUID_PREFIX = "__pending-";
-const LEASE_RENEW_INTERVAL_SECONDS = 5;
-const LEASE_RENEW_SKEW_SECONDS = 10;
+const LEASE_RENEW_SKEW_SECONDS = 3;
+const LEASE_CONFLICT_MESSAGE =
+  "This workspace is currently in use by another client. Try again shortly.";
 
 function createClientId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -107,32 +109,6 @@ export function usePrismSession(): PrismSession {
   useEffect(() => {
     workspaceLeasesRef.current = workspaceLeases;
   }, [workspaceLeases]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      for (const lease of Object.values(workspaceLeasesRef.current)) {
-        void acquireLease(lease.workspace_uuid, clientId, lease.lease_token)
-          .then((renewed) => {
-            setWorkspaceLeases((prev) => ({
-              ...prev,
-              [renewed.workspace_uuid]: {
-                workspace_uuid: renewed.workspace_uuid,
-                lease_token: renewed.lease_token,
-                expires_at: renewed.expires_at,
-              },
-            }));
-          })
-          .catch(() => {
-            setWorkspaceLeases((prev) => {
-              const next = { ...prev };
-              delete next[lease.workspace_uuid];
-              return next;
-            });
-          });
-      }
-    }, LEASE_RENEW_INTERVAL_SECONDS * 1000);
-    return () => window.clearInterval(interval);
-  }, [clientId]);
 
   // --- Derived state ---
 
@@ -262,17 +238,31 @@ export function usePrismSession(): PrismSession {
       const existing = workspaceLeases[workspaceUuid];
       const now = Math.floor(Date.now() / 1000);
       if (existing && existing.expires_at - now > LEASE_RENEW_SKEW_SECONDS) {
+        setError(null);
         return {
           workspace_uuid: existing.workspace_uuid,
           lease_token: existing.lease_token,
         };
       }
 
-      const lease = await acquireLease(
-        workspaceUuid,
-        clientId,
-        existing?.lease_token ?? null,
-      );
+      let lease;
+      try {
+        lease = await acquireLease(
+          workspaceUuid,
+          clientId,
+          existing?.lease_token ?? null,
+        );
+      } catch (err) {
+        const message =
+          err instanceof ApiError && err.status === 409
+            ? LEASE_CONFLICT_MESSAGE
+            : `Failed to acquire workspace lease: ${
+                err instanceof Error ? err.message : String(err)
+              }`;
+        setError(message);
+        throw err;
+      }
+      setError(null);
       const access = {
         workspace_uuid: lease.workspace_uuid,
         lease_token: lease.lease_token,

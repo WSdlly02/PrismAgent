@@ -20,7 +20,7 @@ use crate::impl_handle_methods;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-const LEASE_SECONDS: i64 = 15;
+const LEASE_SECONDS: i64 = 10;
 const SUBSCRIBER_BUFFER: usize = 64;
 
 impl ShellActor {

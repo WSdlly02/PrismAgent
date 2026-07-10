@@ -9,6 +9,16 @@ import type {
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     headers: JSON_HEADERS,
@@ -20,7 +30,7 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
       typeof body === "object" && body !== null && "error" in body
         ? String((body as { error: unknown }).error)
         : response.statusText;
-    throw new Error(message);
+    throw new ApiError(message, response.status);
   }
   return body as T;
 }
