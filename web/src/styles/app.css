@@ -761,12 +761,15 @@ textarea {
 }
 
 .status-idle {
-  background: #7b8794;
+  background: #2f8f63;
 }
 
-.status-running_llm,
+.status-running_llm {
+  background: #4f9dd9;
+}
+
 .status-running_tool {
-  background: #2e8f7d;
+  background: #2864a8;
 }
 
 .status-waiting_approval {
