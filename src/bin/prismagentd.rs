@@ -2,10 +2,10 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{
-        ConnectInfo, Query, State,
+        ConnectInfo, FromRequest, FromRequestParts, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{Request, StatusCode, Uri},
+    http::{Request, StatusCode, Uri, request::Parts},
     middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -31,11 +31,11 @@ use prismagent::{
             WorkspaceHandle, WorkspaceMsg,
         },
     },
-    error::{ErrorClass, PublicError, SubsystemError},
+    error::{ErrorClass, PublicError, SubsystemError, SubsystemResult},
     handles::AppHandles,
     web_assets,
 };
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
     net::SocketAddr,
@@ -68,17 +68,24 @@ fn allowed_nets() -> &'static [IpNetwork] {
         .as_slice()
 }
 
-async fn ip_filter(request: Request<Body>, next: middleware::Next) -> Result<Response, StatusCode> {
+async fn ip_filter(
+    request: Request<Body>,
+    next: middleware::Next,
+) -> Result<Response, RestApiError> {
     let addr = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip())
-        .ok_or(StatusCode::FORBIDDEN)?;
+        .ok_or(RestApiError(SubsystemError::PermissionDenied {
+            action: "access PrismAgent without peer address information",
+        }))?;
 
     if allowed_nets().iter().any(|net| net.contains(addr)) {
         Ok(next.run(request).await)
     } else {
-        Err(StatusCode::FORBIDDEN)
+        Err(RestApiError(SubsystemError::PermissionDenied {
+            action: "access PrismAgent from outside the allowed networks",
+        }))
     }
 }
 
@@ -240,7 +247,7 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
         Ok(event_rx) => event_rx,
         Err(error) => {
             let event = WsEvent::Error {
-                message: error.public_error().message,
+                error: error.public_error(),
             };
             if let Ok(payload) = serde_json::to_string(&event) {
                 let _ = socket.send(Message::Text(payload.into())).await;
@@ -267,6 +274,10 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
 
     // Channel for heartbeat → write_task ping signaling
     let (ping_tx, mut ping_rx) = mpsc::channel::<()>(1);
+    // Protocol errors originate in the read task after the socket is split.
+    // This connection-local channel lets the write task return them without
+    // routing transport concerns through ShellActor.
+    let (connection_event_tx, mut connection_event_rx) = mpsc::channel::<WsEvent>(8);
 
     // Write task: forward events from shell actor → WS client, and send pings
     let _write_shell = shell.clone();
@@ -275,9 +286,13 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
         loop {
             tokio::select! {
                 Some(event) = event_rx.recv() => {
-                    let json = serde_json::to_string(&event).unwrap_or_else(|e| {
-                        serde_json::to_string(&json!({ "type": "error", "message": format!("serialize error: {e}") })).unwrap()
-                    });
+                    let json = serialize_ws_event(&event);
+                    if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Some(event) = connection_event_rx.recv() => {
+                    let json = serialize_ws_event(&event);
                     if ws_sender.send(Message::Text(json.into())).await.is_err() {
                         break;
                     }
@@ -332,8 +347,16 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            if let Err(e) = handle_client_message(&read_shell, connection_id, &text, &last_pong).await {
-                                eprintln!("WS message error: {e}");
+                            if let Err(error) = handle_client_message(&read_shell, connection_id, &text, &last_pong).await {
+                                let event = WsEvent::Error {
+                                    error: error.public_error(),
+                                };
+                                // Unlike cross-actor event delivery, awaiting is safe here:
+                                // this channel is local to one WebSocket connection and
+                                // applies backpressure only to that connection's read task.
+                                if connection_event_tx.send(event).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                         Some(Ok(Message::Pong(_))) => {
@@ -373,22 +396,29 @@ async fn handle_client_message(
     connection_id: ConnectionId,
     text: &str,
     last_pong: &AtomicU64,
-) -> Result<(), String> {
-    let msg: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
+) -> SubsystemResult<()> {
+    let msg: serde_json::Value = serde_json::from_str(text).map_err(|error| {
+        SubsystemError::validation_field("message", format!("invalid JSON: {error}"))
+    })?;
 
-    let msg_type = msg["type"].as_str().ok_or("missing 'type' field")?;
+    let msg_type = msg["type"].as_str().ok_or_else(|| {
+        SubsystemError::validation_field("type", "missing or non-string message type")
+    })?;
 
     match msg_type {
         "subscribe_workspace" => {
             let workspace_uuid = msg["workspace_uuid"]
                 .as_str()
-                .ok_or("missing workspace_uuid")?
+                .ok_or_else(|| {
+                    SubsystemError::validation_field(
+                        "workspace_uuid",
+                        "missing or non-string workspace_uuid",
+                    )
+                })?
                 .to_string();
             shell
                 .subscribe_workspace(connection_id, workspace_uuid)
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
         }
         "unsubscribe_workspace" => {
             shell.unsubscribe_workspace(connection_id);
@@ -396,12 +426,14 @@ async fn handle_client_message(
         "subscribe_agent" => {
             let agent_uuid = msg["agent_uuid"]
                 .as_str()
-                .ok_or("missing agent_uuid")?
+                .ok_or_else(|| {
+                    SubsystemError::validation_field(
+                        "agent_uuid",
+                        "missing or non-string agent_uuid",
+                    )
+                })?
                 .to_string();
-            shell
-                .subscribe_agent(connection_id, agent_uuid)
-                .await
-                .map_err(|e| e.to_string())?;
+            shell.subscribe_agent(connection_id, agent_uuid).await?;
         }
         "unsubscribe_agent" => {
             shell.unsubscribe_agent(connection_id);
@@ -410,10 +442,27 @@ async fn handle_client_message(
             last_pong.store(now_secs(), Ordering::Relaxed);
         }
         _ => {
-            return Err(format!("unknown message type: {msg_type}"));
+            return Err(SubsystemError::validation_field(
+                "type",
+                format!("unknown message type: {msg_type}"),
+            ));
         }
     }
     Ok(())
+}
+
+fn serialize_ws_event(event: &WsEvent) -> String {
+    serde_json::to_string(event).unwrap_or_else(|error| {
+        json!({
+            "type": "error",
+            "error": {
+                "code": "serialization_error",
+                "message": format!("serialize error: {error}"),
+                "retryable": false,
+            }
+        })
+        .to_string()
+    })
 }
 
 use futures_util::{SinkExt, StreamExt};
@@ -435,27 +484,68 @@ async fn web_asset(uri: Uri) -> impl IntoResponse {
     web_assets::asset_response(uri.path())
 }
 
+/// JSON request extractor that keeps Axum rejections inside the public REST
+/// error contract instead of returning Axum's plain-text rejection body.
+struct RestJson<T>(T);
+
+impl<S, T> FromRequest<S> for RestJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = RestApiError;
+
+    async fn from_request(request: Request<Body>, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::<T>::from_request(request, state)
+            .await
+            .map_err(|error| {
+                RestApiError(SubsystemError::validation_field("body", error.to_string()))
+            })?;
+        Ok(Self(value))
+    }
+}
+
+/// Query extractor counterpart to [`RestJson`].
+struct RestQuery<T>(T);
+
+impl<S, T> FromRequestParts<S> for RestQuery<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = RestApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let Query(value) = Query::<T>::from_request_parts(parts, state)
+            .await
+            .map_err(|error| {
+                RestApiError(SubsystemError::validation_field("query", error.to_string()))
+            })?;
+        Ok(Self(value))
+    }
+}
+
 async fn list_workspaces(State(state): State<AppState>) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_workspaces().await?)))
 }
 
 async fn add_workspace(
     State(state): State<AppState>,
-    Json(request): Json<WorkspaceCreateRequest>,
+    RestJson(request): RestJson<WorkspaceCreateRequest>,
 ) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.create_workspace(request).await?)))
 }
 
 async fn acquire_lease(
     State(state): State<AppState>,
-    Json(request): Json<AcquireLeaseRequest>,
+    RestJson(request): RestJson<AcquireLeaseRequest>,
 ) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.acquire_lease(request).await?)))
 }
 
 async fn release_lease(
     State(state): State<AppState>,
-    Json(request): Json<ReleaseLeaseRequest>,
+    RestJson(request): RestJson<ReleaseLeaseRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.release_lease(request).await?;
     Ok(Json(json!({ "released": true })))
@@ -463,7 +553,7 @@ async fn release_lease(
 
 async fn delete_workspace(
     State(state): State<AppState>,
-    Json(request): Json<AuthorizedDeleteWorkspaceRequest>,
+    RestJson(request): RestJson<AuthorizedDeleteWorkspaceRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.delete_workspace(request).await?;
     Ok(Json(json!({ "deleted": true })))
@@ -475,14 +565,14 @@ async fn list_profiles(State(state): State<AppState>) -> RestApiResult<Json<Valu
 
 async fn workflow_cancel(
     State(state): State<AppState>,
-    Json(request): Json<AuthorizedCancelWorkflowRequest>,
+    RestJson(request): RestJson<AuthorizedCancelWorkflowRequest>,
 ) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.workflow_cancel(request).await?)))
 }
 
 async fn create_agent(
     State(state): State<AppState>,
-    Json(request): Json<AuthorizedAgentCreateRequest>,
+    RestJson(request): RestJson<AuthorizedAgentCreateRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.create_agent(request).await?;
     Ok(Json(json!({ "created": true })))
@@ -490,7 +580,7 @@ async fn create_agent(
 
 async fn delete_agent(
     State(state): State<AppState>,
-    Json(request): Json<AgentWriteAccessRequest>,
+    RestJson(request): RestJson<AgentWriteAccessRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.delete_agent(request).await?;
     Ok(Json(json!({ "deleted": true })))
@@ -498,21 +588,21 @@ async fn delete_agent(
 
 async fn list_agents(
     State(state): State<AppState>,
-    Query(query): Query<WorkspaceAccessRequest>,
+    RestQuery(query): RestQuery<WorkspaceAccessRequest>,
 ) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_agents(query).await?)))
 }
 
 async fn agent_snapshot(
     State(state): State<AppState>,
-    Query(query): Query<AgentAccessRequest>,
+    RestQuery(query): RestQuery<AgentAccessRequest>,
 ) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.agent_snapshot(query).await?)))
 }
 
 async fn send_message(
     State(state): State<AppState>,
-    Json(request): Json<AuthorizedSendMessageRequest>,
+    RestJson(request): RestJson<AuthorizedSendMessageRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.send_message(request).await?;
     Ok(Json(json!({ "accepted": true })))
@@ -520,7 +610,7 @@ async fn send_message(
 
 async fn approve_request(
     State(state): State<AppState>,
-    Json(request): Json<AuthorizedApproveRequest>,
+    RestJson(request): RestJson<AuthorizedApproveRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.approve_request(request).await?;
     Ok(Json(json!({ "accepted": true })))
@@ -528,7 +618,7 @@ async fn approve_request(
 
 async fn cancel(
     State(state): State<AppState>,
-    Json(query): Json<AgentWriteAccessRequest>,
+    RestJson(query): RestJson<AgentWriteAccessRequest>,
 ) -> RestApiResult<Json<Value>> {
     state.shell.cancel(query).await?;
     Ok(Json(json!({ "cancelled": true })))
@@ -573,6 +663,7 @@ impl IntoResponse for RestApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use prismagent::error::{ConflictKind, ResourceKind};
 
     #[test]
@@ -621,5 +712,69 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(RestApiError(error).into_response().status(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn malformed_json_uses_the_public_rest_error_envelope() {
+        let request = Request::builder()
+            .header("content-type", "application/json")
+            .body(Body::from("{"))
+            .unwrap();
+        let error = match RestJson::<WorkspaceCreateRequest>::from_request(request, &()).await {
+            Ok(_) => panic!("malformed JSON should be rejected"),
+            Err(error) => error,
+        };
+
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "validation_failed");
+        assert_eq!(body["error"]["retryable"], false);
+    }
+
+    #[tokio::test]
+    async fn malformed_query_uses_the_public_rest_error_envelope() {
+        let request = Request::builder()
+            .uri("/api/agents/list")
+            .body(Body::empty())
+            .unwrap();
+        let (mut parts, _) = request.into_parts();
+        let error =
+            match RestQuery::<WorkspaceAccessRequest>::from_request_parts(&mut parts, &()).await {
+                Ok(_) => panic!("missing query fields should be rejected"),
+                Err(error) => error,
+            };
+
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "validation_failed");
+    }
+
+    #[tokio::test]
+    async fn websocket_protocol_errors_keep_structured_error_data() {
+        let (tx, _rx) = mpsc::channel(1);
+        let shell = ShellHandle { tx };
+        let last_pong = AtomicU64::new(0);
+
+        let source = handle_client_message(&shell, 1, "not-json", &last_pong)
+            .await
+            .expect_err("invalid JSON should be rejected");
+        let payload = serialize_ws_event(&WsEvent::Error {
+            error: source.public_error(),
+        });
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(payload["type"], "error");
+        assert_eq!(payload["error"]["code"], "validation_failed");
+        assert_eq!(payload["error"]["retryable"], false);
+        assert!(
+            payload["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("invalid JSON")
+        );
     }
 }

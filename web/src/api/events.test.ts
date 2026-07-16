@@ -66,6 +66,18 @@ describe("websocket helpers", () => {
     const ping = parseWsMessage('{"type":"ping","ts":123}');
     expect(ping).toEqual({ type: "ping", ts: 123 });
 
+    const error = parseWsMessage(
+      '{"type":"error","error":{"code":"validation_failed","message":"invalid message","retryable":false}}',
+    );
+    expect(error).toEqual({
+      type: "error",
+      error: {
+        code: "validation_failed",
+        message: "invalid message",
+        retryable: false,
+      },
+    });
+
     const agentEvent = parseWsMessage(
       JSON.stringify({
         type: "unit_append",

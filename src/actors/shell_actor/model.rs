@@ -117,7 +117,7 @@ pub enum WsEvent {
     /// Protocol/connection-level error. Agent task failures must use
     /// `OperationFailed` so their context is not discarded.
     Error {
-        message: String,
+        error: PublicError,
     },
 }
 

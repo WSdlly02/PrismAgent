@@ -774,6 +774,9 @@ impl AgentActor {
     }
 
     fn emit_agent_event(&self, agent_uuid: &str, event: WsEvent) {
+        // Intentionally best-effort: ShellActor can be awaiting an AgentActor
+        // request, so awaiting a full Shell mailbox here could create a
+        // ShellActor <-> AgentActor wait cycle.
         let _ = self
             .handles
             .shell
@@ -802,6 +805,8 @@ impl AgentActor {
     }
 
     fn emit_workspace_event(&self, workspace_uuid: &str, event: WsEvent) {
+        // Keep cross-actor event emission non-blocking for the same reason as
+        // emit_agent_event: ShellActor may currently be awaiting this actor.
         let _ = self
             .handles
             .shell

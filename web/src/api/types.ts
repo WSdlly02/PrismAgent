@@ -173,6 +173,6 @@ export type WsClientMessage =
 export type WsServerMessage =
   | { type: "connected" }
   | { type: "ping"; ts: number }
-  | { type: "error"; message: string }
+  | { type: "error"; error: PublicError }
   | WorkspaceEvent
   | AgentEvent;

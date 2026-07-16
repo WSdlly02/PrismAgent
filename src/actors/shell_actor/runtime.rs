@@ -238,6 +238,9 @@ impl ShellActor {
                 let mut closed = Vec::new();
                 for &conn_id in connection_ids {
                     if let Some(tx) = self.connection_channels.get(&conn_id) {
+                        // Intentionally best-effort: awaiting one slow WebSocket
+                        // subscriber would stall ShellActor and therefore all
+                        // control-plane requests routed through it.
                         match tx.try_send(event.clone()) {
                             Ok(()) => {}
                             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -260,6 +263,8 @@ impl ShellActor {
                 let mut closed = Vec::new();
                 for &conn_id in connection_ids {
                     if let Some(tx) = self.connection_channels.get(&conn_id) {
+                        // See the workspace branch above: subscriber backpressure
+                        // must remain local to that connection.
                         match tx.try_send(event.clone()) {
                             Ok(()) => {}
                             Err(mpsc::error::TrySendError::Full(_)) => {
@@ -671,6 +676,8 @@ impl ShellHandle {
         agent_uuid: impl Into<String>,
         event: WsEvent,
     ) -> SubsystemResult<()> {
+        // Deliberately use try_send: callers are actors that ShellActor may be
+        // awaiting, so send().await on a full mailbox could create a wait cycle.
         self.tx
             .try_send(ShellMsg::EmitEvent {
                 target: EventTarget::Agent(agent_uuid.into()),
@@ -684,6 +691,8 @@ impl ShellHandle {
         workspace_uuid: impl Into<String>,
         event: WsEvent,
     ) -> SubsystemResult<()> {
+        // Keep all cross-actor event emission non-blocking; see
+        // emit_agent_event for the wait-cycle rationale.
         self.tx
             .try_send(ShellMsg::EmitEvent {
                 target: EventTarget::Workspace(workspace_uuid.into()),

@@ -27,7 +27,23 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers: JSON_HEADERS,
     ...init,
   });
-  const body = (await response.json()) as unknown;
+  const responseText = await response.text();
+  let body: unknown;
+  try {
+    body = responseText.length > 0 ? JSON.parse(responseText) : null;
+  } catch {
+    if (!response.ok) {
+      throw new ApiError(
+        responseText.trim() || response.statusText,
+        response.status,
+      );
+    }
+    throw new ApiError(
+      "Server returned an invalid JSON response",
+      response.status,
+      "invalid_response",
+    );
+  }
   if (!response.ok) {
     const error =
       typeof body === "object" && body !== null && "error" in body
@@ -48,10 +64,11 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
       );
     }
     // Accept the previous string envelope during rolling frontend/backend updates.
-    throw new ApiError(
-      typeof error === "string" ? error : response.statusText,
-      response.status,
-    );
+    const fallbackMessage =
+      typeof error === "string"
+        ? error
+        : responseText.trim() || response.statusText;
+    throw new ApiError(fallbackMessage, response.status);
   }
   return body as T;
 }

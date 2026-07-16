@@ -174,4 +174,37 @@ describe("api client", () => {
       retryable: true,
     });
   });
+
+  it("preserves plain-text errors when a transport boundary returns non-JSON", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response("request body is malformed", {
+        status: 400,
+        statusText: "Bad Request",
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+
+    await expect(listProfiles()).rejects.toMatchObject({
+      name: "ApiError",
+      message: "request body is malformed",
+      status: 400,
+      code: "unknown_error",
+    });
+  });
+
+  it("reports invalid JSON in otherwise successful responses", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response("not-json", {
+        status: 200,
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+
+    await expect(listProfiles()).rejects.toMatchObject({
+      name: "ApiError",
+      message: "Server returned an invalid JSON response",
+      status: 200,
+      code: "invalid_response",
+    });
+  });
 });

@@ -304,7 +304,7 @@ export function usePrismSession(): PrismSession {
       return;
     }
     if (msg.type === "error") {
-      setError(msg.message);
+      setError(msg.error.message);
       return;
     }
 
