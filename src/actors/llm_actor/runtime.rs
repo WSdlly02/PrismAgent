@@ -3,7 +3,7 @@ use crate::actors::llm_actor::model::{
     LLM_ACTOR, LlmActor, LlmHandle, LlmInferRequest, LlmInferResponse, LlmMsg, LlmStreamEvent,
 };
 use crate::actors::storage_actor::model::unit::Unit;
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ErrorClass, ExternalKind, SubsystemError, SubsystemResult};
 use crate::impl_handle_methods;
 use futures_util::StreamExt;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent};
@@ -171,13 +171,89 @@ async fn run_streaming_inference(
         }
     }
 
-    Err(SubsystemError::Llm {
-        message: "stream ended without terminal event".to_string(),
-    })
+    Err(SubsystemError::external(
+        ExternalKind::Llm,
+        ErrorClass::Unavailable,
+        "stream ended without terminal event",
+        true,
+    ))
 }
 
 fn llm_error(error: genai::Error) -> SubsystemError {
-    SubsystemError::Llm {
-        message: error.to_string(),
+    let (class, retryable) = genai_error_semantics(&error);
+    SubsystemError::external(ExternalKind::Llm, class, error.to_string(), retryable)
+}
+
+fn genai_error_semantics(error: &genai::Error) -> (ErrorClass, bool) {
+    match error {
+        genai::Error::NoChatResponse { .. }
+        | genai::Error::InvalidJsonResponseElement { .. }
+        | genai::Error::ChatResponseGeneration { .. }
+        | genai::Error::ChatResponse { .. }
+        | genai::Error::StreamParse { .. }
+        | genai::Error::WebStream { .. } => (ErrorClass::Unavailable, true),
+        genai::Error::HttpError { status, .. } => http_error_semantics(*status),
+        genai::Error::WebAdapterCall { webc_error, .. }
+        | genai::Error::WebModelCall { webc_error, .. } => webc_error_semantics(webc_error),
+        _ => (ErrorClass::Internal, false),
+    }
+}
+
+fn webc_error_semantics(error: &genai::webc::Error) -> (ErrorClass, bool) {
+    match error {
+        genai::webc::Error::ResponseFailedNotJson { .. }
+        | genai::webc::Error::ResponseFailedInvalidJson { .. } => (ErrorClass::Unavailable, true),
+        genai::webc::Error::ResponseFailedStatus { status, .. } => http_error_semantics(*status),
+        genai::webc::Error::Reqwest(error) if error.is_timeout() => (ErrorClass::Timeout, true),
+        genai::webc::Error::Reqwest(error) if error.is_connect() => (ErrorClass::Unavailable, true),
+        genai::webc::Error::Reqwest(_) | genai::webc::Error::JsonValueExt(_) => {
+            (ErrorClass::Internal, false)
+        }
+    }
+}
+
+fn http_error_semantics(status: reqwest::StatusCode) -> (ErrorClass, bool) {
+    if status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::GATEWAY_TIMEOUT
+    {
+        (ErrorClass::Timeout, true)
+    } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        (ErrorClass::Unavailable, true)
+    } else {
+        // Provider-side 4xx responses usually indicate invalid server
+        // credentials, model configuration, or an adapter-built request. They
+        // must not be reported as a transient service outage.
+        (ErrorClass::Internal, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_error_semantics;
+    use crate::error::ErrorClass;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn classifies_provider_statuses_without_conflating_rejection_and_outage() {
+        assert_eq!(
+            http_error_semantics(StatusCode::REQUEST_TIMEOUT),
+            (ErrorClass::Timeout, true)
+        );
+        assert_eq!(
+            http_error_semantics(StatusCode::TOO_MANY_REQUESTS),
+            (ErrorClass::Unavailable, true)
+        );
+        assert_eq!(
+            http_error_semantics(StatusCode::BAD_GATEWAY),
+            (ErrorClass::Unavailable, true)
+        );
+        assert_eq!(
+            http_error_semantics(StatusCode::BAD_REQUEST),
+            (ErrorClass::Internal, false)
+        );
+        assert_eq!(
+            http_error_semantics(StatusCode::UNAUTHORIZED),
+            (ErrorClass::Internal, false)
+        );
     }
 }

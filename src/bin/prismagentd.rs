@@ -31,7 +31,7 @@ use prismagent::{
             WorkspaceHandle, WorkspaceMsg,
         },
     },
-    error::{PublicError, SubsystemError},
+    error::{ErrorClass, PublicError, SubsystemError},
     handles::AppHandles,
     web_assets,
 };
@@ -542,16 +542,73 @@ impl From<SubsystemError> for RestApiError {
 
 impl IntoResponse for RestApiError {
     fn into_response(self) -> axum::response::Response {
-        let status = match &self.0 {
-            SubsystemError::NotFound { .. } => StatusCode::NOT_FOUND,
-            SubsystemError::Conflict { .. } => StatusCode::CONFLICT,
-            SubsystemError::InvalidInput { .. } => StatusCode::BAD_REQUEST,
-            SubsystemError::PermissionDenied { .. } => StatusCode::FORBIDDEN,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        let status = match self.0.descriptor().class {
+            ErrorClass::BadRequest => StatusCode::BAD_REQUEST,
+            ErrorClass::NotFound => StatusCode::NOT_FOUND,
+            ErrorClass::Conflict => StatusCode::CONFLICT,
+            ErrorClass::Forbidden => StatusCode::FORBIDDEN,
+            ErrorClass::Unsupported => StatusCode::NOT_IMPLEMENTED,
+            ErrorClass::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ErrorClass::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            ErrorClass::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = RestErrorResponse {
             error: self.0.public_error(),
         };
         (status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prismagent::error::{ConflictKind, ResourceKind};
+
+    #[test]
+    fn rest_api_error_uses_transport_neutral_error_class() {
+        let cases = [
+            (
+                SubsystemError::validation("bad input"),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                SubsystemError::not_found(ResourceKind::Agent, "agent-1"),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                SubsystemError::conflict(ConflictKind::AgentBusy, "agent-1"),
+                StatusCode::CONFLICT,
+            ),
+            (
+                SubsystemError::PermissionDenied {
+                    action: "modify workspace",
+                },
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                SubsystemError::actor_dead("agent"),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                SubsystemError::Timeout {
+                    operation: "inference",
+                },
+                StatusCode::GATEWAY_TIMEOUT,
+            ),
+            (
+                SubsystemError::Unsupported {
+                    feature: "workflow cancellation",
+                },
+                StatusCode::NOT_IMPLEMENTED,
+            ),
+            (
+                SubsystemError::configuration("profile", "missing API key"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(RestApiError(error).into_response().status(), expected);
+        }
     }
 }

@@ -4,7 +4,7 @@ use crate::actors::storage_actor::model::misc::{MiscReadEntry, MiscReplaceEntry,
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::{actor_dispatch, impl_handle_methods};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,14 +13,23 @@ use tokio::sync::mpsc;
 impl StorageActor {
     pub fn load(rx: mpsc::Receiver<StorageMsg>) -> SubsystemResult<Self> {
         let root = dirs::home_dir()
-            .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
+            .ok_or_else(|| {
+                SubsystemError::internal(
+                    "resolve storage directory",
+                    "home directory is unavailable",
+                )
+            })?
             .join(".prismagent")
             .join("workspaces");
         Self::from_root(rx, root)
     }
 
     pub fn from_root(rx: mpsc::Receiver<StorageMsg>, root: PathBuf) -> SubsystemResult<Self> {
-        std::fs::create_dir_all(&root)?;
+        io_result(
+            "create storage directory",
+            &root,
+            std::fs::create_dir_all(&root),
+        )?;
         Ok(Self { rx, root })
     }
 
@@ -104,9 +113,9 @@ impl StorageActor {
     fn delete_agent(&self, workspace_uuid: &str, agent_uuid: &str) -> SubsystemResult<()> {
         let path = self.agent_path(workspace_uuid, agent_uuid)?;
         if !path.exists() {
-            return Err(SubsystemError::not_found("agent", agent_uuid));
+            return Err(SubsystemError::not_found(ResourceKind::Agent, agent_uuid));
         }
-        std::fs::remove_file(path)?;
+        io_result("delete agent file", &path, std::fs::remove_file(&path))?;
         Ok(())
     }
 
@@ -117,9 +126,12 @@ impl StorageActor {
         enabled: bool,
     ) -> SubsystemResult<Agent> {
         let agent_path = self.agent_path(workspace_uuid, agent_uuid)?;
-        let old_data = std::fs::read(&agent_path)?;
+        let old_data = io_result("read agent file", &agent_path, std::fs::read(&agent_path))?;
         let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
-            SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
+            SubsystemError::corrupt_state(
+                "agent file",
+                format!("{}: {error}", agent_path.display()),
+            )
         })?;
         agent.auto_loop = enabled;
         agent.updated_at = chrono::Utc::now().timestamp();
@@ -130,9 +142,12 @@ impl StorageActor {
 
     fn update_agent(&self, request: AgentUpdateRequest) -> SubsystemResult<Agent> {
         let agent_path = self.agent_path(&request.workspace_uuid, &request.agent_uuid)?;
-        let old_data = std::fs::read(&agent_path)?;
+        let old_data = io_result("read agent file", &agent_path, std::fs::read(&agent_path))?;
         let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
-            SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
+            SubsystemError::corrupt_state(
+                "agent file",
+                format!("{}: {error}", agent_path.display()),
+            )
         })?;
         if let Some(context_refs) = request.context_refs {
             validate_object_names(&context_refs, "context_refs")?;
@@ -161,9 +176,12 @@ impl StorageActor {
         units: &[Unit],
     ) -> SubsystemResult<Agent> {
         let agent_path = self.agent_path(workspace_uuid, agent_uuid)?;
-        let old_data = std::fs::read(&agent_path)?;
+        let old_data = io_result("read agent file", &agent_path, std::fs::read(&agent_path))?;
         let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
-            SubsystemError::invalid_input(format!("{}: {error}", agent_path.display()))
+            SubsystemError::corrupt_state(
+                "agent file",
+                format!("{}: {error}", agent_path.display()),
+            )
         })?;
         for unit in units {
             write_json_create_only(&self.unit_path(workspace_uuid, &unit.uuid)?, unit)?;
@@ -293,13 +311,17 @@ impl StorageActor {
 
     fn workspace_root(&self, workspace_uuid: &str) -> SubsystemResult<PathBuf> {
         if !is_safe_object_name(workspace_uuid) {
-            return Err(SubsystemError::invalid_input(format!(
-                "invalid workspace uuid: {workspace_uuid}"
-            )));
+            return Err(SubsystemError::validation_field(
+                "workspace uuid",
+                format!("invalid workspace uuid: {workspace_uuid}"),
+            ));
         }
         let root = self.root.join(workspace_uuid);
         if !root.is_dir() {
-            return Err(SubsystemError::not_found("workspace", workspace_uuid));
+            return Err(SubsystemError::not_found(
+                ResourceKind::Workspace,
+                workspace_uuid,
+            ));
         }
         Ok(root)
     }
@@ -338,9 +360,10 @@ impl StorageActor {
 
     fn misc_path(&self, workspace_uuid: &str, name: &str) -> SubsystemResult<PathBuf> {
         if !is_safe_object_name(name) {
-            return Err(SubsystemError::invalid_input(format!(
-                "invalid misc name: {name}"
-            )));
+            return Err(SubsystemError::validation_field(
+                "misc name",
+                format!("invalid misc name: {name}"),
+            ));
         }
         Ok(self
             .workspace_root(workspace_uuid)?
@@ -421,50 +444,77 @@ impl_handle_methods! {
         => ReplaceMisc { workspace_uuid: workspace_uuid.into(), entries: entries };
 }
 
+fn io_result<T>(
+    operation: &'static str,
+    path: &Path,
+    result: std::io::Result<T>,
+) -> SubsystemResult<T> {
+    result.map_err(|error| SubsystemError::io(operation, Some(path.to_path_buf()), error))
+}
+
 fn atomic_create_file(dst: &Path, data: &[u8]) -> SubsystemResult<()> {
     if dst.exists() {
-        return Err(SubsystemError::Conflict {
-            resource: "file",
-            id: dst.display().to_string(),
-        });
+        return Err(SubsystemError::conflict(
+            ConflictKind::FileAlreadyExists,
+            dst.display().to_string(),
+        ));
     }
-    std::fs::create_dir_all(
-        dst.parent()
-            .ok_or_else(|| SubsystemError::internal("invalid path: no parent directory"))?,
+    let parent = dst.parent().ok_or_else(|| {
+        SubsystemError::internal(
+            "create storage file",
+            format!("path has no parent directory: {}", dst.display()),
+        )
+    })?;
+    io_result(
+        "create storage parent directory",
+        parent,
+        std::fs::create_dir_all(parent),
     )?;
     let tmp_dst = dst.with_extension("tmp");
-    std::fs::write(&tmp_dst, data)?;
-    std::fs::rename(tmp_dst, dst)?;
+    io_result(
+        "write temporary storage file",
+        &tmp_dst,
+        std::fs::write(&tmp_dst, data),
+    )?;
+    io_result("commit storage file", dst, std::fs::rename(&tmp_dst, dst))?;
     Ok(())
 }
 
 fn atomic_replace_file(dst: &Path, old: &[u8], new: &[u8]) -> SubsystemResult<()> {
     if !dst.exists() {
-        return Err(SubsystemError::not_found("file", dst.display().to_string()));
+        return Err(SubsystemError::not_found(
+            ResourceKind::File,
+            dst.display().to_string(),
+        ));
     }
-    let current_data = std::fs::read(dst)?;
+    let current_data = io_result("read storage file", dst, std::fs::read(dst))?;
     if current_data != old {
-        return Err(SubsystemError::Conflict {
-            resource: "file",
-            id: dst.display().to_string(),
-        });
+        return Err(SubsystemError::conflict(
+            ConflictKind::ConcurrentModification,
+            dst.display().to_string(),
+        ));
     }
     let tmp_dst = dst.with_extension("tmp");
-    std::fs::write(&tmp_dst, new)?;
-    std::fs::rename(tmp_dst, dst)?;
+    io_result(
+        "write temporary storage file",
+        &tmp_dst,
+        std::fs::write(&tmp_dst, new),
+    )?;
+    io_result("commit storage file", dst, std::fs::rename(&tmp_dst, dst))?;
     Ok(())
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> SubsystemResult<T> {
     if !path.is_file() {
         return Err(SubsystemError::not_found(
-            "file",
+            ResourceKind::File,
             path.display().to_string(),
         ));
     }
-    let data = std::fs::read(path)?;
-    serde_json::from_slice(&data)
-        .map_err(|error| SubsystemError::invalid_input(format!("{}: {error}", path.display())))
+    let data = io_result("read storage file", path, std::fs::read(path))?;
+    serde_json::from_slice(&data).map_err(|error| {
+        SubsystemError::corrupt_state("storage JSON file", format!("{}: {error}", path.display()))
+    })
 }
 
 fn write_json_create_only<T: serde::Serialize>(path: &Path, value: &T) -> SubsystemResult<()> {
@@ -475,7 +525,7 @@ fn write_json_create_only<T: serde::Serialize>(path: &Path, value: &T) -> Subsys
 fn to_pretty_json_vec<T: serde::Serialize>(value: &T) -> SubsystemResult<Vec<u8>> {
     let mut data = Vec::new();
     serde_json::to_writer_pretty(&mut data, value)
-        .map_err(|error| SubsystemError::invalid_input(error.to_string()))?;
+        .map_err(|error| SubsystemError::internal("serialize storage object", error.to_string()))?;
     data.push(b'\n');
     Ok(data)
 }
@@ -485,8 +535,17 @@ fn list_json_object_ids(dir: &Path) -> SubsystemResult<Vec<String>> {
     if !dir.exists() {
         return Ok(ids);
     }
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
+    let entries = io_result("list storage directory", dir, std::fs::read_dir(dir))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| {
+                SubsystemError::io(
+                    "read storage directory entry",
+                    Some(dir.to_path_buf()),
+                    error,
+                )
+            })?
+            .path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
@@ -511,9 +570,10 @@ fn is_safe_object_name(name: &str) -> bool {
 fn non_empty_string(value: String, field: &'static str) -> SubsystemResult<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        Err(SubsystemError::invalid_input(format!(
-            "{field} must not be empty"
-        )))
+        Err(SubsystemError::validation_field(
+            field,
+            format!("{field} must not be empty"),
+        ))
     } else {
         Ok(trimmed.to_string())
     }
@@ -529,9 +589,10 @@ fn validate_object_name(value: &str, field: &'static str) -> SubsystemResult<()>
     if is_safe_object_name(value) {
         Ok(())
     } else {
-        Err(SubsystemError::invalid_input(format!(
-            "invalid {field}: {value}"
-        )))
+        Err(SubsystemError::validation_field(
+            field,
+            format!("invalid {field}: {value}"),
+        ))
     }
 }
 
@@ -585,10 +646,10 @@ mod tests {
             .unwrap_err();
 
         match error {
-            SubsystemError::InvalidInput { message } => {
+            SubsystemError::Validation { message, .. } => {
                 assert_eq!(message, "auto_loop_message must not be empty");
             }
-            other => panic!("expected InvalidInput, got {other:?}"),
+            other => panic!("expected Validation, got {other:?}"),
         }
     }
 }

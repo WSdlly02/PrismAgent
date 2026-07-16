@@ -14,7 +14,9 @@ use crate::actors::storage_actor::model::agent::{
     Agent, AgentCreateRequest, AgentUpdateRequest as StorageAgentUpdateRequest,
 };
 use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{
+    ConflictKind, ErrorClass, ExternalKind, ResourceKind, SubsystemError, SubsystemResult,
+};
 use crate::handles::AppHandles;
 use crate::impl_handle_methods;
 use genai::chat::ToolCall;
@@ -189,13 +191,13 @@ impl AgentActor {
 
     async fn delete(&mut self, workspace_uuid: &str, agent_uuid: &str) -> SubsystemResult<()> {
         if !self.contains(workspace_uuid, agent_uuid) {
-            return Err(SubsystemError::not_found("agent", agent_uuid));
+            return Err(SubsystemError::not_found(ResourceKind::Agent, agent_uuid));
         }
         if self.runtime(agent_uuid)?.status != AgentStatus::Idle {
-            return Err(SubsystemError::Conflict {
-                resource: "agent_runtime",
-                id: agent_uuid.to_string(),
-            });
+            return Err(SubsystemError::conflict(
+                ConflictKind::AgentBusy,
+                agent_uuid,
+            ));
         }
         self.handles
             .storage
@@ -242,10 +244,10 @@ impl AgentActor {
 
     async fn send_message(&mut self, request: SendMessageRequest) -> SubsystemResult<()> {
         if self.runtime(&request.agent_uuid)?.status != AgentStatus::Idle {
-            return Err(SubsystemError::Conflict {
-                resource: "agent_runtime",
-                id: request.agent_uuid,
-            });
+            return Err(SubsystemError::conflict(
+                ConflictKind::AgentBusy,
+                request.agent_uuid,
+            ));
         }
         let agent = self.agent(&request.agent_uuid)?;
         let unit_uuids = agent.unit_chain.clone();
@@ -292,12 +294,13 @@ impl AgentActor {
             && request.auto_loop.is_none()
             && request.auto_loop_message.is_none()
         {
-            return Err(SubsystemError::invalid_input(
+            return Err(SubsystemError::validation(
                 "self_update requires at least one field",
             ));
         }
         if request.auto_loop == Some(true) {
-            return Err(SubsystemError::invalid_input(
+            return Err(SubsystemError::validation_field(
+                "auto_loop",
                 "self_update only supports setting auto_loop to false; use prismagent_task_finish for normal task completion",
             ));
         }
@@ -442,9 +445,12 @@ impl AgentActor {
         if retry.is_some() {
             self.spawn_llm_continuation(agent_uuid).await
         } else {
-            Err(SubsystemError::Llm {
-                message: "LLM produced malformed tool calls repeatedly".to_string(),
-            })
+            Err(SubsystemError::external(
+                ExternalKind::Llm,
+                ErrorClass::Internal,
+                "LLM produced malformed tool calls repeatedly",
+                false,
+            ))
         }
     }
 
@@ -545,15 +551,17 @@ impl AgentActor {
         let pending = {
             let runtime = self.runtime_mut(&request.agent_uuid)?;
             let Some(pending) = runtime.pending_tool_batch.take() else {
-                return Err(SubsystemError::InvalidInput {
-                    message: format!("no pending approval request: {}", request.request_uuid),
-                });
+                return Err(SubsystemError::validation(format!(
+                    "no pending approval request: {}",
+                    request.request_uuid
+                )));
             };
             if pending.request_uuid != request.request_uuid {
                 runtime.pending_tool_batch = Some(pending);
-                return Err(SubsystemError::InvalidInput {
-                    message: format!("unknown approval request: {}", request.request_uuid),
-                });
+                return Err(SubsystemError::validation(format!(
+                    "unknown approval request: {}",
+                    request.request_uuid
+                )));
             }
             pending
         };
@@ -611,7 +619,8 @@ impl AgentActor {
 
     async fn set_auto_loop(&mut self, agent_uuid: &str, enabled: bool) -> SubsystemResult<Agent> {
         if enabled {
-            return Err(SubsystemError::invalid_input(
+            return Err(SubsystemError::validation_field(
+                "auto_loop",
                 "set_auto_loop(true) is not supported yet",
             ));
         }
@@ -641,7 +650,7 @@ impl AgentActor {
             return Ok(());
         }
         if tool_calls.len() > 64 {
-            return Err(SubsystemError::invalid_input(format!(
+            return Err(SubsystemError::validation(format!(
                 "tool batch cannot contain more than 64 calls: {}",
                 tool_calls.len()
             )));
@@ -845,26 +854,37 @@ impl AgentActor {
     fn agent(&self, agent_uuid: &str) -> SubsystemResult<&Agent> {
         self.agents
             .get(agent_uuid)
-            .ok_or_else(|| SubsystemError::not_found("agent", agent_uuid))
+            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, agent_uuid))
     }
 
     fn runtime(&self, agent_uuid: &str) -> SubsystemResult<&AgentRuntime> {
-        self.runtimes
-            .get(agent_uuid)
-            .ok_or_else(|| SubsystemError::not_found("agent_runtime", agent_uuid))
+        self.runtimes.get(agent_uuid).ok_or_else(|| {
+            SubsystemError::internal(
+                "access agent runtime",
+                format!("runtime is missing for agent {agent_uuid}"),
+            )
+        })
     }
 
     fn runtime_mut(&mut self, agent_uuid: &str) -> SubsystemResult<&mut AgentRuntime> {
-        self.runtimes
-            .get_mut(agent_uuid)
-            .ok_or_else(|| SubsystemError::not_found("agent_runtime", agent_uuid))
+        self.runtimes.get_mut(agent_uuid).ok_or_else(|| {
+            SubsystemError::internal(
+                "access agent runtime",
+                format!("runtime is missing for agent {agent_uuid}"),
+            )
+        })
     }
 
     fn workspace_uuid(&self, agent_uuid: &str) -> SubsystemResult<&str> {
         self.agent_workspace
             .get(agent_uuid)
             .map(String::as_str)
-            .ok_or_else(|| SubsystemError::not_found("agent_workspace", agent_uuid))
+            .ok_or_else(|| {
+                SubsystemError::internal(
+                    "resolve agent workspace",
+                    format!("workspace mapping is missing for agent {agent_uuid}"),
+                )
+            })
     }
 }
 

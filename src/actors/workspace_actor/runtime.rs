@@ -2,7 +2,7 @@ use crate::actors::workspace_actor::model::{
     WORKSPACE_ACTOR, Workspace, WorkspaceActor, WorkspaceCreateRequest, WorkspaceHandle,
     WorkspaceMsg, WorkspaceSummary,
 };
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::{actor_dispatch, impl_handle_methods};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,14 +12,25 @@ use uuid::Uuid;
 impl WorkspaceActor {
     pub fn load(rx: mpsc::Receiver<WorkspaceMsg>) -> SubsystemResult<Self> {
         let root = dirs::home_dir()
-            .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
+            .ok_or_else(|| {
+                SubsystemError::internal(
+                    "resolve workspace metadata directory",
+                    "home directory is unavailable",
+                )
+            })?
             .join(".prismagent")
             .join("workspaces");
         Self::from_root(rx, root)
     }
 
     pub fn from_root(rx: mpsc::Receiver<WorkspaceMsg>, root: PathBuf) -> SubsystemResult<Self> {
-        std::fs::create_dir_all(&root)?;
+        std::fs::create_dir_all(&root).map_err(|error| {
+            SubsystemError::io(
+                "create workspace metadata directory",
+                Some(root.clone()),
+                error,
+            )
+        })?;
         Ok(Self {
             rx,
             root,
@@ -44,8 +55,23 @@ impl WorkspaceActor {
     }
 
     async fn list(&mut self) -> SubsystemResult<Vec<WorkspaceSummary>> {
-        for entry in std::fs::read_dir(&self.root)? {
-            let path = entry?.path();
+        let entries = std::fs::read_dir(&self.root).map_err(|error| {
+            SubsystemError::io(
+                "list workspace metadata directory",
+                Some(self.root.clone()),
+                error,
+            )
+        })?;
+        for entry in entries {
+            let path = entry
+                .map_err(|error| {
+                    SubsystemError::io(
+                        "read workspace directory entry",
+                        Some(self.root.clone()),
+                        error,
+                    )
+                })?
+                .path();
             let metadata_path = path.join("metadata.json");
             if !path.is_dir() || !metadata_path.is_file() {
                 continue;
@@ -72,28 +98,42 @@ impl WorkspaceActor {
         &mut self,
         request: WorkspaceCreateRequest,
     ) -> SubsystemResult<WorkspaceSummary> {
-        let workspace_path = std::fs::canonicalize(&request.path)?;
+        let workspace_path = std::fs::canonicalize(&request.path).map_err(|error| {
+            SubsystemError::io("resolve workspace path", Some(request.path.clone()), error)
+        })?;
         if !workspace_path.is_dir() {
-            return Err(SubsystemError::invalid_input(format!(
-                "workspace path is not a directory: {}",
-                workspace_path.display()
-            )));
+            return Err(SubsystemError::validation_field(
+                "workspace path",
+                format!(
+                    "workspace path is not a directory: {}",
+                    workspace_path.display()
+                ),
+            ));
         }
         let existing = self.list().await?;
         if existing
             .iter()
             .any(|workspace| workspace.workspace_path == workspace_path)
         {
-            return Err(SubsystemError::Conflict {
-                resource: "workspace_path",
-                id: workspace_path.display().to_string(),
-            });
+            return Err(SubsystemError::conflict(
+                ConflictKind::WorkspacePathExists,
+                workspace_path.display().to_string(),
+            ));
         }
         let uuid = Uuid::now_v7().to_string();
         let workspace_root = self.root.join(&uuid);
-        std::fs::create_dir(&workspace_root)?;
+        std::fs::create_dir(&workspace_root).map_err(|error| {
+            SubsystemError::io(
+                "create workspace metadata",
+                Some(workspace_root.clone()),
+                error,
+            )
+        })?;
         for child in ["agents", "units", "contexts", "workflows", "misc", "skills"] {
-            std::fs::create_dir_all(workspace_root.join(child))?;
+            let child_path = workspace_root.join(child);
+            std::fs::create_dir_all(&child_path).map_err(|error| {
+                SubsystemError::io("create workspace data directory", Some(child_path), error)
+            })?;
         }
         let workspace = Workspace {
             uuid,
@@ -117,46 +157,60 @@ impl WorkspaceActor {
         self.workspaces
             .get(&workspace_uuid)
             .cloned()
-            .ok_or_else(|| SubsystemError::not_found("workspace", &workspace_uuid))
+            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Workspace, &workspace_uuid))
     }
 
     async fn delete(&mut self, workspace_uuid: String) -> SubsystemResult<()> {
         self.workspaces.remove(&workspace_uuid);
         let path = self.root.join(&workspace_uuid);
         if !path.exists() {
-            return Err(SubsystemError::not_found("workspace", &workspace_uuid));
+            return Err(SubsystemError::not_found(
+                ResourceKind::Workspace,
+                &workspace_uuid,
+            ));
         }
-        std::fs::remove_dir_all(&path)?;
+        std::fs::remove_dir_all(&path)
+            .map_err(|error| SubsystemError::io("delete workspace metadata", Some(path), error))?;
         Ok(())
     }
 }
 
 fn write_workspace(path: &std::path::Path, workspace: &Workspace) -> SubsystemResult<()> {
-    let data = serde_json::to_vec_pretty(workspace)
-        .map_err(|error| SubsystemError::invalid_input(error.to_string()))?;
-    std::fs::write(path, data)?;
+    let data = serde_json::to_vec_pretty(workspace).map_err(|error| {
+        SubsystemError::internal("serialize workspace metadata", error.to_string())
+    })?;
+    std::fs::write(path, data).map_err(|error| {
+        SubsystemError::io("write workspace metadata", Some(path.to_path_buf()), error)
+    })?;
     Ok(())
 }
 
 fn read_workspace(path: &std::path::Path) -> SubsystemResult<Workspace> {
-    let workspace: Workspace = serde_json::from_slice(&std::fs::read(path)?)
-        .map_err(|error| SubsystemError::invalid_input(format!("{}: {error}", path.display())))?;
+    let data = std::fs::read(path).map_err(|error| {
+        SubsystemError::io("read workspace metadata", Some(path.to_path_buf()), error)
+    })?;
+    let workspace: Workspace = serde_json::from_slice(&data).map_err(|error| {
+        SubsystemError::corrupt_state("workspace metadata", format!("{}: {error}", path.display()))
+    })?;
     let directory_uuid = path
         .parent()
         .and_then(std::path::Path::file_name)
         .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| {
-            SubsystemError::invalid_input(format!(
-                "{}: invalid workspace directory",
-                path.display()
-            ))
+            SubsystemError::corrupt_state(
+                "workspace metadata",
+                format!("{}: invalid workspace directory", path.display()),
+            )
         })?;
     if workspace.uuid != directory_uuid {
-        return Err(SubsystemError::invalid_input(format!(
-            "{}: uuid {} does not match directory {directory_uuid}",
-            path.display(),
-            workspace.uuid
-        )));
+        return Err(SubsystemError::corrupt_state(
+            "workspace metadata",
+            format!(
+                "{}: uuid {} does not match directory {directory_uuid}",
+                path.display(),
+                workspace.uuid
+            ),
+        ));
     }
     Ok(workspace)
 }

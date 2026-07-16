@@ -27,7 +27,7 @@ pub fn input_pipeline(
 fn user_message(message_body: MessageBody) -> SubsystemResult<ChatMessage> {
     let MessageBody { text, attachments } = message_body;
     if text.trim().is_empty() && attachments.is_empty() {
-        return Err(SubsystemError::invalid_input(
+        return Err(SubsystemError::validation(
             "message must contain text or at least one attachment",
         ));
     }
@@ -38,13 +38,13 @@ fn user_message(message_body: MessageBody) -> SubsystemResult<ChatMessage> {
     }
     for attachment in attachments {
         if attachment.data.trim().is_empty() {
-            return Err(SubsystemError::invalid_input(format!(
+            return Err(SubsystemError::validation(format!(
                 "attachment data must not be empty: {}",
                 attachment.filename
             )));
         }
         if attachment.mimetype.trim().is_empty() {
-            return Err(SubsystemError::invalid_input(format!(
+            return Err(SubsystemError::validation(format!(
                 "attachment mimetype must not be empty: {}",
                 attachment.filename
             )));

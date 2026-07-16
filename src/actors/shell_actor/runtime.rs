@@ -13,7 +13,7 @@ use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::workflow_actor::model::{WorkflowCancelRequest, WorkflowCancelResponse};
 use crate::actors::workspace_actor::model::{AcquireLeaseRequest, Lease, ReleaseLeaseRequest};
 use crate::actors::workspace_actor::model::{WorkspaceCreateRequest, WorkspaceSummary};
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
 use crate::impl_handle_methods;
@@ -120,11 +120,17 @@ impl ShellActor {
     ) -> SubsystemResult<()> {
         // Verify connection exists
         if !self.connections.contains_key(&connection_id) {
-            return Err(SubsystemError::internal("unknown connection_id"));
+            return Err(SubsystemError::internal(
+                "subscribe workspace",
+                "unknown connection id",
+            ));
         }
         // Verify workspace exists
         if !self.handles.workspace.contains(&workspace_uuid).await? {
-            return Err(SubsystemError::not_found("workspace", workspace_uuid));
+            return Err(SubsystemError::not_found(
+                ResourceKind::Workspace,
+                workspace_uuid,
+            ));
         }
         // Remove previous workspace subscription for this connection
         self.unsubscribe_workspace(connection_id);
@@ -166,7 +172,10 @@ impl ShellActor {
     ) -> SubsystemResult<()> {
         // Verify connection exists
         if !self.connections.contains_key(&connection_id) {
-            return Err(SubsystemError::internal("unknown connection_id"));
+            return Err(SubsystemError::internal(
+                "subscribe agent",
+                "unknown connection id",
+            ));
         }
         // Verify agent exists (use workspace from the connection's subscription)
         let workspace_uuid = self
@@ -174,7 +183,7 @@ impl ShellActor {
             .get(&connection_id)
             .and_then(|s| s.subscribed_workspace.clone())
             .ok_or_else(|| {
-                SubsystemError::invalid_input("subscribe workspace before subscribing to an agent")
+                SubsystemError::validation("subscribe workspace before subscribing to an agent")
             })?;
         if !self
             .handles
@@ -182,7 +191,7 @@ impl ShellActor {
             .contains(&workspace_uuid, &agent_uuid)
             .await?
         {
-            return Err(SubsystemError::not_found("agent", &agent_uuid));
+            return Err(SubsystemError::not_found(ResourceKind::Agent, &agent_uuid));
         }
         // Auto-unsubscribe from previous agent
         self.unsubscribe_agent(connection_id);
@@ -289,7 +298,10 @@ impl ShellActor {
 
     async fn acquire_lease(&mut self, request: AcquireLeaseRequest) -> SubsystemResult<Lease> {
         if request.client_id.trim().is_empty() {
-            return Err(SubsystemError::invalid_input("client_id must not be empty"));
+            return Err(SubsystemError::validation_field(
+                "client_id",
+                "client_id must not be empty",
+            ));
         }
         if !self
             .handles
@@ -298,7 +310,7 @@ impl ShellActor {
             .await?
         {
             return Err(SubsystemError::not_found(
-                "workspace",
+                ResourceKind::Workspace,
                 request.workspace_uuid,
             ));
         }
@@ -309,10 +321,10 @@ impl ShellActor {
             let may_renew = lease.client_id == request.client_id
                 && request.lease_token.as_deref() == Some(lease.lease_token.as_str());
             if !may_renew {
-                return Err(SubsystemError::Conflict {
-                    resource: "workspace_lease",
-                    id: request.workspace_uuid,
-                });
+                return Err(SubsystemError::conflict(
+                    ConflictKind::WorkspaceLeaseHeld,
+                    request.workspace_uuid,
+                ));
             }
             lease.expires_at = now + LEASE_SECONDS;
             return Ok(lease.clone());
@@ -330,10 +342,9 @@ impl ShellActor {
 
     fn release_lease(&mut self, request: ReleaseLeaseRequest) -> SubsystemResult<()> {
         self.prune_expired_leases();
-        let lease = self
-            .leases
-            .get(&request.workspace_uuid)
-            .ok_or_else(|| SubsystemError::not_found("workspace_lease", &request.workspace_uuid))?;
+        let lease = self.leases.get(&request.workspace_uuid).ok_or_else(|| {
+            SubsystemError::not_found(ResourceKind::WorkspaceLease, &request.workspace_uuid)
+        })?;
         if lease.lease_token != request.lease_token {
             return Err(SubsystemError::PermissionDenied {
                 action: "release workspace lease",
@@ -450,13 +461,13 @@ impl ShellActor {
         // 3. Check each agent's status — block if any not Idle
         for agent in &agents {
             if agent.status != AgentStatus::Idle {
-                return Err(SubsystemError::Conflict {
-                    resource: "agent_status",
-                    id: format!(
+                return Err(SubsystemError::conflict(
+                    ConflictKind::AgentBusy,
+                    format!(
                         "{} (status: {:?}, agent: {})",
                         agent.agent_uuid, agent.status, agent.agent_name
                     ),
-                });
+                ));
             }
         }
 
@@ -502,7 +513,10 @@ impl ShellActor {
             .contains(&request.workspace.workspace_uuid, &request.agent_uuid)
             .await?
         {
-            return Err(SubsystemError::not_found("agent", &request.agent_uuid));
+            return Err(SubsystemError::not_found(
+                ResourceKind::Agent,
+                &request.agent_uuid,
+            ));
         }
         Ok(())
     }
@@ -518,7 +532,10 @@ impl ShellActor {
             .contains(&request.workspace.workspace_uuid, &request.agent_uuid)
             .await?
         {
-            return Err(SubsystemError::not_found("agent", &request.agent_uuid));
+            return Err(SubsystemError::not_found(
+                ResourceKind::Agent,
+                &request.agent_uuid,
+            ));
         }
         Ok(())
     }
@@ -534,7 +551,7 @@ impl ShellActor {
             .await?
         {
             return Err(SubsystemError::not_found(
-                "workspace",
+                ResourceKind::Workspace,
                 &request.workspace_uuid,
             ));
         }
@@ -674,9 +691,7 @@ impl ShellHandle {
                 target: EventTarget::Agent(agent_uuid.into()),
                 event,
             })
-            .map_err(|error| {
-                SubsystemError::internal(format!("failed to enqueue agent event: {error}"))
-            })
+            .map_err(|error| SubsystemError::internal("enqueue agent event", error.to_string()))
     }
 
     pub fn emit_workspace_event(
@@ -689,9 +704,7 @@ impl ShellHandle {
                 target: EventTarget::Workspace(workspace_uuid.into()),
                 event,
             })
-            .map_err(|error| {
-                SubsystemError::internal(format!("failed to enqueue workspace event: {error}"))
-            })
+            .map_err(|error| SubsystemError::internal("enqueue workspace event", error.to_string()))
     }
 }
 

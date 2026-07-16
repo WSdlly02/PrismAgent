@@ -7,13 +7,17 @@ pub fn petname_uuid(existing: impl IntoIterator<Item = String>) -> SubsystemResu
     let existing = existing.into_iter().collect::<HashSet<_>>();
     for _ in 0..32 {
         let Some(candidate) = petname::petname(DEFAULT_PETNAME_WORDS, "-") else {
-            return Err(SubsystemError::internal("failed to generate petname uuid"));
+            return Err(SubsystemError::internal(
+                "generate petname uuid",
+                "petname generator returned no candidate",
+            ));
         };
         if !existing.contains(&candidate) {
             return Ok(candidate);
         }
     }
     Err(SubsystemError::internal(
-        "failed to generate unique petname uuid",
+        "generate petname uuid",
+        "failed to generate a unique candidate after 32 attempts",
     ))
 }

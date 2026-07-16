@@ -1,15 +1,12 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use thiserror::Error;
 
 pub type SubsystemResult<T> = Result<T, SubsystemError>;
 
-/// Stable, transport-facing error data exposed to API clients.
-///
-/// `SubsystemError` is an internal error used between actors. It may contain
-/// implementation details and should not be serialized directly. REST and
-/// WebSocket adapters both expose this smaller representation instead. This
-/// conversion standardizes shape and classification; it does not redact the
-/// diagnostic `message`, so internal errors must never contain secrets.
+/// Stable, transport-facing error data exposed to authenticated API clients.
+/// The complete diagnostic message is preserved; access control belongs at the
+/// transport boundary rather than in the error model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicError {
     pub code: String,
@@ -17,22 +14,145 @@ pub struct PublicError {
     pub retryable: bool,
 }
 
+/// Transport-neutral error class. REST maps this to an HTTP status while
+/// WebSocket consumers use the same descriptor without depending on HTTP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorClass {
+    BadRequest,
+    NotFound,
+    Conflict,
+    Forbidden,
+    Unsupported,
+    Unavailable,
+    Timeout,
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorDescriptor {
+    pub code: &'static str,
+    pub class: ErrorClass,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Workspace,
+    WorkspaceLease,
+    Agent,
+    Profile,
+    Skill,
+    Context,
+    Workflow,
+    WorkflowRuntime,
+    File,
+}
+
+impl ResourceKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::WorkspaceLease => "workspace lease",
+            Self::Agent => "agent",
+            Self::Profile => "profile",
+            Self::Skill => "skill",
+            Self::Context => "context",
+            Self::Workflow => "workflow",
+            Self::WorkflowRuntime => "workflow runtime",
+            Self::File => "file",
+        }
+    }
+
+    const fn not_found_code(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace_not_found",
+            Self::WorkspaceLease => "workspace_lease_not_found",
+            Self::Agent => "agent_not_found",
+            Self::Profile => "profile_not_found",
+            Self::Skill => "skill_not_found",
+            Self::Context => "context_not_found",
+            Self::Workflow => "workflow_not_found",
+            Self::WorkflowRuntime => "workflow_runtime_not_found",
+            Self::File => "file_not_found",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    WorkspacePathExists,
+    WorkspaceLeaseHeld,
+    AgentBusy,
+    FileAlreadyExists,
+    ConcurrentModification,
+}
+
+impl ConflictKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::WorkspacePathExists => "workspace path already exists",
+            Self::WorkspaceLeaseHeld => "workspace lease is held",
+            Self::AgentBusy => "agent is busy",
+            Self::FileAlreadyExists => "file already exists",
+            Self::ConcurrentModification => "concurrent modification",
+        }
+    }
+
+    const fn code(self) -> &'static str {
+        match self {
+            Self::WorkspacePathExists => "workspace_path_exists",
+            Self::WorkspaceLeaseHeld => "workspace_lease_conflict",
+            Self::AgentBusy => "agent_busy",
+            Self::FileAlreadyExists => "file_already_exists",
+            Self::ConcurrentModification => "concurrent_modification",
+        }
+    }
+
+    const fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::WorkspaceLeaseHeld | Self::AgentBusy | Self::ConcurrentModification
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalKind {
+    Llm,
+}
+
+impl ExternalKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Llm => "llm",
+        }
+    }
+
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Llm => "llm_error",
+        }
+    }
+}
+
 /// Typed failure used by actor request/reply paths inside the process.
-/// Transport boundaries must convert it to `PublicError` rather than serialize
-/// it directly.
+/// Transport boundaries convert it to [`PublicError`] through one descriptor.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SubsystemError {
     #[error("actor has stopped: {actor}")]
     ActorDead { actor: &'static str },
 
-    #[error("not found: {resource} {id}")]
-    NotFound { resource: &'static str, id: String },
+    #[error("{} not found: {id}", resource.label())]
+    NotFound { resource: ResourceKind, id: String },
 
-    #[error("conflict: {resource} {id}")]
-    Conflict { resource: &'static str, id: String },
+    #[error("{}: {id}", kind.label())]
+    Conflict { kind: ConflictKind, id: String },
 
-    #[error("invalid input: {message}")]
-    InvalidInput { message: String },
+    #[error("validation failed{field_suffix}: {message}", field_suffix = field.map(|value| format!(" for {value}")).unwrap_or_default())]
+    Validation {
+        field: Option<&'static str>,
+        message: String,
+    },
 
     #[error("permission denied: {action}")]
     PermissionDenied { action: &'static str },
@@ -40,17 +160,42 @@ pub enum SubsystemError {
     #[error("timeout: {operation}")]
     Timeout { operation: &'static str },
 
-    #[error("io error: {message}")]
-    Io { message: String },
+    #[error("configuration error in {component}: {message}")]
+    Configuration {
+        component: &'static str,
+        message: String,
+    },
 
-    #[error("llm error: {message}")]
-    Llm { message: String },
+    #[error("corrupt state in {resource}: {message}")]
+    CorruptState {
+        resource: &'static str,
+        message: String,
+    },
 
-    #[error("tool error: {message}")]
-    Tool { message: String },
+    #[error("io error during {operation}{path_suffix}: {message}", path_suffix = path.as_ref().map(|value| format!(" at {}", value.display())).unwrap_or_default())]
+    Io {
+        operation: &'static str,
+        path: Option<PathBuf>,
+        kind: std::io::ErrorKind,
+        message: String,
+    },
 
-    #[error("internal error: {message}")]
-    Internal { message: String },
+    #[error("{} error: {message}", kind.label())]
+    External {
+        kind: ExternalKind,
+        class: ErrorClass,
+        message: String,
+        retryable: bool,
+    },
+
+    #[error("unsupported operation: {feature}")]
+    Unsupported { feature: &'static str },
+
+    #[error("internal error during {operation}: {message}")]
+    Internal {
+        operation: &'static str,
+        message: String,
+    },
 }
 
 impl SubsystemError {
@@ -58,72 +203,168 @@ impl SubsystemError {
         Self::ActorDead { actor }
     }
 
-    pub fn not_found(resource: &'static str, id: impl Into<String>) -> Self {
+    pub fn not_found(resource: ResourceKind, id: impl Into<String>) -> Self {
         Self::NotFound {
             resource,
             id: id.into(),
         }
     }
 
-    pub fn invalid_input(message: impl Into<String>) -> Self {
-        Self::InvalidInput {
+    pub fn conflict(kind: ConflictKind, id: impl Into<String>) -> Self {
+        Self::Conflict {
+            kind,
+            id: id.into(),
+        }
+    }
+
+    pub fn validation(message: impl Into<String>) -> Self {
+        Self::Validation {
+            field: None,
             message: message.into(),
         }
     }
 
-    pub fn io(message: impl Into<String>) -> Self {
+    pub fn validation_field(field: &'static str, message: impl Into<String>) -> Self {
+        Self::Validation {
+            field: Some(field),
+            message: message.into(),
+        }
+    }
+
+    pub fn configuration(component: &'static str, message: impl Into<String>) -> Self {
+        Self::Configuration {
+            component,
+            message: message.into(),
+        }
+    }
+
+    pub fn corrupt_state(resource: &'static str, message: impl Into<String>) -> Self {
+        Self::CorruptState {
+            resource,
+            message: message.into(),
+        }
+    }
+
+    pub fn io(operation: &'static str, path: Option<PathBuf>, error: std::io::Error) -> Self {
         Self::Io {
-            message: message.into(),
+            operation,
+            path,
+            kind: error.kind(),
+            message: error.to_string(),
         }
     }
 
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal {
+    pub fn external(
+        kind: ExternalKind,
+        class: ErrorClass,
+        message: impl Into<String>,
+        retryable: bool,
+    ) -> Self {
+        Self::External {
+            kind,
+            class,
             message: message.into(),
-        }
-    }
-
-    /// Converts an internal actor error into the stable error contract shared
-    /// by REST and WebSocket transports.
-    pub fn public_error(&self) -> PublicError {
-        let code = match self {
-            Self::ActorDead { .. } => "actor_unavailable".to_string(),
-            Self::NotFound { resource, .. } => format!("{resource}_not_found"),
-            Self::Conflict { resource, .. } => format!("{resource}_conflict"),
-            Self::InvalidInput { .. } => "invalid_input".to_string(),
-            Self::PermissionDenied { .. } => "permission_denied".to_string(),
-            Self::Timeout { .. } => "timeout".to_string(),
-            Self::Io { .. } => "io_error".to_string(),
-            Self::Llm { .. } => "llm_error".to_string(),
-            Self::Tool { .. } => "tool_error".to_string(),
-            Self::Internal { .. } => "internal_error".to_string(),
-        };
-        let retryable = matches!(
-            self,
-            Self::ActorDead { .. }
-                | Self::Conflict { .. }
-                | Self::Timeout { .. }
-                | Self::Io { .. }
-                | Self::Llm { .. }
-        );
-        PublicError {
-            code,
-            message: self.to_string(),
             retryable,
         }
     }
-}
 
-impl From<std::io::Error> for SubsystemError {
-    fn from(error: std::io::Error) -> Self {
-        Self::io(error.to_string())
+    pub fn internal(operation: &'static str, message: impl Into<String>) -> Self {
+        Self::Internal {
+            operation,
+            message: message.into(),
+        }
+    }
+
+    pub fn descriptor(&self) -> ErrorDescriptor {
+        match self {
+            Self::ActorDead { .. } => ErrorDescriptor {
+                code: "actor_unavailable",
+                class: ErrorClass::Unavailable,
+                retryable: true,
+            },
+            Self::NotFound { resource, .. } => ErrorDescriptor {
+                code: resource.not_found_code(),
+                class: ErrorClass::NotFound,
+                retryable: false,
+            },
+            Self::Conflict { kind, .. } => ErrorDescriptor {
+                code: kind.code(),
+                class: ErrorClass::Conflict,
+                retryable: kind.retryable(),
+            },
+            Self::Validation { .. } => ErrorDescriptor {
+                code: "validation_failed",
+                class: ErrorClass::BadRequest,
+                retryable: false,
+            },
+            Self::PermissionDenied { .. } => ErrorDescriptor {
+                code: "permission_denied",
+                class: ErrorClass::Forbidden,
+                retryable: false,
+            },
+            Self::Timeout { .. } => ErrorDescriptor {
+                code: "timeout",
+                class: ErrorClass::Timeout,
+                retryable: true,
+            },
+            Self::Configuration { .. } => ErrorDescriptor {
+                code: "configuration_error",
+                class: ErrorClass::Internal,
+                retryable: false,
+            },
+            Self::CorruptState { .. } => ErrorDescriptor {
+                code: "corrupt_state",
+                class: ErrorClass::Internal,
+                retryable: false,
+            },
+            Self::Io { kind, .. } => ErrorDescriptor {
+                code: "io_error",
+                class: ErrorClass::Internal,
+                retryable: io_error_is_retryable(*kind),
+            },
+            Self::External {
+                kind,
+                class,
+                retryable,
+                ..
+            } => ErrorDescriptor {
+                code: kind.code(),
+                class: *class,
+                retryable: *retryable,
+            },
+            Self::Unsupported { .. } => ErrorDescriptor {
+                code: "unsupported_operation",
+                class: ErrorClass::Unsupported,
+                retryable: false,
+            },
+            Self::Internal { .. } => ErrorDescriptor {
+                code: "internal_error",
+                class: ErrorClass::Internal,
+                retryable: false,
+            },
+        }
+    }
+
+    pub fn public_error(&self) -> PublicError {
+        let descriptor = self.descriptor();
+        PublicError {
+            code: descriptor.code.to_string(),
+            message: self.to_string(),
+            retryable: descriptor.retryable,
+        }
     }
 }
 
-impl From<toml::de::Error> for SubsystemError {
-    fn from(error: toml::de::Error) -> Self {
-        Self::invalid_input(error.to_string())
-    }
+fn io_error_is_retryable(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::Interrupted
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::NotConnected
+    )
 }
 
 #[cfg(test)]
@@ -131,23 +372,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn public_error_keeps_resource_specific_code() {
-        let error = SubsystemError::Conflict {
-            resource: "workspace_lease",
-            id: "workspace-1".to_string(),
-        }
-        .public_error();
+    fn workspace_lease_conflict_has_stable_transport_semantics() {
+        let error = SubsystemError::conflict(ConflictKind::WorkspaceLeaseHeld, "workspace-1");
 
-        assert_eq!(error.code, "workspace_lease_conflict");
-        assert_eq!(error.message, "conflict: workspace_lease workspace-1");
-        assert!(error.retryable);
+        assert_eq!(
+            error.descriptor(),
+            ErrorDescriptor {
+                code: "workspace_lease_conflict",
+                class: ErrorClass::Conflict,
+                retryable: true,
+            }
+        );
     }
 
     #[test]
-    fn invalid_input_is_not_marked_retryable() {
-        let error = SubsystemError::invalid_input("bad request").public_error();
+    fn validation_is_a_non_retryable_bad_request() {
+        let error = SubsystemError::validation("bad request");
 
-        assert_eq!(error.code, "invalid_input");
-        assert!(!error.retryable);
+        assert_eq!(error.descriptor().class, ErrorClass::BadRequest);
+        assert_eq!(error.public_error().code, "validation_failed");
+        assert!(!error.public_error().retryable);
+    }
+
+    #[test]
+    fn configuration_and_corrupt_state_are_not_client_errors() {
+        for error in [
+            SubsystemError::configuration("profile", "missing API key"),
+            SubsystemError::corrupt_state("agent file", "invalid JSON"),
+        ] {
+            assert_eq!(error.descriptor().class, ErrorClass::Internal);
+            assert!(!error.descriptor().retryable);
+        }
+    }
+
+    #[test]
+    fn public_error_preserves_full_io_diagnostic() {
+        let error = SubsystemError::io(
+            "read profile",
+            Some(PathBuf::from("/secret/server/path/profile.toml")),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+
+        assert!(!error.descriptor().retryable);
+        assert!(error.public_error().message.contains("read profile"));
+        assert!(
+            error
+                .public_error()
+                .message
+                .contains("/secret/server/path/profile.toml")
+        );
+    }
+
+    #[test]
+    fn external_error_uses_explicit_classification() {
+        let error = SubsystemError::external(
+            ExternalKind::Llm,
+            ErrorClass::Internal,
+            "provider rejected credentials",
+            false,
+        );
+
+        assert_eq!(error.descriptor().class, ErrorClass::Internal);
+        assert!(!error.public_error().retryable);
+        assert!(
+            error
+                .public_error()
+                .message
+                .contains("provider rejected credentials")
+        );
     }
 }

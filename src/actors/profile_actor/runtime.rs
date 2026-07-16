@@ -3,7 +3,7 @@ use crate::actors::profile_actor::model::{
     FinalModelConfig, PROFILE_ACTOR, Profile, ProfileActor, ProfileHandle, ProfileMsg,
     PromptsConfigSection, ToolsConfigSection,
 };
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ResourceKind, SubsystemError, SubsystemResult};
 use crate::impl_handle_methods;
 use crate::stdlib_assets;
 use std::collections::HashMap;
@@ -17,11 +17,12 @@ impl ProfileActor {
     }
 
     pub fn from_root(rx: mpsc::Receiver<ProfileMsg>, root: PathBuf) -> SubsystemResult<Self> {
-        std::fs::create_dir_all(&root)?;
-        // 将缺失的嵌入 profile 写出到文件系统
-        stdlib_assets::bootstrap_profiles(&root).map_err(|error| {
-            SubsystemError::io(format!("failed to bootstrap profiles: {error}"))
+        std::fs::create_dir_all(&root).map_err(|error| {
+            SubsystemError::io("create profile directory", Some(root.clone()), error)
         })?;
+        // 将缺失的嵌入 profile 写出到文件系统
+        stdlib_assets::bootstrap_profiles(&root)
+            .map_err(|error| SubsystemError::io("bootstrap profiles", Some(root.clone()), error))?;
         let profiles = load_profiles(&root)?;
         Ok(Self { rx, root, profiles })
     }
@@ -54,13 +55,17 @@ impl ProfileActor {
     fn profile(&self, name: &str) -> SubsystemResult<&Profile> {
         self.profiles
             .get(name)
-            .ok_or_else(|| SubsystemError::not_found("profile", name))
+            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Profile, name))
     }
 
     fn model_config(&self, profile_name: &str) -> SubsystemResult<FinalModelConfig> {
         let model = self.profile(profile_name)?.model.clone();
-        let api_key = std::env::var(&model.api_key_env)
-            .map_err(|_| SubsystemError::not_found("env", model.api_key_env.clone()))?;
+        let api_key = std::env::var(&model.api_key_env).map_err(|_| {
+            SubsystemError::configuration(
+                "llm credentials",
+                format!("environment variable {} is not set", model.api_key_env),
+            )
+        })?;
         Ok(FinalModelConfig {
             provider: model.provider,
             model_name: model.model_name,
@@ -92,7 +97,9 @@ impl_handle_methods! {
 
 fn default_profiles_root() -> SubsystemResult<PathBuf> {
     Ok(dirs::home_dir()
-        .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
+        .ok_or_else(|| {
+            SubsystemError::internal("resolve profile directory", "home directory is unavailable")
+        })?
         .join(".prismagent")
         .join("profiles"))
 }
@@ -105,8 +112,19 @@ fn default_profiles_root() -> SubsystemResult<PathBuf> {
 fn load_profiles(root: &Path) -> SubsystemResult<HashMap<String, Profile>> {
     let mut profiles = HashMap::new();
     if root.exists() {
-        for entry in std::fs::read_dir(root)? {
-            let path = entry?.path();
+        let entries = std::fs::read_dir(root).map_err(|error| {
+            SubsystemError::io("list profile directory", Some(root.to_path_buf()), error)
+        })?;
+        for entry in entries {
+            let path = entry
+                .map_err(|error| {
+                    SubsystemError::io(
+                        "read profile directory entry",
+                        Some(root.to_path_buf()),
+                        error,
+                    )
+                })?
+                .path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
                 continue;
             }
@@ -119,17 +137,21 @@ fn load_profiles(root: &Path) -> SubsystemResult<HashMap<String, Profile>> {
 
 fn read_profile(path: &Path) -> SubsystemResult<Profile> {
     let data = std::fs::read_to_string(path)
-        .map_err(|error| SubsystemError::io(format!("{}: {error}", path.display())))?;
-    let profile: Profile = toml::from_str(&data)
-        .map_err(|error| SubsystemError::invalid_input(format!("{}: {error}", path.display())))?;
+        .map_err(|error| SubsystemError::io("read profile", Some(path.to_path_buf()), error))?;
+    let profile: Profile = toml::from_str(&data).map_err(|error| {
+        SubsystemError::corrupt_state("profile file", format!("{}: {error}", path.display()))
+    })?;
     let expected_name = path.file_stem().and_then(|stem| stem.to_str());
     if expected_name != Some(profile.name.as_str()) {
-        return Err(SubsystemError::invalid_input(format!(
-            "{}: profile name {} does not match file name {}",
-            path.display(),
-            profile.name,
-            expected_name.unwrap_or("<invalid>")
-        )));
+        return Err(SubsystemError::corrupt_state(
+            "profile file",
+            format!(
+                "{}: profile name {} does not match file name {}",
+                path.display(),
+                profile.name,
+                expected_name.unwrap_or("<invalid>")
+            ),
+        ));
     }
     Ok(profile)
 }

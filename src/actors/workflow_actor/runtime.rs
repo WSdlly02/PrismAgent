@@ -17,7 +17,7 @@ use crate::actors::workflow_actor::model::{
     WorkflowCancelRequest, WorkflowCancelResponse, WorkflowHandle, WorkflowMsg,
     WorkflowStartRequest,
 };
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
 use crate::impl_handle_methods;
@@ -82,7 +82,7 @@ impl WorkflowActor {
             .runtimes
             .get(&key)
             .cloned()
-            .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &workflow.uuid))?;
+            .ok_or_else(|| missing_workflow_runtime(&key))?;
         self.emit_workspace_event(
             &runtime.workspace_uuid,
             WsEvent::WorkflowStarted {
@@ -103,7 +103,7 @@ impl WorkflowActor {
         );
         if !self.runtimes.contains_key(&key) {
             return Err(SubsystemError::not_found(
-                "workflow_runtime",
+                ResourceKind::WorkflowRuntime,
                 &request.workflow_uuid,
             ));
         }
@@ -116,9 +116,9 @@ impl WorkflowActor {
         //    cancellation summaries and call prismagent_task_finish.
         // 4. Cancel current inference/tool work, then send a message to restart cleanup.
         // 5. Let task_finish drive the normal advance/completion path.
-        Err(SubsystemError::invalid_input(
-            "workflow_cancel is not implemented for DAG workflows yet",
-        ))
+        Err(SubsystemError::Unsupported {
+            feature: "DAG workflow cancellation",
+        })
     }
 
     async fn workflow_create(
@@ -164,7 +164,7 @@ impl WorkflowActor {
             .await?;
         let agent = agents
             .first()
-            .ok_or_else(|| SubsystemError::not_found("agent", &request.agent_uuid))?;
+            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, &request.agent_uuid))?;
         let existing_contexts = self
             .handles
             .storage
@@ -180,7 +180,7 @@ impl WorkflowActor {
             .map(|status| status.context_uuid.clone())
             .collect::<Vec<_>>();
         if !missing.is_empty() {
-            return Err(SubsystemError::invalid_input(format!(
+            return Err(SubsystemError::validation(format!(
                 "context_out is not complete: {}",
                 missing.join(", ")
             )));
@@ -207,7 +207,7 @@ impl WorkflowActor {
         .agents
         .into_iter()
         .find(|agent| agent.agent_uuid == request.agent_uuid)
-        .ok_or_else(|| SubsystemError::not_found("agent", request.agent_uuid))
+        .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, request.agent_uuid))
     }
 
     async fn list_agents(&self, request: ListAgentsRequest) -> SubsystemResult<ListAgentsResponse> {
@@ -238,13 +238,13 @@ impl WorkflowActor {
         spec: &WorkflowSpec,
     ) -> SubsystemResult<()> {
         if spec.workflow.uuid != workflow.uuid {
-            return Err(SubsystemError::invalid_input(format!(
+            return Err(SubsystemError::validation(format!(
                 "workflow uuid mismatch: outer={}, content={}",
                 workflow.uuid, spec.workflow.uuid
             )));
         }
         if spec.workflow.title != workflow.title {
-            return Err(SubsystemError::invalid_input(format!(
+            return Err(SubsystemError::validation(format!(
                 "workflow title mismatch: outer={}, content={}",
                 workflow.title, spec.workflow.title
             )));
@@ -267,18 +267,21 @@ impl WorkflowActor {
             .into_iter()
             .collect::<HashSet<_>>();
         if spec.workflow.planner_context_out.is_empty() {
-            return Err(SubsystemError::invalid_input(
+            return Err(SubsystemError::validation(
                 "workflow.planner_context_out must not be empty",
             ));
         }
         for context_uuid in &spec.workflow.planner_context_out {
             require_registered(&registered_contexts, "planner_context_out", context_uuid)?;
             if !existing_contexts.contains(context_uuid) {
-                return Err(SubsystemError::not_found("context", context_uuid));
+                return Err(SubsystemError::not_found(
+                    ResourceKind::Context,
+                    context_uuid,
+                ));
             }
         }
         if spec.workflow.final_piped_contexts.is_empty() {
-            return Err(SubsystemError::invalid_input(
+            return Err(SubsystemError::validation(
                 "workflow.final_piped_contexts must not be empty",
             ));
         }
@@ -305,7 +308,7 @@ impl WorkflowActor {
             .collect::<HashSet<_>>();
         for context_uuid in &spec.workflow.final_piped_contexts {
             if !produced_contexts.contains(context_uuid) {
-                return Err(SubsystemError::invalid_input(format!(
+                return Err(SubsystemError::validation(format!(
                     "final_piped_contexts references unproduced context: {context_uuid}"
                 )));
             }
@@ -352,12 +355,12 @@ impl WorkflowActor {
                     .collect::<HashSet<_>>()
             };
 
-            let ready_steps = if let Some(runtime) = self.runtimes.get_mut(key) {
-                runtime.mark_completed_steps(&existing_contexts);
-                runtime.ready_step_ids()
-            } else {
-                return Err(SubsystemError::not_found("workflow_runtime", &key.1));
-            };
+            let runtime = self
+                .runtimes
+                .get_mut(key)
+                .ok_or_else(|| missing_workflow_runtime(key))?;
+            runtime.mark_completed_steps(&existing_contexts);
+            let ready_steps = runtime.ready_step_ids();
 
             if ready_steps.is_empty() {
                 break;
@@ -371,7 +374,7 @@ impl WorkflowActor {
             let runtime = self
                 .runtimes
                 .get(key)
-                .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &key.1))?;
+                .ok_or_else(|| missing_workflow_runtime(key))?;
             !runtime.completed && runtime.all_steps_done()
         };
         if should_complete {
@@ -389,7 +392,7 @@ impl WorkflowActor {
             let runtime = self
                 .runtimes
                 .get(key)
-                .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &key.1))?;
+                .ok_or_else(|| missing_workflow_runtime(key))?;
             let agents = runtime.step_agents(step_id)?;
             (runtime.workspace_uuid.clone(), agents)
         };
@@ -407,9 +410,10 @@ impl WorkflowActor {
                 })
                 .await?;
         }
-        if let Some(runtime) = self.runtimes.get_mut(key) {
-            runtime.mark_step_running(step_id)?;
-        }
+        self.runtimes
+            .get_mut(key)
+            .ok_or_else(|| missing_workflow_runtime(key))?
+            .mark_step_running(step_id)?;
         Ok(())
     }
 
@@ -418,7 +422,7 @@ impl WorkflowActor {
             let runtime = self
                 .runtimes
                 .get(key)
-                .ok_or_else(|| SubsystemError::not_found("workflow_runtime", &key.1))?;
+                .ok_or_else(|| missing_workflow_runtime(key))?;
             (
                 runtime.workspace_uuid.clone(),
                 runtime.workflow_uuid.clone(),
@@ -431,9 +435,10 @@ impl WorkflowActor {
             .await?;
         let agent = self.handles.agent.clone();
         tokio::spawn(async move { deliver_message_with_retry(agent, planner_uuid, message).await });
-        if let Some(runtime) = self.runtimes.get_mut(key) {
-            runtime.mark_completed();
-        }
+        self.runtimes
+            .get_mut(key)
+            .ok_or_else(|| missing_workflow_runtime(key))?
+            .mark_completed();
         Ok(())
     }
 
@@ -527,7 +532,7 @@ impl_handle_methods! {
 
 fn uuid_generate(count: usize) -> SubsystemResult<Vec<String>> {
     if count == 0 || count > 64 {
-        return Err(SubsystemError::invalid_input(
+        return Err(SubsystemError::validation(
             "uuid count must be between 1 and 64",
         ));
     }
@@ -539,6 +544,16 @@ fn uuid_generate(count: usize) -> SubsystemResult<Vec<String>> {
         }
     }
     Ok(uuids)
+}
+
+fn missing_workflow_runtime(key: &(String, String)) -> SubsystemError {
+    SubsystemError::internal(
+        "access workflow runtime",
+        format!(
+            "workflow runtime {} is missing from workspace {}",
+            key.1, key.0
+        ),
+    )
 }
 
 fn agent_view(agent: AgentSummary, existing_contexts: &HashSet<String>) -> AgentView {
@@ -564,4 +579,20 @@ fn context_status_from_existing(
             context_uuid,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorClass;
+
+    #[test]
+    fn missing_runtime_is_an_internal_invariant_failure() {
+        let key = ("workspace-1".to_string(), "workflow-1".to_string());
+        let error = missing_workflow_runtime(&key);
+
+        assert_eq!(error.descriptor().class, ErrorClass::Internal);
+        assert!(error.public_error().message.contains("workspace-1"));
+        assert!(error.public_error().message.contains("workflow-1"));
+    }
 }

@@ -107,7 +107,7 @@ impl ToolsActor {
                 }
                 ToolsMsg::DispatchBatch { request, reply } => {
                     let Some(job_uuid) = non_empty(request.job_uuid.clone()) else {
-                        let _ = reply.send(Err(SubsystemError::invalid_input(
+                        let _ = reply.send(Err(SubsystemError::validation(
                             "tool job_uuid must not be empty",
                         )));
                         continue;
@@ -176,7 +176,7 @@ async fn dispatch_batch(
     request: ToolBatchRequest,
 ) -> SubsystemResult<ToolBatchResponse> {
     if request.approvals.len() != request.tool_calls.len() {
-        return Err(SubsystemError::invalid_input(format!(
+        return Err(SubsystemError::validation(format!(
             "approval count {} does not match tool call count {}",
             request.approvals.len(),
             request.tool_calls.len()

@@ -5,7 +5,7 @@ use crate::actors::context_actor::model::{
 };
 use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::unit::Unit;
-use crate::error::{SubsystemError, SubsystemResult};
+use crate::error::{ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::impl_actor;
 use crate::stdlib_assets;
@@ -18,7 +18,10 @@ impl ContextActor {
     pub fn load(rx: mpsc::Receiver<ContextMsg>, handles: AppHandles) -> SubsystemResult<Self> {
         // 启动时一次 bootstrap，之后 list_skills / get_skill_dir 都是纯文件系统操作
         let root = prismagent_root()?;
-        stdlib_assets::bootstrap_skills(&root.join("skills"))?;
+        let skills_dir = root.join("skills");
+        stdlib_assets::bootstrap_skills(&skills_dir).map_err(|error| {
+            SubsystemError::io("bootstrap standard skills", Some(skills_dir), error)
+        })?;
         Ok(Self { rx, handles })
     }
 
@@ -97,9 +100,10 @@ impl_actor! {
 fn get_skill_dir(request: GetSkillDirRequest) -> SubsystemResult<String> {
     let name = request.name.trim();
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(SubsystemError::invalid_input(format!(
-            "invalid skill name: {name}"
-        )));
+        return Err(SubsystemError::validation_field(
+            "skill name",
+            format!("invalid skill name: {name}"),
+        ));
     }
 
     // 先查 workspace 级
@@ -118,15 +122,15 @@ fn get_skill_dir(request: GetSkillDirRequest) -> SubsystemResult<String> {
         return Ok(global_path.to_string_lossy().into_owned());
     }
 
-    Err(SubsystemError::not_found("skill", name))
+    Err(SubsystemError::not_found(ResourceKind::Skill, name))
 }
 
 /// 校验 resolved 路径确实在 base 目录之下，防止路径逃逸。
 fn is_subdir(resolved: &PathBuf, base: &PathBuf) -> SubsystemResult<bool> {
     let resolved_canonical = std::fs::canonicalize(resolved)
-        .map_err(|error| SubsystemError::io(format!("failed to resolve path: {error}")))?;
+        .map_err(|error| SubsystemError::io("resolve skill path", Some(resolved.clone()), error))?;
     let base_canonical = std::fs::canonicalize(base)
-        .map_err(|error| SubsystemError::io(format!("failed to resolve base path: {error}")))?;
+        .map_err(|error| SubsystemError::io("resolve skill root", Some(base.clone()), error))?;
     Ok(resolved_canonical.starts_with(&base_canonical))
 }
 
@@ -165,8 +169,14 @@ fn collect_skills(
     if !root.exists() {
         return Ok(());
     }
-    for entry in std::fs::read_dir(root)? {
-        let path = entry?.path();
+    let entries = std::fs::read_dir(&root)
+        .map_err(|error| SubsystemError::io("list skill directory", Some(root.clone()), error))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| {
+                SubsystemError::io("read skill directory entry", Some(root.clone()), error)
+            })?
+            .path();
         let skill_md = path.join("SKILL.md");
         if !skill_md.is_file() {
             continue;
@@ -296,7 +306,12 @@ fn workspaces_root() -> SubsystemResult<PathBuf> {
 
 fn prismagent_root() -> SubsystemResult<PathBuf> {
     Ok(dirs::home_dir()
-        .ok_or_else(|| SubsystemError::internal("failed to determine home directory"))?
+        .ok_or_else(|| {
+            SubsystemError::internal(
+                "resolve PrismAgent directory",
+                "home directory is unavailable",
+            )
+        })?
         .join(".prismagent"))
 }
 
@@ -338,7 +353,7 @@ mod tests {
         });
         assert!(result.is_err());
         match result {
-            Err(crate::error::SubsystemError::InvalidInput { message }) => {
+            Err(crate::error::SubsystemError::Validation { message, .. }) => {
                 assert!(message.contains("../foo"));
             }
             other => panic!("expected InvalidInput, got {other:?}"),
@@ -353,7 +368,7 @@ mod tests {
         });
         match result {
             Err(crate::error::SubsystemError::NotFound { resource, .. }) => {
-                assert_eq!(resource, "skill");
+                assert_eq!(resource, ResourceKind::Skill);
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
