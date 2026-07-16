@@ -48,6 +48,13 @@ function upsertAgent(agents: AgentSummary[], agent: AgentSummary) {
   return next;
 }
 
+function userFacingError(error: unknown): string {
+  if (error instanceof ApiError && error.code === "workspace_lease_conflict") {
+    return LEASE_CONFLICT_MESSAGE;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 export type PrismSession = {
   clientId: string;
   workspaces: WorkspaceSummary[];
@@ -109,6 +116,18 @@ export function usePrismSession(): PrismSession {
   useEffect(() => {
     workspaceLeasesRef.current = workspaceLeases;
   }, [workspaceLeases]);
+
+  // Public REST actions cross this boundary so rejected requests consistently
+  // reach the UI. Lower-level helpers remain transport/data-only functions.
+  const runRestAction = useCallback(async <T>(action: () => Promise<T>): Promise<T> => {
+    setError(null);
+    try {
+      return await action();
+    } catch (error) {
+      setError(userFacingError(error));
+      throw error;
+    }
+  }, []);
 
   // --- Derived state ---
 
@@ -238,31 +257,17 @@ export function usePrismSession(): PrismSession {
       const existing = workspaceLeases[workspaceUuid];
       const now = Math.floor(Date.now() / 1000);
       if (existing && existing.expires_at - now > LEASE_RENEW_SKEW_SECONDS) {
-        setError(null);
         return {
           workspace_uuid: existing.workspace_uuid,
           lease_token: existing.lease_token,
         };
       }
 
-      let lease;
-      try {
-        lease = await acquireLease(
-          workspaceUuid,
-          clientId,
-          existing?.lease_token ?? null,
-        );
-      } catch (err) {
-        const message =
-          err instanceof ApiError && err.status === 409
-            ? LEASE_CONFLICT_MESSAGE
-            : `Failed to acquire workspace lease: ${
-                err instanceof Error ? err.message : String(err)
-              }`;
-        setError(message);
-        throw err;
-      }
-      setError(null);
+      const lease = await acquireLease(
+        workspaceUuid,
+        clientId,
+        existing?.lease_token ?? null,
+      );
       const access = {
         workspace_uuid: lease.workspace_uuid,
         lease_token: lease.lease_token,
@@ -383,6 +388,12 @@ export function usePrismSession(): PrismSession {
     if (msg.type === "status_changed") {
       ignoreStreamUntilNextStatusRef.current = false;
     }
+    if (
+      msg.type === "operation_failed" &&
+      msg.agent_uuid !== selectedAgentUuidRef.current
+    ) {
+      return;
+    }
     setChat((current) => applyAgentEvent(current, msg as AgentEvent));
   };
 
@@ -424,10 +435,12 @@ export function usePrismSession(): PrismSession {
       setExpandedWorkspaceUuids((prev) => [...prev, workspace.workspace_uuid]);
       setError(null);
 
-      const agents = await listAgents(workspace.workspace_uuid);
-      setWorkspaceAgents((prev) => ({ ...prev, [workspace.workspace_uuid]: agents }));
+      await runRestAction(async () => {
+        const agents = await listAgents(workspace.workspace_uuid);
+        setWorkspaceAgents((prev) => ({ ...prev, [workspace.workspace_uuid]: agents }));
+      });
     },
-    [expandedWorkspaceUuids, selectedAgent, sendOrQueue, workspaceAgents],
+    [expandedWorkspaceUuids, runRestAction, selectedAgent, sendOrQueue, workspaceAgents],
   );
 
   const selectAgent = useCallback(
@@ -463,7 +476,7 @@ export function usePrismSession(): PrismSession {
       ignoreStreamUntilNextStatusRef.current = false;
 
       // Fetch snapshot via REST
-      const snapshot = await agentSnapshot(wsUuid, agent.agent_uuid);
+      const snapshot = await runRestAction(() => agentSnapshot(wsUuid, agent.agent_uuid));
       if (selectedAgentUuidRef.current !== agent.agent_uuid) {
         return;
       }
@@ -474,35 +487,39 @@ export function usePrismSession(): PrismSession {
         pendingApproval: snapshot.pending_approval,
       });
     },
-    [sendOrQueue, workspaceAgents],
+    [runRestAction, sendOrQueue, workspaceAgents],
   );
 
-  const loadInitialData = useCallback(async () => {
-    setError(null);
-    const [workspaceList, profileList] = await Promise.all([
-      listWorkspaces(),
-      listProfiles(),
-    ]);
-    setWorkspaces(workspaceList);
-    setProfiles(profileList);
-  }, []);
+  const loadInitialData = useCallback(
+    () => runRestAction(async () => {
+      const [workspaceList, profileList] = await Promise.all([
+        listWorkspaces(),
+        listProfiles(),
+      ]);
+      setWorkspaces(workspaceList);
+      setProfiles(profileList);
+    }),
+    [runRestAction],
+  );
 
   const addWorkspace = useCallback(
     async (path: string) => {
-      const workspace = await addWorkspaceApi(path);
-      const nextWorkspaces = await listWorkspaces();
+      const workspace = await runRestAction(() => addWorkspaceApi(path));
+      const nextWorkspaces = await runRestAction(listWorkspaces);
       setWorkspaces(nextWorkspaces);
       await expandWorkspace(workspace);
     },
-    [expandWorkspace],
+    [expandWorkspace, runRestAction],
   );
 
   const createAgent = useCallback(
     async (wsUuid: string, input: AgentCreateInput) => {
-      const access = await ensureWorkspaceLease(wsUuid);
-      await createAgentApi(access, input);
+      await runRestAction(async () => {
+        const access = await ensureWorkspaceLease(wsUuid);
+        await createAgentApi(access, input);
+      });
     },
-    [ensureWorkspaceLease],
+    [ensureWorkspaceLease, runRestAction],
   );
 
   const deleteAgent = useCallback(
@@ -513,19 +530,23 @@ export function usePrismSession(): PrismSession {
       if (!wsUuid) {
         return;
       }
-      const access = await ensureWorkspaceLease(wsUuid);
-      await deleteAgentApi(access, agent.agent_uuid);
+      await runRestAction(async () => {
+        const access = await ensureWorkspaceLease(wsUuid);
+        await deleteAgentApi(access, agent.agent_uuid);
+      });
     },
-    [ensureWorkspaceLease, workspaceAgents],
+    [ensureWorkspaceLease, runRestAction, workspaceAgents],
   );
 
   const deleteWorkspace = useCallback(
     async (workspace: WorkspaceSummary) => {
-      const access = await ensureWorkspaceLease(workspace.workspace_uuid);
-      await deleteWorkspaceApi(access);
+      await runRestAction(async () => {
+        const access = await ensureWorkspaceLease(workspace.workspace_uuid);
+        await deleteWorkspaceApi(access);
+      });
       removeWorkspaceLocally(workspace.workspace_uuid);
     },
-    [ensureWorkspaceLease, removeWorkspaceLocally],
+    [ensureWorkspaceLease, removeWorkspaceLocally, runRestAction],
   );
 
   const send = useCallback(
@@ -552,12 +573,14 @@ export function usePrismSession(): PrismSession {
       }));
 
       try {
-        const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
-        await sendMessage(
-          access,
-          selectedAgent.agent_uuid,
-          text,
-        );
+        await runRestAction(async () => {
+          const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+          await sendMessage(
+            access,
+            selectedAgent.agent_uuid,
+            text,
+          );
+        });
       } catch (err) {
         setChat((current) => ({
           ...current,
@@ -568,7 +591,7 @@ export function usePrismSession(): PrismSession {
         throw err;
       }
     },
-    [activeSession, ensureWorkspaceLease, selectedAgent],
+    [activeSession, ensureWorkspaceLease, runRestAction, selectedAgent],
   );
 
   const approve = useCallback(
@@ -576,13 +599,16 @@ export function usePrismSession(): PrismSession {
       if (!selectedAgent || !chat.pendingApproval || !activeSession) {
         return;
       }
-      const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
-      await approveRequest(
-        access,
-        selectedAgent.agent_uuid,
-        chat.pendingApproval.request_uuid,
-        approvalMask,
-      );
+      const requestUuid = chat.pendingApproval.request_uuid;
+      await runRestAction(async () => {
+        const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+        await approveRequest(
+          access,
+          selectedAgent.agent_uuid,
+          requestUuid,
+          approvalMask,
+        );
+      });
       setChat((current) => ({
         ...current,
         pendingApproval: null,
@@ -590,7 +616,7 @@ export function usePrismSession(): PrismSession {
         streamingReasoningText: "",
       }));
     },
-    [activeSession, chat.pendingApproval, ensureWorkspaceLease, selectedAgent],
+    [activeSession, chat.pendingApproval, ensureWorkspaceLease, runRestAction, selectedAgent],
   );
 
   const cancel = useCallback(async () => {
@@ -615,8 +641,10 @@ export function usePrismSession(): PrismSession {
         streamingReasoningText: "",
       }));
       try {
-        const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
-        await cancelAgent(access, selectedAgent.agent_uuid);
+        await runRestAction(async () => {
+          const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+          await cancelAgent(access, selectedAgent.agent_uuid);
+        });
       } catch (err) {
         ignoreStreamUntilNextStatusRef.current = false;
         throw err;
@@ -629,9 +657,11 @@ export function usePrismSession(): PrismSession {
       streamingText: "",
       streamingReasoningText: "",
     }));
-    const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
-    await cancelAgent(access, selectedAgent.agent_uuid);
-  }, [activeSession, approve, chat.status, ensureWorkspaceLease, selectedAgent]);
+    await runRestAction(async () => {
+      const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+      await cancelAgent(access, selectedAgent.agent_uuid);
+    });
+  }, [activeSession, approve, chat.status, ensureWorkspaceLease, runRestAction, selectedAgent]);
 
   // Cleanup on unmount
   useEffect(

@@ -1,6 +1,6 @@
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
-use crate::error::SubsystemResult;
+use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use genai::chat::ToolCall;
 use serde::{Deserialize, Serialize};
@@ -69,12 +69,13 @@ pub enum AgentMsg {
     InferenceFinished {
         agent_uuid: String,
         inference_uuid: String,
-        result: SubsystemResult<AgentInferenceOutput>,
+        operation: AgentTaskOperation,
+        result: AgentTaskResult<AgentInferenceOutput>,
     },
     ToolBatchFinished {
         agent_uuid: String,
         job_uuid: String,
-        result: SubsystemResult<ToolBatchOutput>,
+        result: AgentTaskResult<ToolBatchOutput>,
     },
 }
 
@@ -116,17 +117,6 @@ pub struct AgentSummary {
     pub status: AgentStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum AgentEvent {
-    UnitAppend { unit: Unit },
-    StreamDelta { text: String },
-    ReasoningDelta { text: String },
-    ApproveRequest { request: PendingApproval },
-    StatusChanged { status: AgentStatus },
-    Error { message: String },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
@@ -135,6 +125,65 @@ pub enum AgentStatus {
     RunningTool,
     WaitingApproval,
 }
+
+/// High-level asynchronous operation executed on behalf of an Agent.
+///
+/// This is orchestration context, not an Agent lifecycle status. It belongs to
+/// the Agent domain even though WS events serialize it for clients. REST
+/// operations continue to return `SubsystemError` at the internal boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskOperation {
+    LlmInference,
+    LlmContinuation,
+    ToolBatch,
+    AutoLoop,
+}
+
+/// Stage within an asynchronous Agent operation where a failure occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskPhase {
+    ReadHistory,
+    BuildInput,
+    LoadWorkspace,
+    LoadModelConfig,
+    LoadToolsConfig,
+    ResolveTools,
+    ProviderInference,
+    PrepareToolBatch,
+    DispatchTools,
+    RepairToolCalls,
+    CommitUnits,
+    ContinueLoop,
+}
+
+/// Adds operation and phase context to an internal error from a background
+/// Agent task. It is converted to a public WS event only at the Agent boundary.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{operation:?} failed during {phase:?}: {source}")]
+pub struct AgentTaskError {
+    pub operation: AgentTaskOperation,
+    pub phase: AgentTaskPhase,
+    #[source]
+    pub source: SubsystemError,
+}
+
+impl AgentTaskError {
+    pub fn new(
+        operation: AgentTaskOperation,
+        phase: AgentTaskPhase,
+        source: SubsystemError,
+    ) -> Self {
+        Self {
+            operation,
+            phase,
+            source,
+        }
+    }
+}
+
+pub type AgentTaskResult<T> = Result<T, AgentTaskError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMessageRequest {

@@ -154,13 +154,24 @@ describe("api client", () => {
 
   it("throws backend error messages for failed JSON responses", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(
-      jsonResponse({ error: "workspace locked" }, { status: 409 }),
+      jsonResponse(
+        {
+          error: {
+            code: "workspace_lease_conflict",
+            message: "workspace locked",
+            retryable: true,
+          },
+        },
+        { status: 409 },
+      ),
     );
 
     await expect(listProfiles()).rejects.toMatchObject({
       name: "ApiError",
       message: "workspace locked",
       status: 409,
+      code: "workspace_lease_conflict",
+      retryable: true,
     });
   });
 });

@@ -55,7 +55,12 @@ describe("usePrismSession workspace leases", () => {
 
   it("exposes a user-facing error when another client holds the lease", async () => {
     vi.mocked(acquireLease).mockRejectedValue(
-      new ApiError("conflict: workspace_lease workspace-1", 409),
+      new ApiError(
+        "conflict: workspace_lease workspace-1",
+        409,
+        "workspace_lease_conflict",
+        true,
+      ),
     );
     const { result } = renderHook(() => usePrismSession());
 
@@ -66,5 +71,24 @@ describe("usePrismSession workspace leases", () => {
     expect(result.current.error).toBe(
       "This workspace is currently in use by another client. Try again shortly.",
     );
+  });
+
+  it("exposes non-lease REST action failures", async () => {
+    vi.mocked(acquireLease).mockResolvedValue({
+      workspace_uuid: "workspace-1",
+      client_id: "client-1",
+      lease_token: "lease-1",
+      expires_at: Math.floor(Date.now() / 1000) + 10,
+    });
+    vi.mocked(createAgent).mockRejectedValue(
+      new ApiError("profile is invalid", 400, "invalid_input", false),
+    );
+    const { result } = renderHook(() => usePrismSession());
+
+    await act(async () => {
+      await result.current.createAgent("workspace-1", AGENT_INPUT).catch(() => {});
+    });
+
+    expect(result.current.error).toBe("profile is invalid");
   });
 });

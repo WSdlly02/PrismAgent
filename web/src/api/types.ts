@@ -16,6 +16,13 @@ export type WorkspaceLease = {
   lease_token: string;
 };
 
+// Stable error payload shared by REST responses and asynchronous WS failures.
+export type PublicError = {
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
 export type AgentStatus =
   | "idle"
   | "running_llm"
@@ -91,13 +98,41 @@ export type PendingApproval = {
   manual_approval_mask: number;
 };
 
+export type AgentTaskOperation =
+  | "llm_inference"
+  | "llm_continuation"
+  | "tool_batch"
+  | "auto_loop";
+
+export type AgentTaskPhase =
+  | "read_history"
+  | "build_input"
+  | "load_workspace"
+  | "load_model_config"
+  | "load_tools_config"
+  | "resolve_tools"
+  | "provider_inference"
+  | "prepare_tool_batch"
+  | "dispatch_tools"
+  | "repair_tool_calls"
+  | "commit_units"
+  | "continue_loop";
+
 export type AgentEvent =
   | { type: "unit_append"; unit: Unit }
   | { type: "stream_delta"; text: string }
   | { type: "reasoning_delta"; text: string }
   | { type: "approve_request"; request: PendingApproval }
   | { type: "status_changed"; status: AgentStatus }
-  | { type: "error"; message: string };
+  | {
+      type: "operation_failed";
+      workspace_uuid: string | null;
+      agent_uuid: string;
+      correlation_id: string;
+      operation: AgentTaskOperation;
+      phase: AgentTaskPhase;
+      error: PublicError;
+    };
 
 export type WorkspaceEvent =
   | { type: "agent_created"; agent: AgentSummary }
@@ -124,8 +159,7 @@ export type WorkspaceEvent =
       workflow_uuid: string;
       planner_agent_uuid: string;
     }
-  | { type: "workspace_deleted"; workspace_uuid: string }
-  | { type: "error"; message: string };
+  | { type: "workspace_deleted"; workspace_uuid: string };
 
 // WS 消息类型（客户端发送）
 export type WsClientMessage =

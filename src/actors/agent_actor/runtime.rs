@@ -1,7 +1,8 @@
 use crate::actors::agent_actor::model::{
     AGENT_ACTOR, AgentActor, AgentHandle, AgentInferenceOutput, AgentMsg, AgentRuntime,
-    AgentSnapshot, AgentStatus, AgentSummary, ApproveRequest, PendingApproval, PendingToolBatch,
-    SelfUpdateRequest, SendMessageRequest, ToolBatchOutput,
+    AgentSnapshot, AgentStatus, AgentSummary, AgentTaskError, AgentTaskOperation, AgentTaskPhase,
+    AgentTaskResult, ApproveRequest, PendingApproval, PendingToolBatch, SelfUpdateRequest,
+    SendMessageRequest, ToolBatchOutput,
 };
 use crate::actors::agent_actor::pipeline::{
     auto_approval_mask, clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
@@ -90,9 +91,10 @@ impl AgentActor {
                 AgentMsg::InferenceFinished {
                     agent_uuid,
                     inference_uuid,
+                    operation,
                     result,
                 } => {
-                    self.finish_inference(&agent_uuid, &inference_uuid, result)
+                    self.finish_inference(&agent_uuid, &inference_uuid, operation, result)
                         .await;
                 }
                 AgentMsg::ToolBatchFinished {
@@ -270,7 +272,12 @@ impl AgentActor {
             .await;
             let _ = handles
                 .agent
-                .inference_complete(task_agent_uuid, task_inference_uuid, result)
+                .inference_complete(
+                    task_agent_uuid,
+                    task_inference_uuid,
+                    AgentTaskOperation::LlmInference,
+                    result,
+                )
                 .await;
         });
         let runtime = self.runtime_mut(&agent_uuid)?;
@@ -321,7 +328,8 @@ impl AgentActor {
         &mut self,
         agent_uuid: &str,
         inference_uuid: &str,
-        result: SubsystemResult<AgentInferenceOutput>,
+        operation: AgentTaskOperation,
+        result: AgentTaskResult<AgentInferenceOutput>,
     ) {
         let is_active = self
             .runtime(agent_uuid)
@@ -345,12 +353,11 @@ impl AgentActor {
                     Vec::new()
                 };
                 if is_tool_calls && !tool_calls_sound(&tool_calls) {
-                    if let Err(error) = self.handle_malformed_tool_calls(agent_uuid).await {
-                        self.emit_agent_event(
+                    if let Err(source) = self.handle_malformed_tool_calls(agent_uuid).await {
+                        self.emit_task_failure(
                             agent_uuid,
-                            WsEvent::Error {
-                                message: error.to_string(),
-                            },
+                            inference_uuid,
+                            AgentTaskError::new(operation, AgentTaskPhase::RepairToolCalls, source),
                         );
                         let _ = self.set_status(agent_uuid, AgentStatus::Idle);
                     }
@@ -361,12 +368,15 @@ impl AgentActor {
                     .malformed_tool_call_retries = 0;
                 match self.commit_units(agent_uuid, output.units).await {
                     Ok(()) if is_tool_calls => {
-                        if let Err(error) = self.handle_tool_calls(agent_uuid, tool_calls).await {
-                            self.emit_agent_event(
+                        if let Err(source) = self.handle_tool_calls(agent_uuid, tool_calls).await {
+                            self.emit_task_failure(
                                 agent_uuid,
-                                WsEvent::Error {
-                                    message: error.to_string(),
-                                },
+                                inference_uuid,
+                                AgentTaskError::new(
+                                    operation,
+                                    AgentTaskPhase::PrepareToolBatch,
+                                    source,
+                                ),
                             );
                             let _ = self.set_status(agent_uuid, AgentStatus::Idle);
                         }
@@ -374,36 +384,34 @@ impl AgentActor {
                     }
                     Ok(()) => {
                         if self.agent(agent_uuid).is_ok_and(|agent| agent.auto_loop) {
-                            if let Err(error) = self.spawn_auto_loop_continuation(agent_uuid).await
+                            if let Err(source) = self.spawn_auto_loop_continuation(agent_uuid).await
                             {
-                                self.emit_agent_event(
+                                self.emit_task_failure(
                                     agent_uuid,
-                                    WsEvent::Error {
-                                        message: error.to_string(),
-                                    },
+                                    inference_uuid,
+                                    AgentTaskError::new(
+                                        AgentTaskOperation::AutoLoop,
+                                        AgentTaskPhase::ContinueLoop,
+                                        source,
+                                    ),
                                 );
                                 let _ = self.set_status(agent_uuid, AgentStatus::Idle);
                             }
                             return;
                         }
                     }
-                    Err(error) => {
-                        self.emit_agent_event(
+                    Err(source) => {
+                        self.emit_task_failure(
                             agent_uuid,
-                            WsEvent::Error {
-                                message: error.to_string(),
-                            },
+                            inference_uuid,
+                            AgentTaskError::new(operation, AgentTaskPhase::CommitUnits, source),
                         );
                     }
                 }
             }
             Err(error) => {
-                self.emit_agent_event(
-                    agent_uuid,
-                    WsEvent::Error {
-                        message: error.to_string(),
-                    },
-                );
+                debug_assert_eq!(error.operation, operation);
+                self.emit_task_failure(agent_uuid, inference_uuid, error);
             }
         }
         let _ = self.set_status(agent_uuid, AgentStatus::Idle);
@@ -434,13 +442,9 @@ impl AgentActor {
         if retry.is_some() {
             self.spawn_llm_continuation(agent_uuid).await
         } else {
-            self.emit_agent_event(
-                agent_uuid,
-                WsEvent::Error {
-                    message: "LLM produced malformed tool calls repeatedly".to_string(),
-                },
-            );
-            self.set_status(agent_uuid, AgentStatus::Idle)
+            Err(SubsystemError::Llm {
+                message: "LLM produced malformed tool calls repeatedly".to_string(),
+            })
         }
     }
 
@@ -448,7 +452,7 @@ impl AgentActor {
         &mut self,
         agent_uuid: &str,
         job_uuid: &str,
-        result: SubsystemResult<ToolBatchOutput>,
+        result: AgentTaskResult<ToolBatchOutput>,
     ) {
         let is_active = self
             .runtime(agent_uuid)
@@ -465,23 +469,29 @@ impl AgentActor {
         match result {
             Ok(output) => {
                 let continue_loop = output.continue_loop;
-                if let Err(error) = self.commit_units(agent_uuid, output.units).await {
-                    self.emit_agent_event(
+                if let Err(source) = self.commit_units(agent_uuid, output.units).await {
+                    self.emit_task_failure(
                         agent_uuid,
-                        WsEvent::Error {
-                            message: error.to_string(),
-                        },
+                        job_uuid,
+                        AgentTaskError::new(
+                            AgentTaskOperation::ToolBatch,
+                            AgentTaskPhase::CommitUnits,
+                            source,
+                        ),
                     );
                     let _ = self.set_status(agent_uuid, AgentStatus::Idle);
                     return;
                 }
                 if continue_loop {
-                    if let Err(error) = self.spawn_llm_continuation(agent_uuid).await {
-                        self.emit_agent_event(
+                    if let Err(source) = self.spawn_llm_continuation(agent_uuid).await {
+                        self.emit_task_failure(
                             agent_uuid,
-                            WsEvent::Error {
-                                message: error.to_string(),
-                            },
+                            job_uuid,
+                            AgentTaskError::new(
+                                AgentTaskOperation::ToolBatch,
+                                AgentTaskPhase::ContinueLoop,
+                                source,
+                            ),
                         );
                         let _ = self.set_status(agent_uuid, AgentStatus::Idle);
                     }
@@ -494,23 +504,21 @@ impl AgentActor {
                     let units = tool_response_units(
                         &active.tool_calls,
                         "error",
-                        &format!("tool batch failed: {error}"),
+                        &format!("tool batch failed: {}", error.source),
                     );
-                    if let Err(commit_error) = self.commit_units(agent_uuid, units).await {
-                        self.emit_agent_event(
+                    if let Err(source) = self.commit_units(agent_uuid, units).await {
+                        self.emit_task_failure(
                             agent_uuid,
-                            WsEvent::Error {
-                                message: commit_error.to_string(),
-                            },
+                            job_uuid,
+                            AgentTaskError::new(
+                                AgentTaskOperation::ToolBatch,
+                                AgentTaskPhase::CommitUnits,
+                                source,
+                            ),
                         );
                     }
                 }
-                self.emit_agent_event(
-                    agent_uuid,
-                    WsEvent::Error {
-                        message: error.to_string(),
-                    },
-                );
+                self.emit_task_failure(agent_uuid, job_uuid, error);
                 let _ = self.set_status(agent_uuid, AgentStatus::Idle);
             }
         }
@@ -744,7 +752,12 @@ impl AgentActor {
             .await;
             let _ = handles
                 .agent
-                .inference_complete(task_agent_uuid, task_inference_uuid, result)
+                .inference_complete(
+                    task_agent_uuid,
+                    task_inference_uuid,
+                    AgentTaskOperation::LlmContinuation,
+                    result,
+                )
                 .await;
         });
         Ok(())
@@ -783,6 +796,27 @@ impl AgentActor {
             .handles
             .shell
             .emit_agent_event(agent_uuid.to_string(), event);
+    }
+
+    /// Converts orchestration context plus an internal source error into the
+    /// public asynchronous failure event consumed by web clients.
+    fn emit_task_failure(&self, agent_uuid: &str, correlation_id: &str, error: AgentTaskError) {
+        let AgentTaskError {
+            operation,
+            phase,
+            source,
+        } = error;
+        self.emit_agent_event(
+            agent_uuid,
+            WsEvent::OperationFailed {
+                workspace_uuid: self.workspace_uuid(agent_uuid).ok().map(str::to_string),
+                agent_uuid: agent_uuid.to_string(),
+                correlation_id: correlation_id.to_string(),
+                operation,
+                phase,
+                error: source.public_error(),
+            },
+        );
     }
 
     fn emit_workspace_event(&self, workspace_uuid: &str, event: WsEvent) {
@@ -877,12 +911,14 @@ impl AgentHandle {
         &self,
         agent_uuid: impl Into<String>,
         inference_uuid: impl Into<String>,
-        result: SubsystemResult<AgentInferenceOutput>,
+        operation: AgentTaskOperation,
+        result: AgentTaskResult<AgentInferenceOutput>,
     ) -> SubsystemResult<()> {
         self.tx
             .send(AgentMsg::InferenceFinished {
                 agent_uuid: agent_uuid.into(),
                 inference_uuid: inference_uuid.into(),
+                operation,
                 result,
             })
             .await
@@ -893,7 +929,7 @@ impl AgentHandle {
         &self,
         agent_uuid: impl Into<String>,
         job_uuid: impl Into<String>,
-        result: SubsystemResult<ToolBatchOutput>,
+        result: AgentTaskResult<ToolBatchOutput>,
     ) -> SubsystemResult<()> {
         self.tx
             .send(AgentMsg::ToolBatchFinished {

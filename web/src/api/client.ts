@@ -3,6 +3,7 @@ import type {
   AgentSnapshot,
   AgentSummary,
   Lease,
+  PublicError,
   WorkspaceLease,
   WorkspaceSummary,
 } from "./types";
@@ -13,6 +14,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code: string = "unknown_error",
+    public readonly retryable: boolean = false,
   ) {
     super(message);
     this.name = "ApiError";
@@ -26,11 +29,29 @@ async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   const body = (await response.json()) as unknown;
   if (!response.ok) {
-    const message =
+    const error =
       typeof body === "object" && body !== null && "error" in body
-        ? String((body as { error: unknown }).error)
-        : response.statusText;
-    throw new ApiError(message, response.status);
+        ? (body as { error: unknown }).error
+        : null;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "message" in error &&
+      typeof error.message === "string"
+    ) {
+      const publicError = error as Partial<PublicError> & { message: string };
+      throw new ApiError(
+        publicError.message,
+        response.status,
+        publicError.code ?? "unknown_error",
+        publicError.retryable ?? false,
+      );
+    }
+    // Accept the previous string envelope during rolling frontend/backend updates.
+    throw new ApiError(
+      typeof error === "string" ? error : response.statusText,
+      response.status,
+    );
   }
   return body as T;
 }

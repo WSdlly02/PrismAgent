@@ -56,8 +56,13 @@ export function applyAgentEvent(
       return { ...state, pendingApproval: event.request };
     case "status_changed":
       return { ...state, status: event.status };
-    case "error":
-      return { ...state, errors: [...state.errors, event.message] };
+    case "operation_failed":
+      return {
+        ...state,
+        streamingText: "",
+        streamingReasoningText: "",
+        errors: [...state.errors, event.error.message],
+      };
     default:
       return state; // ignore unknown/unhandled event types
   }

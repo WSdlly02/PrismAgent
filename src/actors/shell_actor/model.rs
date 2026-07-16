@@ -1,11 +1,13 @@
-use crate::actors::agent_actor::model::{AgentSnapshot, AgentSummary, PendingApproval};
+use crate::actors::agent_actor::model::{
+    AgentSnapshot, AgentSummary, AgentTaskOperation, AgentTaskPhase, PendingApproval,
+};
 use crate::actors::storage_actor::model::agent::Agent;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::workflow_actor::model::WorkflowCancelResponse;
 use crate::actors::workspace_actor::model::{
     AcquireLeaseRequest, Lease, ReleaseLeaseRequest, WorkspaceCreateRequest, WorkspaceSummary,
 };
-use crate::error::SubsystemResult;
+use crate::error::{PublicError, SubsystemResult};
 use crate::handles::AppHandles;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -99,8 +101,21 @@ pub enum WsEvent {
     StatusChanged {
         status: AgentStatus,
     },
+    /// Failure of an asynchronous Agent operation. Unlike REST errors, this
+    /// event carries its own routing and correlation context because no caller
+    /// request remains active when it is delivered.
+    OperationFailed {
+        workspace_uuid: Option<String>,
+        agent_uuid: String,
+        correlation_id: String,
+        operation: AgentTaskOperation,
+        phase: AgentTaskPhase,
+        error: PublicError,
+    },
 
     // ---- Common ----
+    /// Protocol/connection-level error. Agent task failures must use
+    /// `OperationFailed` so their context is not discarded.
     Error {
         message: String,
     },
@@ -270,4 +285,33 @@ pub struct AuthorizedAgentCreateRequest {
     pub workspace: WorkspaceWriteAccessRequest,
     #[serde(flatten)]
     pub agent: AgentCreateBody,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_failed_event_preserves_async_context() {
+        let event = WsEvent::OperationFailed {
+            workspace_uuid: Some("workspace-1".to_string()),
+            agent_uuid: "agent-1".to_string(),
+            correlation_id: "inference-1".to_string(),
+            operation: AgentTaskOperation::LlmInference,
+            phase: AgentTaskPhase::ProviderInference,
+            error: PublicError {
+                code: "llm_error".to_string(),
+                message: "quota exceeded".to_string(),
+                retryable: true,
+            },
+        };
+
+        let json = serde_json::to_value(event).unwrap();
+        assert_eq!(json["type"], "operation_failed");
+        assert_eq!(json["agent_uuid"], "agent-1");
+        assert_eq!(json["correlation_id"], "inference-1");
+        assert_eq!(json["operation"], "llm_inference");
+        assert_eq!(json["phase"], "provider_inference");
+        assert_eq!(json["error"]["code"], "llm_error");
+    }
 }

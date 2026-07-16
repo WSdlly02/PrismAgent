@@ -31,10 +31,11 @@ use prismagent::{
             WorkspaceHandle, WorkspaceMsg,
         },
     },
-    error::SubsystemError,
+    error::{PublicError, SubsystemError},
     handles::AppHandles,
     web_assets,
 };
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     net::SocketAddr,
@@ -423,28 +424,28 @@ async fn web_asset(uri: Uri) -> impl IntoResponse {
     web_assets::asset_response(uri.path())
 }
 
-async fn list_workspaces(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+async fn list_workspaces(State(state): State<AppState>) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_workspaces().await?)))
 }
 
 async fn add_workspace(
     State(state): State<AppState>,
     Json(request): Json<WorkspaceCreateRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.create_workspace(request).await?)))
 }
 
 async fn acquire_lease(
     State(state): State<AppState>,
     Json(request): Json<AcquireLeaseRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.acquire_lease(request).await?)))
 }
 
 async fn release_lease(
     State(state): State<AppState>,
     Json(request): Json<ReleaseLeaseRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.release_lease(request).await?;
     Ok(Json(json!({ "released": true })))
 }
@@ -452,26 +453,26 @@ async fn release_lease(
 async fn delete_workspace(
     State(state): State<AppState>,
     Json(request): Json<AuthorizedDeleteWorkspaceRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.delete_workspace(request).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
-async fn list_profiles(State(state): State<AppState>) -> ApiResult<Json<Value>> {
+async fn list_profiles(State(state): State<AppState>) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_profiles().await?)))
 }
 
 async fn workflow_cancel(
     State(state): State<AppState>,
     Json(request): Json<AuthorizedCancelWorkflowRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.workflow_cancel(request).await?)))
 }
 
 async fn create_agent(
     State(state): State<AppState>,
     Json(request): Json<AuthorizedAgentCreateRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.create_agent(request).await?;
     Ok(Json(json!({ "created": true })))
 }
@@ -479,7 +480,7 @@ async fn create_agent(
 async fn delete_agent(
     State(state): State<AppState>,
     Json(request): Json<AgentWriteAccessRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.delete_agent(request).await?;
     Ok(Json(json!({ "deleted": true })))
 }
@@ -487,21 +488,21 @@ async fn delete_agent(
 async fn list_agents(
     State(state): State<AppState>,
     Query(query): Query<WorkspaceAccessRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.list_agents(query).await?)))
 }
 
 async fn agent_snapshot(
     State(state): State<AppState>,
     Query(query): Query<AgentAccessRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.agent_snapshot(query).await?)))
 }
 
 async fn send_message(
     State(state): State<AppState>,
     Json(request): Json<AuthorizedSendMessageRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.send_message(request).await?;
     Ok(Json(json!({ "accepted": true })))
 }
@@ -509,7 +510,7 @@ async fn send_message(
 async fn approve_request(
     State(state): State<AppState>,
     Json(request): Json<AuthorizedApproveRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.approve_request(request).await?;
     Ok(Json(json!({ "accepted": true })))
 }
@@ -517,30 +518,40 @@ async fn approve_request(
 async fn cancel(
     State(state): State<AppState>,
     Json(query): Json<AgentWriteAccessRequest>,
-) -> ApiResult<Json<Value>> {
+) -> RestApiResult<Json<Value>> {
     state.shell.cancel(query).await?;
     Ok(Json(json!({ "cancelled": true })))
 }
 
-type ApiResult<T> = Result<T, ApiError>;
+type RestApiResult<T> = Result<T, RestApiError>;
 
-struct ApiError(SubsystemError);
+struct RestApiError(SubsystemError);
 
-impl From<SubsystemError> for ApiError {
+/// REST transport envelope. The caller already knows the requested operation
+/// and resource IDs, so only the stable public error contract is repeated.
+#[derive(Serialize)]
+struct RestErrorResponse {
+    error: PublicError,
+}
+
+impl From<SubsystemError> for RestApiError {
     fn from(error: SubsystemError) -> Self {
         Self(error)
     }
 }
 
-impl IntoResponse for ApiError {
+impl IntoResponse for RestApiError {
     fn into_response(self) -> axum::response::Response {
-        let status = match self.0 {
+        let status = match &self.0 {
             SubsystemError::NotFound { .. } => StatusCode::NOT_FOUND,
             SubsystemError::Conflict { .. } => StatusCode::CONFLICT,
             SubsystemError::InvalidInput { .. } => StatusCode::BAD_REQUEST,
             SubsystemError::PermissionDenied { .. } => StatusCode::FORBIDDEN,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, Json(json!({ "error": self.0.to_string() }))).into_response()
+        let body = RestErrorResponse {
+            error: self.0.public_error(),
+        };
+        (status, Json(body)).into_response()
     }
 }

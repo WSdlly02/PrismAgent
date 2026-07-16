@@ -109,11 +109,22 @@ describe("session model", () => {
       status: "running_llm",
     });
     const withError = applyAgentEvent(withStatus, {
-      type: "error",
-      message: "boom",
+      type: "operation_failed",
+      workspace_uuid: "workspace-1",
+      agent_uuid: "agent-1",
+      correlation_id: "inference-1",
+      operation: "llm_inference",
+      phase: "provider_inference",
+      error: {
+        code: "llm_error",
+        message: "boom",
+        retryable: true,
+      },
     });
 
     expect(withError.status).toBe("running_llm");
     expect(withError.errors).toEqual(["boom"]);
+    expect(withError.streamingText).toBe("");
+    expect(withError.streamingReasoningText).toBe("");
   });
 });

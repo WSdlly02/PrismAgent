@@ -67,9 +67,10 @@ impl LlmActor {
                     .with_capture_tool_calls(true);
 
                 let builder = genai::Client::builder()
-                    .with_auth_resolver(AuthResolver::from_resolver_fn(move |_| {
-                        Ok(Some(AuthData::from_single(api_key)))
-                    }))
+                    .with_auth_resolver(AuthResolver::from_resolver_fn(
+                        // ModelIden is not used in current case
+                        |_| Ok(Some(AuthData::from_single(api_key))),
+                    ))
                     .with_chat_options(options);
                 match provider {
                     "mimo" => adapters::mimo::build_mimo_client(builder),
