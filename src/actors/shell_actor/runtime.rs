@@ -17,6 +17,7 @@ use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
 use crate::impl_handle_methods;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -479,20 +480,22 @@ impl ShellActor {
             }
         }
 
-        // 4. Atomically move the workspace directory out of the active tree.
-        // This removes all persisted agents as one logical operation.
-        self.handles
-            .workspace
-            .delete(request.workspace_uuid.clone())
-            .await?;
-
-        // 5. Persisted state is gone; now clear the AgentActor's in-memory cache.
+        // 4. Invalidate the reconstructible AgentActor cache before the durable
+        // commit point. If this fails, the workspace remains untouched. If the
+        // following delete fails, a later AgentActor request reloads from storage.
         self.handles
             .agent
             .forget_workspace(request.workspace_uuid.clone())
             .await?;
 
-        // 6. Emit WS notification to all subscribers.
+        // 5. Commit point: atomically move the workspace directory out of the
+        // active tree. Nothing after this step is allowed to fail.
+        self.handles
+            .workspace
+            .delete(request.workspace_uuid.clone())
+            .await?;
+
+        // 6. Notify subscribers before removing their routing entries.
         self.emit_event(
             EventTarget::Workspace(request.workspace_uuid.clone()),
             WsEvent::WorkspaceDeleted {
@@ -500,13 +503,45 @@ impl ShellActor {
             },
         );
 
-        // 7. Remove lease
-        self.leases.remove(&request.workspace_uuid);
-
-        // 8. Clean workspace_subscribers
-        self.workspace_subscribers.remove(&request.workspace_uuid);
+        // 7. All remaining cleanup is infallible in-memory state removal.
+        self.clear_deleted_workspace_state(&request.workspace_uuid, &agents);
 
         Ok(())
+    }
+
+    fn clear_deleted_workspace_state(&mut self, workspace_uuid: &str, agents: &[AgentSummary]) {
+        let mut deleted_agent_uuids = agents
+            .iter()
+            .map(|agent| agent.agent_uuid.clone())
+            .collect::<HashSet<_>>();
+
+        // Include stale per-connection agent references associated with this
+        // workspace, even if they were absent from AgentActor's latest list.
+        for session in self.connections.values() {
+            if session.subscribed_workspace.as_deref() == Some(workspace_uuid)
+                && let Some(agent_uuid) = &session.subscribed_agent
+            {
+                deleted_agent_uuids.insert(agent_uuid.clone());
+            }
+        }
+
+        self.leases.remove(workspace_uuid);
+        self.workspace_subscribers.remove(workspace_uuid);
+        self.agent_subscribers
+            .retain(|agent_uuid, _| !deleted_agent_uuids.contains(agent_uuid));
+
+        for session in self.connections.values_mut() {
+            if session.subscribed_workspace.as_deref() == Some(workspace_uuid) {
+                session.subscribed_workspace = None;
+            }
+            if session
+                .subscribed_agent
+                .as_ref()
+                .is_some_and(|agent_uuid| deleted_agent_uuids.contains(agent_uuid))
+            {
+                session.subscribed_agent = None;
+            }
+        }
     }
 
     // ========== Authorization ==========
@@ -705,8 +740,62 @@ impl ShellHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actors::agent_actor::model::{AgentHandle, AgentMsg};
     use crate::actors::workspace_actor::model::{WorkspaceActor, WorkspaceHandle, WorkspaceMsg};
+    use std::path::PathBuf;
     use uuid::Uuid;
+
+    async fn workspace_fixture() -> (PathBuf, WorkspaceHandle) {
+        let root = std::env::temp_dir().join(format!("prismagent-test-{}", Uuid::now_v7()));
+        let workspace_root = root.join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+        std::fs::write(
+            workspace_root.join("metadata.json"),
+            r#"{"uuid":"workspace","path":"/tmp/workspace"}"#,
+        )
+        .unwrap();
+
+        let (tx, rx) = mpsc::channel::<WorkspaceMsg>(8);
+        let handle = WorkspaceHandle { tx };
+        WorkspaceActor::from_root(rx, root.clone()).unwrap().spawn();
+        handle.list().await.unwrap();
+        (root, handle)
+    }
+
+    fn mock_agent_handle(
+        agents: Vec<AgentSummary>,
+        forget_result: SubsystemResult<()>,
+    ) -> AgentHandle {
+        let (tx, mut rx) = mpsc::channel::<AgentMsg>(8);
+        tokio::spawn(async move {
+            let mut agents = Some(agents);
+            let mut forget_result = Some(forget_result);
+            while let Some(message) = rx.recv().await {
+                match message {
+                    AgentMsg::List { reply, .. } => {
+                        let _ = reply.send(Ok(agents.take().unwrap_or_default()));
+                    }
+                    AgentMsg::ForgetWorkspace { reply, .. } => {
+                        let _ = reply.send(forget_result.take().unwrap_or(Ok(())));
+                    }
+                    _ => panic!("unexpected AgentMsg in workspace deletion test"),
+                }
+            }
+        });
+        AgentHandle { tx }
+    }
+
+    fn idle_agent(agent_uuid: &str) -> AgentSummary {
+        AgentSummary {
+            agent_uuid: agent_uuid.to_string(),
+            agent_name: agent_uuid.to_string(),
+            profile: "default".to_string(),
+            auto_loop: false,
+            context_refs: Vec::new(),
+            context_out: Vec::new(),
+            status: AgentStatus::Idle,
+        }
+    }
 
     #[tokio::test]
     async fn multiple_connections_can_subscribe_same_workspace() {
@@ -842,5 +931,90 @@ mod tests {
         shell.unregister_connection(1);
 
         assert!(!shell.workspace_subscribers.contains_key("workspace"));
+    }
+
+    #[tokio::test]
+    async fn workspace_delete_does_not_commit_when_agent_cache_invalidation_fails() {
+        let (root, workspace) = workspace_fixture().await;
+        let mut handles = crate::handles::test_handles();
+        handles.workspace = workspace;
+        handles.agent = mock_agent_handle(Vec::new(), Err(SubsystemError::actor_dead("agent")));
+        let (_shell_tx, shell_rx) = mpsc::channel(8);
+        let mut shell = ShellActor::load(shell_rx, handles);
+        let lease = shell
+            .acquire_lease(AcquireLeaseRequest {
+                workspace_uuid: "workspace".to_string(),
+                client_id: "client".to_string(),
+                lease_token: None,
+            })
+            .await
+            .unwrap();
+
+        let result = shell
+            .delete_workspace(AuthorizedDeleteWorkspaceRequest {
+                workspace_uuid: "workspace".to_string(),
+                lease_token: lease.lease_token,
+            })
+            .await;
+
+        assert!(matches!(result, Err(SubsystemError::ActorDead { .. })));
+        assert!(root.join("workspace").exists());
+        assert!(shell.handles.workspace.contains("workspace").await.unwrap());
+        assert!(shell.leases.contains_key("workspace"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_workspace_delete_clears_all_shell_subscription_state() {
+        let (root, workspace) = workspace_fixture().await;
+        let mut handles = crate::handles::test_handles();
+        handles.workspace = workspace;
+        handles.agent = mock_agent_handle(vec![idle_agent("agent-1")], Ok(()));
+        let (_shell_tx, shell_rx) = mpsc::channel(8);
+        let mut shell = ShellActor::load(shell_rx, handles);
+        let lease = shell
+            .acquire_lease(AcquireLeaseRequest {
+                workspace_uuid: "workspace".to_string(),
+                client_id: "client".to_string(),
+                lease_token: None,
+            })
+            .await
+            .unwrap();
+
+        let mut events = shell.register_connection(1).unwrap();
+        let session = shell.connections.get_mut(&1).unwrap();
+        session.subscribed_workspace = Some("workspace".to_string());
+        session.subscribed_agent = Some("stale-agent".to_string());
+        shell
+            .workspace_subscribers
+            .insert("workspace".to_string(), vec![1]);
+        shell
+            .agent_subscribers
+            .insert("agent-1".to_string(), vec![99]);
+        shell
+            .agent_subscribers
+            .insert("stale-agent".to_string(), vec![1]);
+
+        shell
+            .delete_workspace(AuthorizedDeleteWorkspaceRequest {
+                workspace_uuid: "workspace".to_string(),
+                lease_token: lease.lease_token,
+            })
+            .await
+            .unwrap();
+
+        assert!(!root.join("workspace").exists());
+        assert!(!shell.leases.contains_key("workspace"));
+        assert!(!shell.workspace_subscribers.contains_key("workspace"));
+        assert!(!shell.agent_subscribers.contains_key("agent-1"));
+        assert!(!shell.agent_subscribers.contains_key("stale-agent"));
+        let session = shell.connections.get(&1).unwrap();
+        assert_eq!(session.subscribed_workspace, None);
+        assert_eq!(session.subscribed_agent, None);
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            WsEvent::WorkspaceDeleted { workspace_uuid } if workspace_uuid == "workspace"
+        ));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
