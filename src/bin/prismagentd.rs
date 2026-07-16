@@ -21,7 +21,7 @@ use prismagent::{
             AgentAccessRequest, AgentWriteAccessRequest, AuthorizedAgentCreateRequest,
             AuthorizedApproveRequest, AuthorizedCancelWorkflowRequest,
             AuthorizedDeleteWorkspaceRequest, AuthorizedSendMessageRequest, ConnectionId,
-            ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest,
+            ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest, WsEvent,
         },
         storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
         tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
@@ -234,9 +234,20 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
     ws.on_upgrade(move |socket| handle_ws(socket, state.shell, connection_id))
 }
 
-async fn handle_ws(socket: WebSocket, shell: ShellHandle, connection_id: ConnectionId) {
+async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: ConnectionId) {
     // Register connection with shell actor
-    let mut event_rx = shell.register_connection(connection_id).await;
+    let mut event_rx = match shell.register_connection(connection_id).await {
+        Ok(event_rx) => event_rx,
+        Err(error) => {
+            let event = WsEvent::Error {
+                message: error.public_error().message,
+            };
+            if let Ok(payload) = serde_json::to_string(&event) {
+                let _ = socket.send(Message::Text(payload.into())).await;
+            }
+            return;
+        }
+    };
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 

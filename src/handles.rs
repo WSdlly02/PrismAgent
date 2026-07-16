@@ -21,33 +21,6 @@ pub struct AppHandles {
     pub workflow: WorkflowHandle,
 }
 
-impl AppHandles {
-    /// Temporary bootstrap helper until ProfileActor is part of daemon startup.
-    pub fn new(
-        profile: ProfileHandle,
-        context: ContextHandle,
-        storage: StorageHandle,
-        workspace: WorkspaceHandle,
-        agent: AgentHandle,
-        shell: ShellHandle,
-        llm: LlmHandle,
-        tools: ToolsHandle,
-        workflow: WorkflowHandle,
-    ) -> Self {
-        Self {
-            profile,
-            context,
-            storage,
-            workspace,
-            agent,
-            shell,
-            llm,
-            tools,
-            workflow,
-        }
-    }
-}
-
 #[cfg(test)]
 pub fn test_handles() -> AppHandles {
     use crate::actors::agent_actor::model::AgentMsg;
@@ -66,15 +39,15 @@ pub fn test_handles() -> AppHandles {
     let (llm, _) = tokio::sync::mpsc::channel::<LlmMsg>(1);
     let (tools, _) = tokio::sync::mpsc::channel::<ToolsMsg>(1);
     let (workflow, _) = tokio::sync::mpsc::channel::<WorkflowMsg>(1);
-    AppHandles::new(
-        ProfileHandle { tx: profile },
-        ContextHandle { tx: context },
-        StorageHandle { tx: storage },
-        WorkspaceHandle { tx: workspace },
-        AgentHandle { tx: agent },
-        ShellHandle { tx: shell },
-        LlmHandle { tx: llm },
-        ToolsHandle { tx: tools },
-        WorkflowHandle { tx: workflow },
-    )
+    AppHandles {
+        profile: ProfileHandle { tx: profile },
+        context: ContextHandle { tx: context },
+        storage: StorageHandle { tx: storage },
+        workspace: WorkspaceHandle { tx: workspace },
+        agent: AgentHandle { tx: agent },
+        shell: ShellHandle { tx: shell },
+        llm: LlmHandle { tx: llm },
+        tools: ToolsHandle { tx: tools },
+        workflow: WorkflowHandle { tx: workflow },
+    }
 }

@@ -7,8 +7,8 @@ use crate::actors::storage_actor::model::context::Context;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
-use crate::impl_actor;
 use crate::stdlib_assets;
+use crate::{actor_dispatch, impl_handle_methods};
 use genai::chat::ChatMessage;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -29,9 +29,13 @@ impl ContextActor {
         tokio::spawn(self.run())
     }
 
-    /// Wrapper for free function, used by impl_actor! dispatch
-    async fn get_skill_dir(&self, request: GetSkillDirRequest) -> SubsystemResult<String> {
-        get_skill_dir(request)
+    pub async fn run(mut self) {
+        while let Some(msg) = self.rx.recv().await {
+            actor_dispatch!(msg;
+                ContextMsg::GetSkillDir { request ; reply } => get_skill_dir(request),
+                ContextMsg::RenderInitialPrompts { request ; reply } => self.render_initial_prompts(request).await,
+            );
+        }
     }
 
     async fn resolve_context_refs(
@@ -77,20 +81,14 @@ impl ContextActor {
     }
 }
 
-// ---- Declarative macro: generates run() dispatch + Handle methods ----
+impl_handle_methods! {
+    ContextHandle for ContextMsg, CONTEXT_ACTOR;
 
-impl_actor! {
-    actor ContextActor;
-    handle ContextHandle;
-    msg ContextMsg;
-    actor_name CONTEXT_ACTOR;
-    methods {
-        fn get_skill_dir(&self, request: GetSkillDirRequest) -> String
-            => GetSkillDir { request: request };
+    fn get_skill_dir(&self, request: GetSkillDirRequest) -> String
+        => GetSkillDir { request: request };
 
-        fn render_initial_prompts(&self, request: Box<RenderInitialPromptsRequest>) -> Vec<Unit>
-            => RenderInitialPrompts { request: request };
-    }
+    fn render_initial_prompts(&self, request: Box<RenderInitialPromptsRequest>) -> Vec<Unit>
+        => RenderInitialPrompts { request: request };
 }
 
 // -----------------------------------------------------------------------

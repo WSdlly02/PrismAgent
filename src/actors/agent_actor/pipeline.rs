@@ -127,16 +127,29 @@ pub async fn run_llm_continuation(
     })
 }
 
+pub struct RunToolBatchRequest {
+    pub workspace_uuid: String,
+    pub agent_uuid: String,
+    pub profile_name: String,
+    pub job_uuid: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub approval_mask: ApprovalMask,
+    pub denied_reason: String,
+}
+
 pub async fn run_tool_batch(
     handles: &AppHandles,
-    workspace_uuid: String,
-    agent_uuid: String,
-    profile_name: String,
-    job_uuid: String,
-    tool_calls: Vec<ToolCall>,
-    approval_mask: ApprovalMask,
-    denied_reason: String,
+    request: RunToolBatchRequest,
 ) -> AgentTaskResult<ToolBatchOutput> {
+    let RunToolBatchRequest {
+        workspace_uuid,
+        agent_uuid,
+        profile_name,
+        job_uuid,
+        tool_calls,
+        approval_mask,
+        denied_reason,
+    } = request;
     let operation = AgentTaskOperation::ToolBatch;
     let workspace = handles
         .workspace

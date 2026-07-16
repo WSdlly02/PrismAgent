@@ -144,7 +144,7 @@ pub enum ShellMsg {
     // ---- Connection lifecycle ----
     RegisterConnection {
         connection_id: ConnectionId,
-        reply: oneshot::Sender<mpsc::Receiver<WsEvent>>,
+        reply: oneshot::Sender<SubsystemResult<mpsc::Receiver<WsEvent>>>,
     },
     UnregisterConnection {
         connection_id: ConnectionId,

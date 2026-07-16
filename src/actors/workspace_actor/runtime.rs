@@ -31,6 +31,15 @@ impl WorkspaceActor {
                 error,
             )
         })?;
+        let trash_root = root.join(".trash");
+        std::fs::create_dir_all(&trash_root).map_err(|error| {
+            SubsystemError::io(
+                "create workspace trash directory",
+                Some(trash_root.clone()),
+                error,
+            )
+        })?;
+        cleanup_workspace_trash(&trash_root);
         Ok(Self {
             rx,
             root,
@@ -161,7 +170,6 @@ impl WorkspaceActor {
     }
 
     async fn delete(&mut self, workspace_uuid: String) -> SubsystemResult<()> {
-        self.workspaces.remove(&workspace_uuid);
         let path = self.root.join(&workspace_uuid);
         if !path.exists() {
             return Err(SubsystemError::not_found(
@@ -169,9 +177,53 @@ impl WorkspaceActor {
                 &workspace_uuid,
             ));
         }
-        std::fs::remove_dir_all(&path)
-            .map_err(|error| SubsystemError::io("delete workspace metadata", Some(path), error))?;
+
+        // Renaming within the same filesystem is the logical commit point:
+        // before it succeeds the active workspace is untouched; afterwards it
+        // is no longer discoverable even if physical cleanup later fails.
+        let trash_root = self.root.join(".trash");
+        std::fs::create_dir_all(&trash_root).map_err(|error| {
+            SubsystemError::io(
+                "create workspace trash directory",
+                Some(trash_root.clone()),
+                error,
+            )
+        })?;
+        let trashed_path = trash_root.join(format!("{workspace_uuid}-{}", Uuid::now_v7()));
+        std::fs::rename(&path, &trashed_path).map_err(|error| {
+            SubsystemError::io("commit workspace deletion", Some(path.clone()), error)
+        })?;
+        self.workspaces.remove(&workspace_uuid);
+
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = std::fs::remove_dir_all(&trashed_path) {
+                eprintln!(
+                    "failed to clean deleted workspace at {}: {error}",
+                    trashed_path.display()
+                );
+            }
+        });
         Ok(())
+    }
+}
+
+fn cleanup_workspace_trash(trash_root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(trash_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(error) = result {
+            eprintln!(
+                "failed to clean deleted workspace at {}: {error}",
+                path.display()
+            );
+        }
     }
 }
 
@@ -234,4 +286,54 @@ impl_handle_methods! {
 
     fn delete(&self, workspace_uuid: impl Into<String>) -> ()
         => Delete { workspace_uuid: workspace_uuid.into() };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_actor() -> (WorkspaceActor, PathBuf) {
+        let root = std::env::temp_dir().join(format!("prismagent-workspaces-{}", Uuid::now_v7()));
+        let (_tx, rx) = mpsc::channel(1);
+        (WorkspaceActor::from_root(rx, root.clone()).unwrap(), root)
+    }
+
+    #[tokio::test]
+    async fn failed_delete_keeps_workspace_in_memory() {
+        let (mut actor, root) = test_actor();
+        let workspace_uuid = Uuid::now_v7().to_string();
+        actor.workspaces.insert(
+            workspace_uuid.clone(),
+            Workspace {
+                uuid: workspace_uuid.clone(),
+                path: root.join("project"),
+            },
+        );
+
+        assert!(actor.delete(workspace_uuid.clone()).await.is_err());
+        assert!(actor.workspaces.contains_key(&workspace_uuid));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_delete_removes_active_path_before_memory_entry() {
+        let (mut actor, root) = test_actor();
+        let workspace_uuid = Uuid::now_v7().to_string();
+        let active_path = root.join(&workspace_uuid);
+        std::fs::create_dir_all(&active_path).unwrap();
+        actor.workspaces.insert(
+            workspace_uuid.clone(),
+            Workspace {
+                uuid: workspace_uuid.clone(),
+                path: root.join("project"),
+            },
+        );
+
+        actor.delete(workspace_uuid.clone()).await.unwrap();
+
+        assert!(!active_path.exists());
+        assert!(!actor.workspaces.contains_key(&workspace_uuid));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

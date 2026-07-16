@@ -14,9 +14,9 @@
 //!
 //! | Macro | Generates |
 //! |-------|-----------|
-//! | [`actor_dispatch!`] | `match` arms for `run()` message dispatch |
+//! | [`actor_dispatch!`] | Reply-based `run()` message dispatch |
+//! | [`actor_dispatch_mixed!`] | Exhaustive reply + fire-and-forget dispatch |
 //! | [`impl_handle_methods!`] | Handle convenience methods |
-//! | [`impl_actor!`] | Combined: `run()` dispatch + Handle methods |
 //!
 //! # Usage Example — Before
 //!
@@ -87,19 +87,6 @@
 //!     }
 //! }
 //!
-//! // Or use the combined macro for both at once:
-//! impl_actor! {
-//!     actor WorkspaceActor;
-//!     handle WorkspaceHandle;
-//!     msg WorkspaceMsg;
-//!     actor_name WORKSPACE_ACTOR;
-//!     methods {
-//!         fn list(&self) -> Vec<WorkspaceSummary>
-//!             => List {};
-//!         fn create(&self, request: WorkspaceCreateRequest) -> WorkspaceSummary
-//!             => Create { request: request };
-//!     }
-//! }
 //! ```
 
 use crate::error::{SubsystemError, SubsystemResult};
@@ -170,8 +157,8 @@ pub async fn _request<T, M>(
 ///   `;`. The macro captures it as a metavariable to ensure correct hygiene.
 /// - Handler expressions must return `SubsystemResult<T>` matching the reply
 ///   channel type.
-/// - For fire-and-forget variants (no `reply`), write a regular `match` arm
-///   outside the macro call.
+/// - For enums that also contain fire-and-forget variants, use
+///   [`actor_dispatch_mixed!`] to retain exhaustive matching.
 #[macro_export]
 macro_rules! actor_dispatch {
     ($msg:expr;
@@ -284,89 +271,6 @@ macro_rules! impl_handle_methods {
                     }, $ACTOR).await
                 }
             )*
-        }
-    };
-}
-
-// ============================================================================
-// impl_actor!
-// ============================================================================
-
-/// Combined macro: generates both `run()` message dispatch and Handle methods.
-///
-/// Produces:
-/// 1. `impl Actor { pub async fn run(mut self) { ... } }` — with
-///    [`actor_dispatch!`] for each specified method
-/// 2. `impl Handle { ... }` — with convenience methods via
-///    [`impl_handle_methods!`]
-///
-/// # Requirements
-///
-/// - The Actor struct must have a `rx: mpsc::Receiver<Msg>` field.
-/// - All dispatch methods must be `async fn` (even if they don't use `.await`
-///   internally — wrap synchronous bodies with `async fn`).
-/// - Method parameter order must match the message variant field order.
-///
-/// # Example
-///
-/// ```ignore
-/// impl_actor! {
-///     actor WorkspaceActor;
-///     handle WorkspaceHandle;
-///     msg WorkspaceMsg;
-///     actor_name WORKSPACE_ACTOR;
-///     methods {
-///         fn list(&self) -> Vec<WorkspaceSummary>
-///             => List {};
-///
-///         fn create(&self, request: WorkspaceCreateRequest) -> WorkspaceSummary
-///             => Create { request: request };
-///     }
-/// }
-/// ```
-///
-/// # Limitations
-///
-/// - Fire-and-forget variants (no `reply` channel) cannot be expressed with
-///   this macro. Use [`actor_dispatch!`] directly in a manually-written `run()`
-///   for those variants.
-/// - If any dispatch method must be synchronous (`fn` instead of `async fn`),
-///   either make it `async fn` or use [`actor_dispatch!`] directly.
-#[macro_export]
-macro_rules! impl_actor {
-    (
-        actor $Actor:ident;
-        handle $Handle:ident;
-        msg $Msg:ident;
-        actor_name $ACTOR:expr;
-        methods {
-            $(
-                fn $method:ident(&self $(, $param:ident : $ptype:ty)*) -> $ret:ty
-                    => $Variant:ident { $($fname:ident : $fval:expr),* $(,)? }
-            );* $(;)?
-        }
-    ) => {
-        impl $Actor {
-            /// Runs the actor message loop, dispatching each incoming message
-            /// to the appropriate handler method.
-            pub async fn run(mut self) {
-                while let Some(msg) = self.rx.recv().await {
-                    $crate::actor_dispatch!(msg;
-                        $(
-                            $Msg::$Variant { $($fname,)* ; reply } =>
-                                self.$method($($fname),*).await
-                        ),*
-                    );
-                }
-            }
-        }
-
-        $crate::impl_handle_methods! {
-            $Handle for $Msg, $ACTOR;
-            $(
-                fn $method(&self $(, $param : $ptype)*) -> $ret
-                    => $Variant { $($fname : $fval),* }
-            );*
         }
     };
 }
@@ -486,105 +390,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 2: impl_actor! combined macro
-    // -----------------------------------------------------------------------
-
-    mod combined {
-        use super::*;
-
-        const COMBINED_ACTOR: &str = "combined";
-
-        #[derive(Clone)]
-        struct CombinedHandle {
-            tx: mpsc::Sender<CombinedMsg>,
-        }
-
-        struct CombinedActor {
-            rx: mpsc::Receiver<CombinedMsg>,
-            prefix: String,
-        }
-
-        enum CombinedMsg {
-            Greet {
-                name: String,
-                reply: oneshot::Sender<SubsystemResult<String>>,
-            },
-            Multiply {
-                a: i32,
-                b: i32,
-                reply: oneshot::Sender<SubsystemResult<i32>>,
-            },
-        }
-
-        impl CombinedActor {
-            async fn greet(&mut self, name: String) -> SubsystemResult<String> {
-                Ok(format!("{}, {}!", self.prefix, name))
-            }
-
-            async fn multiply(&self, a: i32, b: i32) -> SubsystemResult<i32> {
-                Ok(a * b)
-            }
-        }
-
-        impl_actor! {
-            actor CombinedActor;
-            handle CombinedHandle;
-            msg CombinedMsg;
-            actor_name COMBINED_ACTOR;
-            methods {
-                fn greet(&self, name: String) -> String
-                    => Greet { name: name };
-
-                fn multiply(&self, a: i32, b: i32) -> i32
-                    => Multiply { a: a, b: b };
-            }
-        }
-
-        #[tokio::test]
-        async fn combined_greet() {
-            let (tx, rx) = mpsc::channel(8);
-            let actor = CombinedActor {
-                rx,
-                prefix: "Hi".to_string(),
-            };
-            tokio::spawn(actor.run());
-            let handle = CombinedHandle { tx };
-
-            assert_eq!(handle.greet("World".into()).await.unwrap(), "Hi, World!");
-        }
-
-        #[tokio::test]
-        async fn combined_multiply() {
-            let (tx, rx) = mpsc::channel(8);
-            let actor = CombinedActor {
-                rx,
-                prefix: String::new(),
-            };
-            tokio::spawn(actor.run());
-            let handle = CombinedHandle { tx };
-
-            assert_eq!(handle.multiply(3, 7).await.unwrap(), 21);
-        }
-
-        #[tokio::test]
-        async fn combined_actor_dead_error() {
-            let (tx, rx) = mpsc::channel(8);
-            drop(rx); // actor never started
-            let handle = CombinedHandle { tx };
-
-            let result = handle.greet("test".into()).await;
-            assert!(result.is_err());
-            match result.unwrap_err() {
-                crate::error::SubsystemError::ActorDead { actor } => {
-                    assert_eq!(actor, COMBINED_ACTOR);
-                }
-                other => panic!("expected ActorDead, got {other:?}"),
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 3: impl_handle_methods! with impl Into<String> params
+    // Test 2: impl_handle_methods! with impl Into<String> params
     // -----------------------------------------------------------------------
 
     mod into_methods {

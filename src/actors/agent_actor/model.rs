@@ -36,6 +36,10 @@ pub enum AgentMsg {
         agent_uuid: String,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
+    ForgetWorkspace {
+        workspace_uuid: String,
+        reply: oneshot::Sender<SubsystemResult<()>>,
+    },
     Contains {
         workspace_uuid: String,
         agent_uuid: String,

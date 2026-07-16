@@ -5,8 +5,9 @@ use crate::actors::agent_actor::model::{
     SendMessageRequest, ToolBatchOutput,
 };
 use crate::actors::agent_actor::pipeline::{
-    auto_approval_mask, clone_tool_calls, run_llm_continuation, run_llm_inference, run_tool_batch,
-    tool_batch_is_auto_approved, tool_calls_sound, tool_response_units,
+    RunToolBatchRequest, auto_approval_mask, clone_tool_calls, run_llm_continuation,
+    run_llm_inference, run_tool_batch, tool_batch_is_auto_approved, tool_calls_sound,
+    tool_response_units,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
 use crate::actors::shell_actor::model::WsEvent;
@@ -18,7 +19,7 @@ use crate::error::{
     ConflictKind, ErrorClass, ExternalKind, ResourceKind, SubsystemError, SubsystemResult,
 };
 use crate::handles::AppHandles;
-use crate::impl_handle_methods;
+use crate::{actor_dispatch_mixed, impl_handle_methods};
 use genai::chat::ToolCall;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -43,70 +44,25 @@ impl AgentActor {
 
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
-            match msg {
-                AgentMsg::List {
-                    workspace_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.list(&workspace_uuid).await);
+            actor_dispatch_mixed!(msg;
+                reply {
+                    AgentMsg::List { workspace_uuid ; reply } => self.list(&workspace_uuid).await,
+                    AgentMsg::Create { request ; reply } => self.create(request).await,
+                    AgentMsg::Delete { workspace_uuid, agent_uuid ; reply } => self.delete(&workspace_uuid, &agent_uuid).await,
+                    AgentMsg::ForgetWorkspace { workspace_uuid ; reply } => self.forget_workspace(&workspace_uuid),
+                    AgentMsg::Contains { workspace_uuid, agent_uuid ; reply } => Ok(self.contains(&workspace_uuid, &agent_uuid)),
+                    AgentMsg::Snapshot { agent_uuid ; reply } => self.snapshot(&agent_uuid).await,
+                    AgentMsg::SendMessage { request ; reply } => self.send_message(request).await,
+                    AgentMsg::SelfUpdate { request ; reply } => self.self_update(request).await,
+                    AgentMsg::ApproveRequest { request ; reply } => self.approve_request(request).await,
+                    AgentMsg::Cancel { agent_uuid ; reply } => self.cancel(&agent_uuid).await,
+                    AgentMsg::SetAutoLoop { agent_uuid, enabled ; reply } => self.set_auto_loop(&agent_uuid, enabled).await,
                 }
-                AgentMsg::Create { request, reply } => {
-                    let _ = reply.send(self.create(request).await);
+                fire {
+                    AgentMsg::InferenceFinished { agent_uuid, inference_uuid, operation, result } => self.finish_inference(&agent_uuid, &inference_uuid, operation, result).await,
+                    AgentMsg::ToolBatchFinished { agent_uuid, job_uuid, result } => self.finish_tool_batch(&agent_uuid, &job_uuid, result).await,
                 }
-                AgentMsg::Delete {
-                    workspace_uuid,
-                    agent_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(self.delete(&workspace_uuid, &agent_uuid).await);
-                }
-                AgentMsg::Contains {
-                    workspace_uuid,
-                    agent_uuid,
-                    reply,
-                } => {
-                    let _ = reply.send(Ok(self.contains(&workspace_uuid, &agent_uuid)));
-                }
-                AgentMsg::Snapshot { agent_uuid, reply } => {
-                    let _ = reply.send(self.snapshot(&agent_uuid).await);
-                }
-                AgentMsg::SendMessage { request, reply } => {
-                    let _ = reply.send(self.send_message(request).await);
-                }
-                AgentMsg::SelfUpdate { request, reply } => {
-                    let _ = reply.send(self.self_update(request).await);
-                }
-                AgentMsg::ApproveRequest { request, reply } => {
-                    let _ = reply.send(self.approve_request(request).await);
-                }
-                AgentMsg::Cancel { agent_uuid, reply } => {
-                    let _ = reply.send(self.cancel(&agent_uuid).await);
-                }
-                AgentMsg::SetAutoLoop {
-                    agent_uuid,
-                    enabled,
-                    reply,
-                } => {
-                    let _ = reply.send(self.set_auto_loop(&agent_uuid, enabled).await);
-                }
-                // Fire-and-forget: no reply channel
-                AgentMsg::InferenceFinished {
-                    agent_uuid,
-                    inference_uuid,
-                    operation,
-                    result,
-                } => {
-                    self.finish_inference(&agent_uuid, &inference_uuid, operation, result)
-                        .await;
-                }
-                AgentMsg::ToolBatchFinished {
-                    agent_uuid,
-                    job_uuid,
-                    result,
-                } => {
-                    self.finish_tool_batch(&agent_uuid, &job_uuid, result).await;
-                }
-            }
+            );
         }
     }
 
@@ -212,6 +168,21 @@ impl AgentActor {
                 agent_uuid: agent_uuid.to_string(),
             },
         );
+        Ok(())
+    }
+
+    fn forget_workspace(&mut self, workspace_uuid: &str) -> SubsystemResult<()> {
+        let agent_uuids = self
+            .agent_workspace
+            .iter()
+            .filter(|(_, mapped_workspace)| mapped_workspace.as_str() == workspace_uuid)
+            .map(|(agent_uuid, _)| agent_uuid.clone())
+            .collect::<Vec<_>>();
+        for agent_uuid in agent_uuids {
+            self.agents.remove(&agent_uuid);
+            self.agent_workspace.remove(&agent_uuid);
+            self.runtimes.remove(&agent_uuid);
+        }
         Ok(())
     }
 
@@ -720,13 +691,15 @@ impl AgentActor {
         tokio::spawn(async move {
             let result = run_tool_batch(
                 &handles,
-                workspace_uuid,
-                agent_uuid.clone(),
-                profile_name,
-                job_uuid.clone(),
-                tool_calls,
-                approval_mask,
-                denied_reason,
+                RunToolBatchRequest {
+                    workspace_uuid,
+                    agent_uuid: agent_uuid.clone(),
+                    profile_name,
+                    job_uuid: job_uuid.clone(),
+                    tool_calls,
+                    approval_mask,
+                    denied_reason,
+                },
             )
             .await;
             let _ = handles
@@ -902,6 +875,9 @@ impl_handle_methods! {
     fn delete(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> ()
         => Delete { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
 
+    fn forget_workspace(&self, workspace_uuid: impl Into<String>) -> ()
+        => ForgetWorkspace { workspace_uuid: workspace_uuid.into() };
+
     fn contains(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> bool
         => Contains { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
 
@@ -1058,5 +1034,38 @@ mod approval_tests {
         let mask = effective_approval_mask(0b010, 0b101, 0b101);
 
         assert!(mask.approves_all(3));
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn forget_workspace_removes_only_its_cached_agents() {
+        let (_tx, rx) = mpsc::channel(1);
+        let mut actor = AgentActor::load(rx, crate::handles::test_handles());
+        actor
+            .agent_workspace
+            .insert("agent-a".to_string(), "workspace-a".to_string());
+        actor
+            .agent_workspace
+            .insert("agent-b".to_string(), "workspace-b".to_string());
+        actor
+            .runtimes
+            .insert("agent-a".to_string(), AgentRuntime::idle());
+        actor
+            .runtimes
+            .insert("agent-b".to_string(), AgentRuntime::idle());
+
+        actor.forget_workspace("workspace-a").unwrap();
+
+        assert!(!actor.agent_workspace.contains_key("agent-a"));
+        assert!(!actor.runtimes.contains_key("agent-a"));
+        assert_eq!(
+            actor.agent_workspace.get("agent-b").map(String::as_str),
+            Some("workspace-b")
+        );
+        assert!(actor.runtimes.contains_key("agent-b"));
     }
 }

@@ -17,7 +17,7 @@ use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::id::petname_uuid;
 use crate::impl_handle_methods;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 const LEASE_SECONDS: i64 = 10;
@@ -74,7 +74,10 @@ impl ShellActor {
 
     // ========== Connection lifecycle ==========
 
-    fn register_connection(&mut self, connection_id: ConnectionId) -> mpsc::Receiver<WsEvent> {
+    fn register_connection(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> SubsystemResult<mpsc::Receiver<WsEvent>> {
         let (tx, rx) = mpsc::channel(SUBSCRIBER_BUFFER);
         self.connections.insert(
             connection_id,
@@ -85,26 +88,26 @@ impl ShellActor {
             },
         );
         self.connection_channels.insert(connection_id, tx);
-        rx
+        Ok(rx)
     }
 
     fn unregister_connection(&mut self, connection_id: ConnectionId) {
         // Remove from workspace_subscribers
         if let Some(session) = self.connections.remove(&connection_id) {
-            if let Some(workspace_uuid) = session.subscribed_workspace {
-                if let Some(subs) = self.workspace_subscribers.get_mut(&workspace_uuid) {
-                    subs.retain(|&id| id != connection_id);
-                    if subs.is_empty() {
-                        self.workspace_subscribers.remove(&workspace_uuid);
-                    }
+            if let Some(workspace_uuid) = session.subscribed_workspace
+                && let Some(subs) = self.workspace_subscribers.get_mut(&workspace_uuid)
+            {
+                subs.retain(|&id| id != connection_id);
+                if subs.is_empty() {
+                    self.workspace_subscribers.remove(&workspace_uuid);
                 }
             }
-            if let Some(agent_uuid) = session.subscribed_agent {
-                if let Some(subs) = self.agent_subscribers.get_mut(&agent_uuid) {
-                    subs.retain(|&id| id != connection_id);
-                    if subs.is_empty() {
-                        self.agent_subscribers.remove(&agent_uuid);
-                    }
+            if let Some(agent_uuid) = session.subscribed_agent
+                && let Some(subs) = self.agent_subscribers.get_mut(&agent_uuid)
+            {
+                subs.retain(|&id| id != connection_id);
+                if subs.is_empty() {
+                    self.agent_subscribers.remove(&agent_uuid);
                 }
             }
         }
@@ -471,22 +474,20 @@ impl ShellActor {
             }
         }
 
-        // 4. Delete each agent
-        for agent in &agents {
-            self.handles
-                .agent
-                .delete(request.workspace_uuid.clone(), agent.agent_uuid.clone())
-                .await?;
-        }
-
-        // 5. Delete workspace files. Only after this succeeds is the workspace
-        // considered deleted from the client's point of view.
+        // 4. Atomically move the workspace directory out of the active tree.
+        // This removes all persisted agents as one logical operation.
         self.handles
             .workspace
             .delete(request.workspace_uuid.clone())
             .await?;
 
-        // 6. Emit WS notification to all subscribers
+        // 5. Persisted state is gone; now clear the AgentActor's in-memory cache.
+        self.handles
+            .agent
+            .forget_workspace(request.workspace_uuid.clone())
+            .await?;
+
+        // 6. Emit WS notification to all subscribers.
         self.emit_event(
             EventTarget::Workspace(request.workspace_uuid.clone()),
             WsEvent::WorkspaceDeleted {
@@ -600,6 +601,9 @@ impl_handle_methods! {
     fn release_lease(&self, request: ReleaseLeaseRequest) -> ()
         => ReleaseLease { request: request };
 
+    fn register_connection(&self, connection_id: ConnectionId) -> mpsc::Receiver<WsEvent>
+        => RegisterConnection { connection_id: connection_id };
+
     fn subscribe_workspace(&self, connection_id: ConnectionId, workspace_uuid: impl Into<String>) -> ()
         => SubscribeWorkspace { connection_id: connection_id, workspace_uuid: workspace_uuid.into() };
 
@@ -637,28 +641,9 @@ impl_handle_methods! {
         => DeleteWorkspace { request: request };
 }
 
-// ========== ShellHandle non-standard methods (manual) ==========
+// ========== ShellHandle fire-and-forget methods ==========
 
 impl ShellHandle {
-    // ---- Connection lifecycle ----
-
-    pub async fn register_connection(
-        &self,
-        connection_id: ConnectionId,
-    ) -> mpsc::Receiver<WsEvent> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
-            .tx
-            .send(ShellMsg::RegisterConnection {
-                connection_id,
-                reply: reply_tx,
-            })
-            .await;
-        reply_rx
-            .await
-            .expect("shell actor dropped register_connection reply")
-    }
-
     pub fn unregister_connection(&self, connection_id: ConnectionId) {
         let _ = self
             .tx
@@ -735,8 +720,8 @@ mod tests {
         let mut shell = ShellActor::load(shell_rx, handles);
 
         // Register two connections
-        let _rx1 = shell.register_connection(1);
-        let _rx2 = shell.register_connection(2);
+        let _rx1 = shell.register_connection(1).unwrap();
+        let _rx2 = shell.register_connection(2).unwrap();
 
         // Both can subscribe to the same workspace
         assert!(
@@ -834,7 +819,7 @@ mod tests {
         let (_shell_tx, shell_rx) = mpsc::channel(8);
         let mut shell = ShellActor::load(shell_rx, handles);
 
-        shell.register_connection(1);
+        shell.register_connection(1).unwrap();
         shell
             .subscribe_workspace(1, "workspace".to_string())
             .await
