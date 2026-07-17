@@ -28,6 +28,7 @@ pub struct ShellHandle {
 pub struct ShellActor {
     pub(super) rx: mpsc::Receiver<ShellMsg>,
     pub(super) handles: AppHandles,
+    pub(super) shutting_down: bool,
     pub(super) connections: HashMap<ConnectionId, ConnectionSession>,
     pub(super) connection_channels: HashMap<ConnectionId, mpsc::Sender<WsEvent>>,
     pub(super) leases: HashMap<String, Lease>,
@@ -122,6 +123,9 @@ pub enum WsEvent {
 }
 
 pub enum ShellMsg {
+    TryShutdown {
+        reply: oneshot::Sender<SubsystemResult<bool>>,
+    },
     ListWorkspaces {
         reply: oneshot::Sender<SubsystemResult<Vec<WorkspaceSummary>>>,
     },

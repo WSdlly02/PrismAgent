@@ -142,6 +142,9 @@ pub enum SubsystemError {
     #[error("actor has stopped: {actor}")]
     ActorDead { actor: &'static str },
 
+    #[error("{component} is shutting down")]
+    ShuttingDown { component: &'static str },
+
     #[error("{} not found: {id}", resource.label())]
     NotFound { resource: ResourceKind, id: String },
 
@@ -282,6 +285,11 @@ impl SubsystemError {
                 class: ErrorClass::Unavailable,
                 retryable: true,
             },
+            Self::ShuttingDown { .. } => ErrorDescriptor {
+                code: "service_shutting_down",
+                class: ErrorClass::Unavailable,
+                retryable: true,
+            },
             Self::NotFound { resource, .. } => ErrorDescriptor {
                 code: resource.not_found_code(),
                 class: ErrorClass::NotFound,
@@ -392,6 +400,15 @@ mod tests {
         assert_eq!(error.descriptor().class, ErrorClass::BadRequest);
         assert_eq!(error.public_error().code, "validation_failed");
         assert!(!error.public_error().retryable);
+    }
+
+    #[test]
+    fn shutting_down_is_a_retryable_unavailable_error() {
+        let error = SubsystemError::ShuttingDown { component: "shell" };
+
+        assert_eq!(error.descriptor().class, ErrorClass::Unavailable);
+        assert_eq!(error.public_error().code, "service_shutting_down");
+        assert!(error.public_error().retryable);
     }
 
     #[test]

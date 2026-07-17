@@ -29,6 +29,7 @@ impl ShellActor {
         Self {
             rx,
             handles,
+            shutting_down: false,
             connections: Default::default(),
             connection_channels: Default::default(),
             leases: Default::default(),
@@ -45,6 +46,7 @@ impl ShellActor {
         while let Some(msg) = self.rx.recv().await {
             actor_dispatch_mixed!(msg;
                 reply {
+                    ShellMsg::TryShutdown { ; reply } => self.try_shutdown().await,
                     ShellMsg::ListWorkspaces { ; reply } => self.list_workspaces().await,
                     ShellMsg::ListProfiles { ; reply } => self.handles.profile.list_profiles().await,
                     ShellMsg::CreateWorkspace { request ; reply } => self.create_workspace(request).await,
@@ -286,6 +288,23 @@ impl ShellActor {
 
     // ========== REST operations ==========
 
+    async fn try_shutdown(&mut self) -> SubsystemResult<bool> {
+        // Shell is the external work-entry point. Once this latch is set, new work is
+        // rejected while completion controls (approve/cancel) remain available.
+        self.shutting_down = true;
+        self.handles.agent.try_shutdown().await
+    }
+
+    fn ensure_accepting_work(&self) -> SubsystemResult<()> {
+        if self.shutting_down {
+            Err(SubsystemError::ShuttingDown {
+                component: SHELL_ACTOR,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     async fn list_workspaces(&mut self) -> SubsystemResult<Vec<WorkspaceSummary>> {
         self.prune_expired_leases();
         let mut workspaces = self.handles.workspace.list().await?;
@@ -302,6 +321,7 @@ impl ShellActor {
         &mut self,
         request: WorkspaceCreateRequest,
     ) -> SubsystemResult<WorkspaceSummary> {
+        self.ensure_accepting_work()?;
         self.handles.workspace.create(request).await
     }
 
@@ -372,6 +392,7 @@ impl ShellActor {
     }
 
     async fn create_agent(&self, request: AuthorizedAgentCreateRequest) -> SubsystemResult<Agent> {
+        self.ensure_accepting_work()?;
         self.authorize_workspace_write(&request.workspace)?;
         let existing = self
             .handles
@@ -395,6 +416,7 @@ impl ShellActor {
     }
 
     async fn delete_agent(&self, request: AgentWriteAccessRequest) -> SubsystemResult<()> {
+        self.ensure_accepting_work()?;
         self.authorize_agent_write(&request).await?;
         self.handles
             .agent
@@ -408,6 +430,7 @@ impl ShellActor {
     }
 
     async fn send_message(&self, request: AuthorizedSendMessageRequest) -> SubsystemResult<()> {
+        self.ensure_accepting_work()?;
         self.authorize_agent_write(&request.access).await?;
         self.handles
             .agent
@@ -454,6 +477,7 @@ impl ShellActor {
         &mut self,
         request: AuthorizedDeleteWorkspaceRequest,
     ) -> SubsystemResult<()> {
+        self.ensure_accepting_work()?;
         // 1. Verify lease token
         self.authorize_workspace_write(&WorkspaceWriteAccessRequest {
             workspace_uuid: request.workspace_uuid.clone(),
@@ -629,6 +653,9 @@ impl ShellActor {
 impl_handle_methods! {
     ShellHandle for ShellMsg, SHELL_ACTOR;
 
+    fn try_shutdown(&self) -> bool
+        => TryShutdown {};
+
     fn list_workspaces(&self) -> Vec<WorkspaceSummary>
         => ListWorkspaces {};
 
@@ -795,6 +822,35 @@ mod tests {
             context_out: Vec::new(),
             status: AgentStatus::Idle,
         }
+    }
+
+    #[tokio::test]
+    async fn try_shutdown_latches_shell_and_rejects_new_work() {
+        let (agent_tx, mut agent_rx) = mpsc::channel::<AgentMsg>(1);
+        tokio::spawn(async move {
+            match agent_rx.recv().await {
+                Some(AgentMsg::TryShutdown { reply }) => {
+                    let _ = reply.send(Ok(false));
+                }
+                _ => panic!("expected AgentMsg::TryShutdown"),
+            }
+        });
+
+        let mut handles = crate::handles::test_handles();
+        handles.agent = AgentHandle { tx: agent_tx };
+        let (_shell_tx, shell_rx) = mpsc::channel(1);
+        let mut shell = ShellActor::load(shell_rx, handles);
+
+        assert!(!shell.try_shutdown().await.unwrap());
+        assert!(shell.shutting_down);
+
+        let error = shell
+            .create_workspace(WorkspaceCreateRequest {
+                path: PathBuf::from("/tmp/new-work"),
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(error, SubsystemError::ShuttingDown { .. }));
     }
 
     #[tokio::test]

@@ -38,6 +38,7 @@ use prismagent::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
+    future::IntoFuture,
     net::SocketAddr,
     sync::{
         Arc,
@@ -45,7 +46,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 const DEFAULT_ADDR: &str = "0.0.0.0:7618";
 
@@ -99,8 +100,9 @@ struct AppState {
 async fn main() -> anyhow::Result<()> {
     let addr = std::env::var("PRISMAGENT_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let addr = addr.parse::<SocketAddr>()?;
+    let shell = start_runtime()?;
     let state = AppState {
-        shell: start_runtime()?,
+        shell: shell.clone(),
         next_connection_id: Arc::new(AtomicU64::new(1)),
     };
 
@@ -127,12 +129,138 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("PrismAgent daemon listening on http://{addr}");
-    axum::serve(
+    let (graceful_shutdown_tx, graceful_shutdown_rx) = oneshot::channel();
+    let mut server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .await?;
+    .with_graceful_shutdown(async {
+        let _ = graceful_shutdown_rx.await;
+    })
+    .into_future();
+    // `tokio::pin!(server)` is not necessary because `into_future` already returns a pinned future
+
+    let mut signals = shutdown_signals();
+    let first_signal = tokio::select! {
+        result = &mut server => {
+            result?;
+            return Ok(());
+        }
+        signal = signals.recv() => signal,
+    };
+    if first_signal.is_none() {
+        eprintln!("shutdown signal listener stopped unexpectedly; shutting down");
+        let _ = graceful_shutdown_tx.send(());
+        server.await?;
+        return Ok(());
+    }
+
+    eprintln!(
+        "shutdown requested; rejecting new work and waiting for active agents \
+         (send another shutdown signal to force exit)"
+    );
+    let decision = tokio::select! {
+        result = &mut server => {
+            result?;
+            return Ok(());
+        }
+        decision = wait_for_agents_to_idle(&shell, &mut signals) => decision,
+    };
+    if decision == ShutdownDecision::Force {
+        force_shutdown();
+    }
+
+    let _ = graceful_shutdown_tx.send(());
+    tokio::select! {
+        result = &mut server => result?,
+        _ = wait_for_shutdown_signal(&mut signals) => force_shutdown(),
+    }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShutdownDecision {
+    Drain,
+    Force,
+}
+
+async fn wait_for_agents_to_idle(
+    shell: &ShellHandle,
+    signals: &mut mpsc::UnboundedReceiver<()>,
+) -> ShutdownDecision {
+    loop {
+        tokio::select! {
+            _ = wait_for_shutdown_signal(signals) => return ShutdownDecision::Force,
+            result = shell.try_shutdown() => {
+                match result {
+                    Ok(true) => {
+                        eprintln!("all agents are idle; shutting down");
+                        return ShutdownDecision::Drain;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "failed to check whether agents are idle; \
+                             proceeding with HTTP shutdown: {error}"
+                        );
+                        return ShutdownDecision::Drain;
+                    }
+                }
+            }
+        }
+
+        tokio::select! {
+            _ = wait_for_shutdown_signal(signals) => return ShutdownDecision::Force,
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+    }
+}
+
+async fn wait_for_shutdown_signal(signals: &mut mpsc::UnboundedReceiver<()>) {
+    match signals.recv().await {
+        Some(()) => {}
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn force_shutdown() -> ! {
+    eprintln!("second shutdown signal received; forcing exit");
+    std::process::exit(130);
+}
+
+fn shutdown_signals() -> mpsc::UnboundedReceiver<()> {
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut interrupt = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut quit = signal(SignalKind::quit()).expect("install SIGQUIT handler");
+
+        loop {
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = term.recv() => {}
+                _ = quit.recv() => {}
+            }
+            if tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+
+    #[cfg(not(unix))]
+    tokio::spawn(async move {
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() || tx.send(()).is_err() {
+                break;
+            }
+        }
+    });
+
+    rx
 }
 
 // ============================================================================
@@ -751,6 +879,40 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["code"], "validation_failed");
+    }
+
+    #[tokio::test]
+    async fn shutdown_actor_failure_proceeds_to_http_drain() {
+        let (shell_tx, shell_rx) = mpsc::channel(1);
+        drop(shell_rx);
+        let shell = ShellHandle { tx: shell_tx };
+        let (_signal_tx, mut signals) = mpsc::unbounded_channel();
+
+        let decision = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_agents_to_idle(&shell, &mut signals),
+        )
+        .await
+        .expect("dead shell actor should not stall shutdown");
+
+        assert_eq!(decision, ShutdownDecision::Drain);
+    }
+
+    #[tokio::test]
+    async fn second_signal_forces_exit_while_waiting_for_agents() {
+        let (shell_tx, _shell_rx) = mpsc::channel(1);
+        let shell = ShellHandle { tx: shell_tx };
+        let (signal_tx, mut signals) = mpsc::unbounded_channel();
+        signal_tx.send(()).unwrap();
+
+        let decision = tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_agents_to_idle(&shell, &mut signals),
+        )
+        .await
+        .expect("second signal should interrupt agent readiness wait");
+
+        assert_eq!(decision, ShutdownDecision::Force);
     }
 
     #[tokio::test]

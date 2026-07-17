@@ -23,6 +23,9 @@ pub struct AgentActor {
 }
 
 pub enum AgentMsg {
+    TryShutdown {
+        reply: oneshot::Sender<SubsystemResult<bool>>,
+    },
     List {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<AgentSummary>>>,

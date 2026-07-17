@@ -46,6 +46,7 @@ impl AgentActor {
         while let Some(msg) = self.rx.recv().await {
             actor_dispatch_mixed!(msg;
                 reply {
+                    AgentMsg::TryShutdown { ; reply } => self.try_shutdown(),
                     AgentMsg::List { workspace_uuid ; reply } => self.list(&workspace_uuid).await,
                     AgentMsg::Create { request ; reply } => self.create(request).await,
                     AgentMsg::Delete { workspace_uuid, agent_uuid ; reply } => self.delete(&workspace_uuid, &agent_uuid).await,
@@ -184,6 +185,15 @@ impl AgentActor {
             self.runtimes.remove(&agent_uuid);
         }
         Ok(())
+    }
+
+    fn try_shutdown(&self) -> SubsystemResult<bool> {
+        // Workflow work is already represented by an agent's non-idle status:
+        // its final tool completion transitions directly into the final LLM output.
+        Ok(self
+            .runtimes
+            .values()
+            .all(|runtime| runtime.status == AgentStatus::Idle))
     }
 
     fn contains(&self, workspace_uuid: &str, agent_uuid: &str) -> bool {
@@ -871,6 +881,9 @@ impl AgentActor {
 impl_handle_methods! {
     AgentHandle for AgentMsg, AGENT_ACTOR;
 
+    fn try_shutdown(&self) -> bool
+        => TryShutdown {};
+
     fn list(&self, workspace_uuid: impl Into<String>) -> Vec<AgentSummary>
         => List { workspace_uuid: workspace_uuid.into() };
 
@@ -1072,5 +1085,21 @@ mod runtime_tests {
             Some("workspace-b")
         );
         assert!(actor.runtimes.contains_key("agent-b"));
+    }
+
+    #[test]
+    fn try_shutdown_requires_every_runtime_to_be_idle() {
+        let (_tx, rx) = mpsc::channel(1);
+        let mut actor = AgentActor::load(rx, crate::handles::test_handles());
+
+        assert!(actor.try_shutdown().unwrap());
+
+        actor
+            .runtimes
+            .insert("agent-a".to_string(), AgentRuntime::idle());
+        assert!(actor.try_shutdown().unwrap());
+
+        actor.runtimes.get_mut("agent-a").unwrap().status = AgentStatus::RunningLlm;
+        assert!(!actor.try_shutdown().unwrap());
     }
 }
