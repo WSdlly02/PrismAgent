@@ -6,6 +6,7 @@ import {
   ConversationRail,
   type ConversationAnchor,
 } from "./ConversationRail";
+import { MessageCopyButton } from "./MessageCopyButton";
 
 type MessageTimelineProps = {
   units: Unit[];
@@ -384,9 +385,14 @@ export function MessageTimeline({
                   >
                     <header>
                       <span>{role}</span>
-                      <time>
-                        {new Date(unit.created_at * 1000).toLocaleTimeString()}
-                      </time>
+                      <div className="message-meta">
+                        {isHistoryAnchor ? (
+                          <MessageCopyButton text={text} />
+                        ) : null}
+                        <time>
+                          {new Date(unit.created_at * 1000).toLocaleTimeString()}
+                        </time>
+                      </div>
                     </header>
                     <div
                       className="markdown-body"

@@ -47,6 +47,46 @@ describe("MessageTimeline", () => {
     expect(assistant?.textContent).toContain("final answer");
   });
 
+  it("copies raw text from committed user and assistant messages", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText=""
+        units={[userUnit, baseUnit]}
+      />,
+    );
+
+    const copyButtons = screen.getAllByRole("button", {
+      name: "Copy message",
+    });
+    expect(copyButtons).toHaveLength(2);
+
+    fireEvent.click(copyButtons[0]);
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Where are we?"));
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+  });
+
+  it("does not offer copying for an unfinished streaming message", () => {
+    render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText="partial answer"
+        units={[]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Copy message" }),
+    ).toBeNull();
+  });
+
   it("renders streaming reasoning verbatim separately from streaming answer text", () => {
     const { container } = render(
       <MessageTimeline

@@ -694,6 +694,48 @@ textarea {
   text-transform: uppercase;
 }
 
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.message-copy-button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #687481;
+  padding: 0;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.message-copy-button:hover,
+.message-copy-button:focus-visible {
+  background: #e7ebef;
+  color: #20252b;
+  outline: none;
+}
+
+.message-copy-button:focus-visible {
+  box-shadow: 0 0 0 2px #4f9dd966;
+}
+
+.message-copy-button[data-copy-state="copied"] {
+  background: #eaf5ef;
+  color: #2f8f63;
+}
+
+.message-copy-button[data-copy-state="failed"] {
+  background: #fbecec;
+  color: #b64a4a;
+}
+
 .message pre {
   margin: 0;
   overflow: auto;
