@@ -10,6 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use futures_util::{SinkExt, StreamExt};
 use ipnetwork::IpNetwork;
 use prismagent::{
     actors::{
@@ -58,15 +59,13 @@ const ALLOWED_NETS: &[&str] = &[
 ];
 
 fn allowed_nets() -> &'static [IpNetwork] {
-    static ALLOWED_NETS_CACHE: std::sync::OnceLock<Vec<IpNetwork>> = std::sync::OnceLock::new();
-    ALLOWED_NETS_CACHE
-        .get_or_init(|| {
-            ALLOWED_NETS
-                .iter()
-                .map(|s| s.parse().expect("invalid CIDR in ALLOWED_NETS"))
-                .collect()
-        })
-        .as_slice()
+    static CACHE: std::sync::LazyLock<Vec<IpNetwork>> = std::sync::LazyLock::new(|| {
+        ALLOWED_NETS
+            .iter()
+            .map(|s| s.parse().expect("invalid CIDR in ALLOWED_NETS"))
+            .collect()
+    });
+    CACHE.as_slice()
 }
 
 async fn ip_filter(
@@ -264,77 +263,36 @@ fn shutdown_signals() -> mpsc::UnboundedReceiver<()> {
 }
 
 // ============================================================================
-// Daemon startup macros — reduce channel/handle/spawn boilerplate
+// Daemon startup — create channels, build handles, spawn actors
 // ============================================================================
 
-/// Creates an mpsc channel, constructs the handle, and binds both the handle
-/// variable and the receiver variable in the caller's scope.
-///
-/// The handle expression receives the sender half via `$tx_var` (hygiene-safe).
-///
-/// ```text
-/// actor_channel!(workspace, workspace_rx, tx, WorkspaceMsg, WorkspaceHandle { tx });
-/// ```
-///
-/// Expands to:
-/// ```ignore
-/// let (tx, rx) = mpsc::channel::<WorkspaceMsg>(64);
-/// let workspace = WorkspaceHandle { tx };
-/// let workspace_rx = rx;
-/// ```
-macro_rules! actor_channel {
-    ($handle_var:ident, $rx_var:ident, $tx_var:ident, $Msg:ty, $handle:expr) => {
-        let ($tx_var, rx) = mpsc::channel::<$Msg>(64);
-        let $handle_var = $handle;
-        let $rx_var = rx;
-    };
-}
-
-/// Spawns an actor from its receiver.
-///
-/// Variants:
-/// - `ok`     — `load(rx)` returns `SubsystemResult<Self>`, needs `?`
-/// - `ok_handles` — `load(rx, handles)` returns `SubsystemResult<Self>`
-/// - `go`     — `load(rx)` returns `Self` directly
-/// - `go_handles` — `load(rx, handles)` returns `Self` directly
-macro_rules! spawn_actor {
-    (ok $Actor:ty, $rx:ident) => {
-        <$Actor>::load($rx)?.spawn();
-    };
-    (ok_handles $Actor:ty, $rx:ident, $handles:expr) => {
-        <$Actor>::load($rx, $handles)?.spawn();
-    };
-    (go $Actor:ty, $rx:ident) => {
-        <$Actor>::load($rx).spawn();
-    };
-    (go_handles $Actor:ty, $rx:ident, $handles:expr) => {
-        <$Actor>::load($rx, $handles).spawn();
-    };
-}
-
 fn start_runtime() -> anyhow::Result<ShellHandle> {
-    // Channel + handle creation
-    actor_channel!(
-        workspace,
-        workspace_rx,
-        tx,
-        WorkspaceMsg,
-        WorkspaceHandle { tx }
-    );
-    actor_channel!(storage, storage_rx, tx, StorageMsg, StorageHandle { tx });
-    actor_channel!(context, context_rx, tx, ContextMsg, ContextHandle { tx });
-    actor_channel!(profile, profile_rx, tx, ProfileMsg, ProfileHandle { tx });
-    actor_channel!(llm, llm_rx, tx, LlmMsg, LlmHandle { tx });
-    actor_channel!(tools, tools_rx, tx, ToolsMsg, ToolsHandle { tx });
-    actor_channel!(
-        workflow,
-        workflow_rx,
-        tx,
-        WorkflowMsg,
-        WorkflowHandle { tx }
-    );
-    actor_channel!(agent, agent_rx, tx, AgentMsg, AgentHandle { tx });
-    actor_channel!(shell, shell_rx, tx, ShellMsg, ShellHandle { tx });
+    let (tx, workspace_rx) = mpsc::channel::<WorkspaceMsg>(64);
+    let workspace = WorkspaceHandle { tx };
+
+    let (tx, storage_rx) = mpsc::channel::<StorageMsg>(64);
+    let storage = StorageHandle { tx };
+
+    let (tx, context_rx) = mpsc::channel::<ContextMsg>(64);
+    let context = ContextHandle { tx };
+
+    let (tx, profile_rx) = mpsc::channel::<ProfileMsg>(64);
+    let profile = ProfileHandle { tx };
+
+    let (tx, llm_rx) = mpsc::channel::<LlmMsg>(64);
+    let llm = LlmHandle { tx };
+
+    let (tx, tools_rx) = mpsc::channel::<ToolsMsg>(64);
+    let tools = ToolsHandle { tx };
+
+    let (tx, workflow_rx) = mpsc::channel::<WorkflowMsg>(64);
+    let workflow = WorkflowHandle { tx };
+
+    let (tx, agent_rx) = mpsc::channel::<AgentMsg>(64);
+    let agent = AgentHandle { tx };
+
+    let (tx, shell_rx) = mpsc::channel::<ShellMsg>(64);
+    let shell = ShellHandle { tx };
 
     let handles = AppHandles {
         profile,
@@ -348,16 +306,15 @@ fn start_runtime() -> anyhow::Result<ShellHandle> {
         workflow,
     };
 
-    // Spawn actors: `ok` = load returns Result, `go` = load returns Self directly
-    spawn_actor!(ok ProfileActor, profile_rx);
-    spawn_actor!(ok StorageActor, storage_rx);
-    spawn_actor!(ok_handles ContextActor, context_rx, handles.clone());
-    spawn_actor!(ok WorkspaceActor, workspace_rx);
-    spawn_actor!(go LlmActor, llm_rx);
-    spawn_actor!(go_handles ToolsActor, tools_rx, handles.clone());
-    spawn_actor!(go_handles WorkflowActor, workflow_rx, handles.clone());
-    spawn_actor!(go_handles AgentActor, agent_rx, handles.clone());
-    spawn_actor!(go_handles ShellActor, shell_rx, handles.clone());
+    ProfileActor::load(profile_rx)?.spawn();
+    StorageActor::load(storage_rx)?.spawn();
+    ContextActor::load(context_rx, handles.clone())?.spawn();
+    WorkspaceActor::load(workspace_rx)?.spawn();
+    LlmActor::load(llm_rx).spawn();
+    ToolsActor::load(tools_rx, handles.clone()).spawn();
+    WorkflowActor::load(workflow_rx, handles.clone()).spawn();
+    AgentActor::load(agent_rx, handles.clone()).spawn();
+    ShellActor::load(shell_rx, handles.clone()).spawn();
 
     Ok(handles.shell)
 }
@@ -408,7 +365,6 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
     let (connection_event_tx, mut connection_event_rx) = mpsc::channel::<WsEvent>(8);
 
     // Write task: forward events from shell actor → WS client, and send pings
-    let _write_shell = shell.clone();
     let write_shutdown = shutdown.clone();
     let write_task = tokio::spawn(async move {
         loop {
@@ -579,6 +535,13 @@ async fn handle_client_message(
     Ok(())
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 fn serialize_ws_event(event: &WsEvent) -> String {
     serde_json::to_string(event).unwrap_or_else(|error| {
         json!({
@@ -591,15 +554,6 @@ fn serialize_ws_event(event: &WsEvent) -> String {
         })
         .to_string()
     })
-}
-
-use futures_util::{SinkExt, StreamExt};
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 // ========== REST endpoints ==========
