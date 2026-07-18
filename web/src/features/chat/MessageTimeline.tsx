@@ -1,7 +1,11 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import type { Unit } from "../../api/types";
+import {
+  ConversationRail,
+  type ConversationAnchor,
+} from "./ConversationRail";
 
 type MessageTimelineProps = {
   units: Unit[];
@@ -112,6 +116,11 @@ function isToolResponseMessage(unit: Unit): boolean {
   return unit.content.role.toLowerCase() === "tool";
 }
 
+function historyAnchorLabel(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -123,9 +132,12 @@ export function MessageTimeline({
   streamingReasoningText,
 }: MessageTimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScroll = useRef(false);
   const wasStreaming = useRef(false);
+  const wasNearBottomBeforeUpdate = useRef(true);
+  const previousUnitCount = useRef(units.length);
   const didSyncInitialContent = useRef(false);
   const touchStartY = useRef<number | null>(null);
   const [showJumpButton, setShowJumpButton] = useState(false);
@@ -149,13 +161,16 @@ export function MessageTimeline({
       return;
     }
     updateJumpButton(el);
-    if (isStreaming && isNearBottom(el)) {
+    const nearBottom = isNearBottom(el);
+    wasNearBottomBeforeUpdate.current = nearBottom;
+    if (isStreaming && nearBottom) {
       autoScroll.current = true;
     }
   }
 
   function pauseAutoScroll() {
     autoScroll.current = false;
+    wasNearBottomBeforeUpdate.current = false;
   }
 
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
@@ -181,6 +196,7 @@ export function MessageTimeline({
   }
 
   function scrollToBottom(behavior: ScrollBehavior) {
+    wasNearBottomBeforeUpdate.current = true;
     const bottom = bottomRef.current;
     if (typeof bottom?.scrollIntoView === "function") {
       bottom.scrollIntoView({ behavior });
@@ -209,14 +225,37 @@ export function MessageTimeline({
       return;
     }
 
+    const didAppendUnit = units.length > previousUnitCount.current;
+    const appendedRole = didAppendUnit
+      ? units.at(-1)?.content.role.toLowerCase()
+      : null;
+    const shouldFollowNewUser =
+      didAppendUnit &&
+      appendedRole === "user" &&
+      wasNearBottomBeforeUpdate.current;
+    const shouldFinishFollowingStream =
+      !isStreaming &&
+      wasStreaming.current &&
+      didAppendUnit &&
+      autoScroll.current;
+    const shouldSyncInitialContent =
+      !didSyncInitialContent.current && units.length > 0;
+    if (shouldSyncInitialContent) {
+      didSyncInitialContent.current = true;
+    }
+    previousUnitCount.current = units.length;
+
     if (isStreaming && !wasStreaming.current) {
-      autoScroll.current = isNearBottom(el);
+      autoScroll.current = wasNearBottomBeforeUpdate.current;
     }
     if (!isStreaming) {
       autoScroll.current = false;
       updateJumpButton(el);
-      if (!didSyncInitialContent.current && units.length > 0) {
-        didSyncInitialContent.current = true;
+      if (
+        shouldSyncInitialContent ||
+        shouldFollowNewUser ||
+        shouldFinishFollowingStream
+      ) {
         syncAfterScrollFrame();
       }
       wasStreaming.current = isStreaming;
@@ -224,7 +263,7 @@ export function MessageTimeline({
     }
 
     updateJumpButton(el);
-    if (isStreaming && autoScroll.current) {
+    if (shouldSyncInitialContent || autoScroll.current) {
       syncAfterScrollFrame();
     }
 
@@ -232,112 +271,171 @@ export function MessageTimeline({
   }, [isStreaming, units, streamingText, streamingReasoningText]);
 
   // 过滤掉 internal 的消息
-  const visibleUnits = units.filter((u) => !isInternal(u));
+  const visibleUnits = useMemo(
+    () => units.filter((unit) => !isInternal(unit)),
+    [units],
+  );
+  const historyAnchors = useMemo(
+    () =>
+      visibleUnits.flatMap<ConversationAnchor>((unit) => {
+        const role = unit.content.role.toLowerCase();
+        if (
+          (role !== "user" && role !== "assistant") ||
+          isToolCallMessage(unit)
+        ) {
+          return [];
+        }
+        const text = collectText(unit);
+        return text
+          ? [
+              {
+                id: unit.uuid,
+                label: historyAnchorLabel(text),
+                role,
+              },
+            ]
+          : [];
+      }),
+    [visibleUnits],
+  );
 
   return (
-    <div
-      className="message-timeline"
-      onScroll={handleScroll}
-      onTouchMove={handleTouchMove}
-      onTouchStart={handleTouchStart}
-      onWheel={handleWheel}
-      ref={containerRef}
-    >
-      {visibleUnits.length === 0 && !streamingText && !streamingReasoningText ? (
-        <div className="empty-chat">No messages</div>
-      ) : null}
+    <div className="message-timeline-shell">
+      <div
+        className="message-timeline"
+        id="message-timeline-scrollport"
+        onScroll={handleScroll}
+        onTouchMove={handleTouchMove}
+        onTouchStart={handleTouchStart}
+        onWheel={handleWheel}
+        ref={containerRef}
+      >
+        <div className="message-timeline-content" ref={contentRef}>
+          {visibleUnits.length === 0 &&
+          !streamingText &&
+          !streamingReasoningText ? (
+            <div className="empty-chat">No messages</div>
+          ) : null}
 
-      {visibleUnits.map((unit) => {
-        const role = unit.content.role.toLowerCase();
+          {visibleUnits.map((unit) => {
+            const role = unit.content.role.toLowerCase();
 
-        // --- 工具调用消息（assistant 中含有 ToolCall）---
-        if (isToolCallMessage(unit)) {
-          const text = collectText(unit);
-          const calls = toolCallSummary(unit);
-          return (
-            <Fragment key={unit.uuid}>
-              <article className="message" data-role="tool_call">
-                <header>
-                  <span>tool calls</span>
-                  <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-                </header>
+            // --- 工具调用消息（assistant 中含有 ToolCall）---
+            if (isToolCallMessage(unit)) {
+              const text = collectText(unit);
+              const calls = toolCallSummary(unit);
+              return (
+                <Fragment key={unit.uuid}>
+                  <article className="message" data-role="tool_call">
+                    <header>
+                      <span>tool calls</span>
+                      <time>
+                        {new Date(unit.created_at * 1000).toLocaleTimeString()}
+                      </time>
+                    </header>
+                    {text ? (
+                      <div
+                        className="markdown-body"
+                        dangerouslySetInnerHTML={{ __html: renderMd(text) }}
+                      />
+                    ) : null}
+                    {calls.map((c, i) => (
+                      <pre className="tool-summary" key={i}>
+                        {c}
+                      </pre>
+                    ))}
+                  </article>
+                </Fragment>
+              );
+            }
+
+            // --- 工具回复消息 ---
+            if (isToolResponseMessage(unit)) {
+              const summaries = toolResponseSummary(unit);
+              return (
+                <Fragment key={unit.uuid}>
+                  <article className="message" data-role="tool">
+                    <header>
+                      <span>tool result</span>
+                      <time>
+                        {new Date(unit.created_at * 1000).toLocaleTimeString()}
+                      </time>
+                    </header>
+                    {summaries.map((s, i) => (
+                      <pre className="tool-summary" key={i}>
+                        {s}
+                      </pre>
+                    ))}
+                  </article>
+                </Fragment>
+              );
+            }
+
+            // --- 普通消息（user / assistant）渲染 Markdown ---
+            const text = collectText(unit);
+            const isHistoryAnchor = role === "user" || role === "assistant";
+            return (
+              <Fragment key={unit.uuid}>
                 {text ? (
-                  <div
-                    className="markdown-body"
-                    dangerouslySetInnerHTML={{ __html: renderMd(text) }}
-                  />
+                  <article
+                    className="message"
+                    data-history-anchor={isHistoryAnchor ? unit.uuid : undefined}
+                    data-role={role}
+                  >
+                    <header>
+                      <span>{role}</span>
+                      <time>
+                        {new Date(unit.created_at * 1000).toLocaleTimeString()}
+                      </time>
+                    </header>
+                    <div
+                      className="markdown-body"
+                      dangerouslySetInnerHTML={{ __html: renderMd(text) }}
+                    />
+                  </article>
                 ) : null}
-                {calls.map((c, i) => (
-                  <pre className="tool-summary" key={i}>{c}</pre>
-                ))}
-              </article>
-            </Fragment>
-          );
-        }
+              </Fragment>
+            );
+          })}
 
-        // --- 工具回复消息 ---
-        if (isToolResponseMessage(unit)) {
-          const summaries = toolResponseSummary(unit);
-          return (
-            <Fragment key={unit.uuid}>
-              <article className="message" data-role="tool">
-                <header>
-                  <span>tool result</span>
-                  <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-                </header>
-                {summaries.map((s, i) => (
-                  <pre className="tool-summary" key={i}>{s}</pre>
-                ))}
-              </article>
-            </Fragment>
-          );
-        }
+          {streamingReasoningText ? (
+            <article className="message message-streaming" data-role="reasoning">
+              <header>
+                <span>reasoning</span>
+                <time>streaming</time>
+              </header>
+              <div
+                className="markdown-body"
+                dangerouslySetInnerHTML={{
+                  __html: renderMd(streamingReasoningText),
+                }}
+              />
+            </article>
+          ) : null}
 
-        // --- 普通消息（user / assistant）渲染 Markdown ---
-        const text = collectText(unit);
-        return (
-          <Fragment key={unit.uuid}>
-            {text ? (
-              <article className="message" data-role={role}>
-                <header>
-                  <span>{role}</span>
-                  <time>{new Date(unit.created_at * 1000).toLocaleTimeString()}</time>
-                </header>
-                <div
-                  className="markdown-body"
-                  dangerouslySetInnerHTML={{ __html: renderMd(text) }}
-                />
-              </article>
-            ) : null}
-          </Fragment>
-        );
-      })}
+          {streamingText ? (
+            <article className="message message-streaming" data-role="assistant">
+              <header>
+                <span>assistant</span>
+                <time>streaming</time>
+              </header>
+              <div
+                className="markdown-body"
+                dangerouslySetInnerHTML={{ __html: renderMd(streamingText) }}
+              />
+            </article>
+          ) : null}
 
-      {streamingReasoningText ? (
-        <article className="message message-streaming" data-role="reasoning">
-          <header>
-            <span>reasoning</span>
-            <time>streaming</time>
-          </header>
-          <div
-            className="markdown-body"
-            dangerouslySetInnerHTML={{ __html: renderMd(streamingReasoningText) }}
-          />
-        </article>
-      ) : null}
+          <div ref={bottomRef} />
+        </div>
+      </div>
 
-      {streamingText ? (
-        <article className="message message-streaming" data-role="assistant">
-          <header>
-            <span>assistant</span>
-            <time>streaming</time>
-          </header>
-          <div
-            className="markdown-body"
-            dangerouslySetInnerHTML={{ __html: renderMd(streamingText) }}
-          />
-        </article>
-      ) : null}
+      <ConversationRail
+        anchors={historyAnchors}
+        containerRef={containerRef}
+        contentRef={contentRef}
+        onManualNavigate={pauseAutoScroll}
+      />
 
       {showJumpButton ? (
         <button
@@ -349,8 +447,6 @@ export function MessageTimeline({
           ↓
         </button>
       ) : null}
-
-      <div ref={bottomRef} />
     </div>
   );
 }
