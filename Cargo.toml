@@ -4,37 +4,41 @@ version = "0.9.0"
 edition = "2024"
 
 [[bin]]
-name = "prismagentd"            # PrismaAgent Daemon
+name = "prismagentd"  # PrismaAgent Daemon
 path = "src/bin/prismagentd.rs"
 
 [dependencies]
-serde = { version = "1.0.228", features = ["derive", "rc"] }
-anyhow = "1.0.103"
-tokio = { version = "1.53.0", features = ["full"] }
-uuid = { version = "1.24.0", features = ["v7", "fast-rng"] }
-serde_json = "1.0.150"
-toml = "1.1.3"
+anyhow = "1.0.104"
+axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+base64 = "0.22.1"
 chrono = "0.4.45"
 dirs = "6.0.0"
-genai = "0.6"
-reqwest = { version = "0.13", features = ["json"] }
-urlencoding = "2"
-thiserror = "2.0.18"
-axum = { version = "0.8", features = ["ws"] }
-ipnetwork = "0.21"
 futures-util = "0.3"
-petname = { version = "3.1.0", default-features = false, features = [
-  "default-rng",
-  "default-words",
-  "macros",
-] }
+genai = "0.6"
 include_dir = "0.7"
-base64 = "0.22.1"
-
+ipnetwork = "0.21"
+petname = {
+  version = "3.1.0",
+  default-features = false,
+  features = [
+    "default-rng",
+    "default-words",
+    "macros",
+  ]
+}
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
+tokio = { version = "1.53.0", features = ["full"] }
+toml = "1.1.3"
+urlencoding = "2"
+uuid = { version = "1.24.0", features = ["fast-rng", "v7"] }
 
 [profile.release]
 opt-level = 3
-lto = "fat"       # 跨 crate 链接时全局优化，性能提升 10-30%
-codegen-units = 1 # 禁止并行编译，允许更激进的内联优化
-strip = true      # 去除符号表，减小体积
-panic = "abort"   # 减小体积并略微提升性能
+strip = true  # 去除符号表，减小体积
+lto = "fat"  # 跨 crate 链接时全局优化，性能提升 10-30%
+panic = "abort"  # 减小体积并略微提升性能
+codegen-units = 1  # 禁止并行编译，允许更激进的内联优化

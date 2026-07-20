@@ -39,7 +39,6 @@ use prismagent::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
-    future::IntoFuture,
     net::SocketAddr,
     sync::{
         Arc,
@@ -47,7 +46,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:7618";
 
@@ -97,7 +96,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let addr = std::env::var("PRISMAGENT_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
+    let addr = std::env::var("PRISMAGENTD_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let addr = addr.parse::<SocketAddr>()?;
     let shell = start_runtime()?;
     let state = AppState {
@@ -126,18 +125,12 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(ip_filter))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let handle = axum_server::Handle::new();
     println!("PrismAgent daemon listening on http://{addr}");
-    let (graceful_shutdown_tx, graceful_shutdown_rx) = oneshot::channel();
-    let mut server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async {
-        let _ = graceful_shutdown_rx.await;
-    })
-    .into_future();
-    // `tokio::pin!(server)` is not necessary because `into_future` already returns a pinned future
+    let server = axum_server::bind(addr)
+        .handle(handle.clone())
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>());
+    tokio::pin!(server);
 
     let mut signals = shutdown_signals();
     let first_signal = tokio::select! {
@@ -149,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
     };
     if first_signal.is_none() {
         eprintln!("shutdown signal listener stopped unexpectedly; shutting down");
-        let _ = graceful_shutdown_tx.send(());
+        handle.graceful_shutdown(None);
         server.await?;
         return Ok(());
     }
@@ -169,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
         force_shutdown();
     }
 
-    let _ = graceful_shutdown_tx.send(());
+    handle.graceful_shutdown(None);
     tokio::select! {
         result = &mut server => result?,
         _ = wait_for_shutdown_signal(&mut signals) => force_shutdown(),
