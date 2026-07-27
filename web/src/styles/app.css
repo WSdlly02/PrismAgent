@@ -97,6 +97,19 @@ textarea:disabled {
   line-height: 1.1;
 }
 
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-logo {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+
 .muted-label,
 .resource-meta,
 .chat-header span,

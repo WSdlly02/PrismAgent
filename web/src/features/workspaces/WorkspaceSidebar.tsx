@@ -103,11 +103,16 @@ export function WorkspaceSidebar({
     <div className={`sidebar${collapsed ? " sidebar-collapsed-state" : ""}`}>
       <div className="sidebar-header">
         {!collapsed ? (
-          <div>
-            <h1>PrismAgent</h1>
-            <span className="muted-label">Shell</span>
+          <div className="sidebar-brand">
+            <img src="/favicon.svg" alt="PrismAgent" className="sidebar-logo" width={28} height={28} />
+            <div>
+              <h1>PrismAgent</h1>
+              <span className="muted-label">Shell</span>
+            </div>
           </div>
-        ) : null}
+        ) : (
+          <img src="/favicon.svg" alt="PrismAgent" className="sidebar-logo" width={28} height={28} />
+        )}
         {onToggleCollapse ? (
           <button
             className="sidebar-toggle-btn"
