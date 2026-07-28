@@ -13,6 +13,7 @@ use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{ErrorClass, ExternalKind, SubsystemError, SubsystemResult};
 use genai::chat::ToolCall;
+use std::sync::Arc;
 use uuid::Uuid;
 
 const MAX_MALFORMED_TOOL_CALL_RETRIES: u8 = 2;
@@ -208,14 +209,14 @@ impl AgentActor {
     ) -> AgentTaskResult<NextAction> {
         let output = result?;
         let is_tool_calls = output.is_tool_calls;
-        let tool_calls = if is_tool_calls {
+        let tool_calls: Arc<[ToolCall]> = if is_tool_calls {
             output
                 .units
                 .last()
                 .map(clone_tool_calls)
                 .unwrap_or_default()
         } else {
-            Vec::new()
+            Arc::new([])
         };
 
         if is_tool_calls && !tool_calls_sound(&tool_calls) {
@@ -229,10 +230,12 @@ impl AgentActor {
             .await
             .map_err(|source| AgentTaskError::new(AgentFailureStage::CommitLlmOutput, source))?;
 
+        // A structurally valid output ends any malformed-call repair chain.
+        // Normal tool and auto-loop continuations start with a fresh budget.
         let turn = TurnContext::default();
         if is_tool_calls {
             return self
-                .route_tool_calls(agent_uuid, tool_calls, turn)
+                .decide_tool_call_approval(agent_uuid, tool_calls, turn)
                 .await
                 .map_err(|source| {
                     AgentTaskError::new(AgentFailureStage::PrepareToolBatch, source)
@@ -444,10 +447,10 @@ impl AgentActor {
         self.apply_next_action(agent_uuid, action)
     }
 
-    async fn route_tool_calls(
+    async fn decide_tool_call_approval(
         &mut self,
         agent_uuid: &str,
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Arc<[ToolCall]>,
         turn: TurnContext,
     ) -> SubsystemResult<NextAction> {
         if tool_calls.is_empty() {
@@ -554,7 +557,7 @@ mod tests {
             .apply_next_action(
                 "agent",
                 NextAction::RequestApproval {
-                    tool_calls: vec![tool_call],
+                    tool_calls: vec![tool_call].into(),
                     auto_approved_mask: 0,
                     manual_approval_mask: 1,
                     turn: TurnContext::default(),

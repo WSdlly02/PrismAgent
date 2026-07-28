@@ -1,6 +1,7 @@
 use crate::actors::agent_actor::model::{AgentStatus, SendMessageRequest};
 use crate::actors::storage_actor::model::agent::Agent;
 use genai::chat::ToolCall;
+use std::sync::Arc;
 
 /// Persisted Agent data and its process-local execution state.
 ///
@@ -22,7 +23,11 @@ impl AgentEntry {
     }
 }
 
-/// State carried across one LLM/tool turn.
+/// State carried across consecutive attempts to produce one valid LLM output.
+///
+/// A malformed tool-call output starts a repair continuation and carries this
+/// context into the next LLM invocation. The context resets after the first
+/// structurally valid output, before normal tool or auto-loop continuation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TurnContext {
     pub malformed_tool_call_retries: u8,
@@ -39,14 +44,14 @@ pub(crate) enum AgentRuntime {
     },
     WaitingApproval {
         request_uuid: String,
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Arc<[ToolCall]>,
         auto_approved_mask: u64,
         manual_approval_mask: u64,
         turn: TurnContext,
     },
     RunningTool {
         job_uuid: String,
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Arc<[ToolCall]>,
         turn: TurnContext,
     },
 }
@@ -80,13 +85,13 @@ pub(crate) enum NextAction {
         turn: TurnContext,
     },
     RequestApproval {
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Arc<[ToolCall]>,
         auto_approved_mask: u64,
         manual_approval_mask: u64,
         turn: TurnContext,
     },
     StartTools {
-        tool_calls: Vec<ToolCall>,
+        tool_calls: Arc<[ToolCall]>,
         approval_mask: ApprovalMask,
         denied_reason: String,
         turn: TurnContext,
@@ -154,14 +159,14 @@ mod tests {
         };
         let waiting_approval = AgentRuntime::WaitingApproval {
             request_uuid: "approval".to_string(),
-            tool_calls: vec![tool_call()],
+            tool_calls: vec![tool_call()].into(),
             auto_approved_mask: 0,
             manual_approval_mask: 1,
             turn: TurnContext::default(),
         };
         let running_tool = AgentRuntime::RunningTool {
             job_uuid: "job".to_string(),
-            tool_calls: vec![tool_call()],
+            tool_calls: vec![tool_call()].into(),
             turn: TurnContext::default(),
         };
 

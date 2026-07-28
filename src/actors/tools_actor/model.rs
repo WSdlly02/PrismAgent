@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 pub const TOOLS_ACTOR: &str = "tools";
@@ -56,7 +57,7 @@ pub struct ToolBatchRequest {
     pub workspace_uuid: String,
     pub caller_agent_uuid: String,
     pub workspace_path: PathBuf,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Arc<[ToolCall]>,
     pub approvals: Vec<ToolApproval>,
     pub stream_tx: mpsc::Sender<ToolStreamEvent>,
 }

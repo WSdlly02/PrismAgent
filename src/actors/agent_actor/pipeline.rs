@@ -14,6 +14,7 @@ use crate::handles::AppHandles;
 use genai::chat::{ChatMessage, ContentPart, ToolCall, ToolResponse};
 use serde_json::json;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub fn input_pipeline(
@@ -128,7 +129,7 @@ pub(crate) struct RunToolBatchRequest {
     pub agent_uuid: String,
     pub profile_name: String,
     pub job_uuid: String,
-    pub tool_calls: Vec<ToolCall>,
+    pub tool_calls: Arc<[ToolCall]>,
     pub approval_mask: ApprovalMask,
     pub denied_reason: String,
 }
@@ -217,7 +218,7 @@ pub(crate) async fn run_tool_batch(
     })
 }
 
-pub fn clone_tool_calls(unit: &Unit) -> Vec<ToolCall> {
+pub fn clone_tool_calls(unit: &Unit) -> Arc<[ToolCall]> {
     unit.content
         .content
         .tool_calls()
