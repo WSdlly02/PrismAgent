@@ -1,5 +1,5 @@
 use crate::actors::agent_actor::model::{
-    AgentSnapshot, AgentSummary, AgentTaskOperation, AgentTaskPhase, PendingApproval,
+    AgentFailureStage, AgentSnapshot, AgentSummary, PendingApproval,
 };
 use crate::actors::storage_actor::model::agent::Agent;
 use crate::actors::storage_actor::model::unit::Unit;
@@ -109,8 +109,7 @@ pub enum WsEvent {
         workspace_uuid: Option<String>,
         agent_uuid: String,
         correlation_id: String,
-        operation: AgentTaskOperation,
-        phase: AgentTaskPhase,
+        stage: AgentFailureStage,
         error: PublicError,
     },
 
@@ -296,13 +295,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operation_failed_event_preserves_async_context() {
+    fn operation_failed_event_preserves_failure_stage() {
         let event = WsEvent::OperationFailed {
             workspace_uuid: Some("workspace-1".to_string()),
             agent_uuid: "agent-1".to_string(),
             correlation_id: "inference-1".to_string(),
-            operation: AgentTaskOperation::LlmInference,
-            phase: AgentTaskPhase::ProviderInference,
+            stage: AgentFailureStage::ProviderInference,
             error: PublicError {
                 code: "llm_error".to_string(),
                 message: "quota exceeded".to_string(),
@@ -314,8 +312,9 @@ mod tests {
         assert_eq!(json["type"], "operation_failed");
         assert_eq!(json["agent_uuid"], "agent-1");
         assert_eq!(json["correlation_id"], "inference-1");
-        assert_eq!(json["operation"], "llm_inference");
-        assert_eq!(json["phase"], "provider_inference");
+        assert_eq!(json["stage"], "provider_inference");
+        assert!(json.get("operation").is_none());
+        assert!(json.get("phase").is_none());
         assert_eq!(json["error"]["code"], "llm_error");
     }
 }

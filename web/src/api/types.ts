@@ -98,16 +98,10 @@ export type PendingApproval = {
   manual_approval_mask: number;
 };
 
-export type AgentTaskOperation =
-  | "llm_inference"
-  | "llm_continuation"
-  | "tool_batch"
-  | "auto_loop";
-
-export type AgentTaskPhase =
+export type AgentFailureStage =
   | "read_history"
   | "build_input"
-  | "load_workspace"
+  | "load_tool_workspace"
   | "load_model_config"
   | "load_tools_config"
   | "resolve_tools"
@@ -115,8 +109,10 @@ export type AgentTaskPhase =
   | "prepare_tool_batch"
   | "dispatch_tools"
   | "repair_tool_calls"
-  | "commit_units"
-  | "continue_loop";
+  | "commit_llm_output"
+  | "commit_tool_output"
+  | "prepare_auto_loop"
+  | "apply_next_action";
 
 export type AgentEvent =
   | { type: "unit_append"; unit: Unit }
@@ -129,8 +125,7 @@ export type AgentEvent =
       workspace_uuid: string | null;
       agent_uuid: string;
       correlation_id: string;
-      operation: AgentTaskOperation;
-      phase: AgentTaskPhase;
+      stage: AgentFailureStage;
       error: PublicError;
     };
 

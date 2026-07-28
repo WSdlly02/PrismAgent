@@ -1,8 +1,8 @@
+use crate::actors::agent_actor::state::AgentEntry;
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
-use genai::chat::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -16,9 +16,7 @@ pub struct AgentHandle {
 
 pub struct AgentActor {
     pub(super) rx: mpsc::Receiver<AgentMsg>,
-    pub(super) agents: HashMap<String, Agent>, // agent_uuid -> Agent
-    pub(super) agent_workspace: HashMap<String, String>, // agent_uuid -> workspace_uuid
-    pub(super) runtimes: HashMap<String, AgentRuntime>, // agent_uuid -> AgentRuntime
+    pub(super) entries: HashMap<String, AgentEntry>, // agent_uuid -> AgentEntry
     pub(super) handles: AppHandles,
 }
 
@@ -76,7 +74,6 @@ pub enum AgentMsg {
     InferenceFinished {
         agent_uuid: String,
         inference_uuid: String,
-        operation: AgentTaskOperation,
         result: AgentTaskResult<AgentInferenceOutput>,
     },
     ToolBatchFinished {
@@ -84,26 +81,6 @@ pub enum AgentMsg {
         job_uuid: String,
         result: AgentTaskResult<ToolBatchOutput>,
     },
-}
-
-pub struct AgentRuntime {
-    pub status: AgentStatus,
-    pub inference_uuid: Option<String>,
-    pub pending_tool_batch: Option<PendingToolBatch>,
-    pub active_tool_batch: Option<PendingToolBatch>,
-    pub malformed_tool_call_retries: u8,
-}
-
-impl AgentRuntime {
-    pub fn idle() -> Self {
-        Self {
-            status: AgentStatus::Idle,
-            inference_uuid: None,
-            pending_tool_batch: None,
-            active_tool_batch: None,
-            malformed_tool_call_retries: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +101,9 @@ pub struct AgentSummary {
     pub status: AgentStatus,
 }
 
+/// Status of an Agent for representation in the UI.
+///
+/// It is not a complete representation of the Agent's internal state, but rather a simplified view for the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
@@ -133,27 +113,16 @@ pub enum AgentStatus {
     WaitingApproval,
 }
 
-/// High-level asynchronous operation executed on behalf of an Agent.
+/// Exact point in the asynchronous Agent flow where a failure occurred.
 ///
-/// This is orchestration context, not an Agent lifecycle status. It belongs to
-/// the Agent domain even though WS events serialize it for clients. REST
-/// operations continue to return `SubsystemError` at the internal boundary.
+/// A single stage avoids the invalid combinations that separate operation and
+/// phase enums allowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentTaskOperation {
-    LlmInference,
-    LlmContinuation,
-    ToolBatch,
-    AutoLoop,
-}
-
-/// Stage within an asynchronous Agent operation where a failure occurred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentTaskPhase {
+pub enum AgentFailureStage {
     ReadHistory,
     BuildInput,
-    LoadWorkspace,
+    LoadToolWorkspace,
     LoadModelConfig,
     LoadToolsConfig,
     ResolveTools,
@@ -161,32 +130,25 @@ pub enum AgentTaskPhase {
     PrepareToolBatch,
     DispatchTools,
     RepairToolCalls,
-    CommitUnits,
-    ContinueLoop,
+    CommitLlmOutput,
+    CommitToolOutput,
+    PrepareAutoLoop,
+    ApplyNextAction,
 }
 
-/// Adds operation and phase context to an internal error from a background
-/// Agent task. It is converted to a public WS event only at the Agent boundary.
+/// Adds flow context to an internal error from a background Agent task. It is
+/// converted to a public WS event only at the Agent boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{operation:?} failed during {phase:?}: {source}")]
+#[error("agent flow failed during {stage:?}: {source}")]
 pub struct AgentTaskError {
-    pub operation: AgentTaskOperation,
-    pub phase: AgentTaskPhase,
+    pub stage: AgentFailureStage,
     #[source]
     pub source: SubsystemError,
 }
 
 impl AgentTaskError {
-    pub fn new(
-        operation: AgentTaskOperation,
-        phase: AgentTaskPhase,
-        source: SubsystemError,
-    ) -> Self {
-        Self {
-            operation,
-            phase,
-            source,
-        }
+    pub fn new(stage: AgentFailureStage, source: SubsystemError) -> Self {
+        Self { stage, source }
     }
 }
 
@@ -240,13 +202,6 @@ pub struct PendingApproval {
 pub struct AgentInferenceOutput {
     pub units: Vec<Unit>,
     pub is_tool_calls: bool,
-}
-
-pub struct PendingToolBatch {
-    pub request_uuid: String,
-    pub tool_calls: Vec<ToolCall>,
-    pub auto_approved_mask: u64,
-    pub manual_approval_mask: u64,
 }
 
 pub struct ToolBatchOutput {

@@ -113,8 +113,7 @@ describe("session model", () => {
       workspace_uuid: "workspace-1",
       agent_uuid: "agent-1",
       correlation_id: "inference-1",
-      operation: "llm_inference",
-      phase: "provider_inference",
+      stage: "provider_inference",
       error: {
         code: "llm_error",
         message: "boom",

@@ -1,9 +1,9 @@
 use crate::actors::agent_actor::model::MessageBody;
 use crate::actors::agent_actor::model::{
-    AgentInferenceOutput, AgentTaskError, AgentTaskOperation, AgentTaskPhase, AgentTaskResult,
-    SendMessageRequest, ToolBatchOutput,
+    AgentFailureStage, AgentInferenceOutput, AgentTaskError, AgentTaskResult, SendMessageRequest,
+    ToolBatchOutput,
 };
-use crate::actors::agent_actor::runtime::ApprovalMask;
+use crate::actors::agent_actor::state::ApprovalMask;
 use crate::actors::llm_actor::model::{LlmInferRequest, LlmStreamEvent};
 use crate::actors::profile_actor::model::ToolsConfigSection;
 use crate::actors::shell_actor::model::WsEvent;
@@ -67,7 +67,6 @@ pub async fn run_llm_inference(
     profile_name: String,
     inference_uuid: String,
 ) -> AgentTaskResult<AgentInferenceOutput> {
-    let operation = AgentTaskOperation::LlmInference;
     let history_len = unit_uuids.len();
     let units = if unit_uuids.is_empty() {
         Vec::new()
@@ -76,17 +75,16 @@ pub async fn run_llm_inference(
             .storage
             .read_units(&workspace_uuid, unit_uuids)
             .await
-            .map_err(|source| AgentTaskError::new(operation, AgentTaskPhase::ReadHistory, source))?
+            .map_err(|source| AgentTaskError::new(AgentFailureStage::ReadHistory, source))?
     };
     let mut units = input_pipeline(units, request.message_body)
-        .map_err(|source| AgentTaskError::new(operation, AgentTaskPhase::BuildInput, source))?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::BuildInput, source))?;
     let response = call_llm_with_units(
         handles,
         request.agent_uuid.clone(),
         profile_name,
         inference_uuid,
         units.clone(),
-        operation,
     )
     .await?;
     units.push(response.output_unit);
@@ -104,20 +102,18 @@ pub async fn run_llm_continuation(
     profile_name: String,
     inference_uuid: String,
 ) -> AgentTaskResult<AgentInferenceOutput> {
-    let operation = AgentTaskOperation::LlmContinuation;
     let history_len = unit_uuids.len();
     let mut units = handles
         .storage
         .read_units(&workspace_uuid, unit_uuids)
         .await
-        .map_err(|source| AgentTaskError::new(operation, AgentTaskPhase::ReadHistory, source))?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::ReadHistory, source))?;
     let response = call_llm_with_units(
         handles,
         agent_uuid,
         profile_name,
         inference_uuid,
         units.clone(),
-        operation,
     )
     .await?;
     units.push(response.output_unit);
@@ -127,7 +123,7 @@ pub async fn run_llm_continuation(
     })
 }
 
-pub struct RunToolBatchRequest {
+pub(crate) struct RunToolBatchRequest {
     pub workspace_uuid: String,
     pub agent_uuid: String,
     pub profile_name: String,
@@ -137,7 +133,7 @@ pub struct RunToolBatchRequest {
     pub denied_reason: String,
 }
 
-pub async fn run_tool_batch(
+pub(crate) async fn run_tool_batch(
     handles: &AppHandles,
     request: RunToolBatchRequest,
 ) -> AgentTaskResult<ToolBatchOutput> {
@@ -150,12 +146,11 @@ pub async fn run_tool_batch(
         approval_mask,
         denied_reason,
     } = request;
-    let operation = AgentTaskOperation::ToolBatch;
     let workspace = handles
         .workspace
         .get(&workspace_uuid)
         .await
-        .map_err(|source| AgentTaskError::new(operation, AgentTaskPhase::LoadWorkspace, source))?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::LoadToolWorkspace, source))?;
     let (tool_stream_tx, mut tool_stream_rx) = mpsc::channel::<ToolStreamEvent>(64);
     let shell = handles.shell.clone();
     let stream_agent_uuid = agent_uuid.clone();
@@ -181,9 +176,7 @@ pub async fn run_tool_batch(
         .profile
         .tools(&profile_name)
         .await
-        .map_err(|source| {
-            AgentTaskError::new(operation, AgentTaskPhase::LoadToolsConfig, source)
-        })?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::LoadToolsConfig, source))?;
     let continue_loop = approval_mask.approves_all(tool_calls.len());
     let approvals = tool_calls
         .iter()
@@ -216,7 +209,7 @@ pub async fn run_tool_batch(
             stream_tx: tool_stream_tx,
         })
         .await
-        .map_err(|source| AgentTaskError::new(operation, AgentTaskPhase::DispatchTools, source))?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::DispatchTools, source))?;
     let _ = tool_stream_forwarder.await;
     Ok(ToolBatchOutput {
         units: tool_response.output_units,
@@ -298,22 +291,17 @@ async fn call_llm_with_units(
     profile_name: String,
     inference_uuid: String,
     units: Vec<Unit>,
-    operation: AgentTaskOperation,
 ) -> AgentTaskResult<crate::actors::llm_actor::model::LlmInferResponse> {
     let model = handles
         .profile
         .model_config(&profile_name)
         .await
-        .map_err(|source| {
-            AgentTaskError::new(operation, AgentTaskPhase::LoadModelConfig, source)
-        })?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::LoadModelConfig, source))?;
     let tools_config = handles
         .profile
         .tools(profile_name)
         .await
-        .map_err(|source| {
-            AgentTaskError::new(operation, AgentTaskPhase::LoadToolsConfig, source)
-        })?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::LoadToolsConfig, source))?;
     let tools = if tools_config.available_tools.is_empty() {
         Vec::new()
     } else {
@@ -321,9 +309,7 @@ async fn call_llm_with_units(
             .tools
             .list(Some(tools_config.available_tools.clone()))
             .await
-            .map_err(|source| {
-                AgentTaskError::new(operation, AgentTaskPhase::ResolveTools, source)
-            })?
+            .map_err(|source| AgentTaskError::new(AgentFailureStage::ResolveTools, source))?
     };
     let (stream_tx, mut stream_rx) = mpsc::channel::<LlmStreamEvent>(64);
     let shell = handles.shell.clone();
@@ -354,9 +340,7 @@ async fn call_llm_with_units(
             stream_tx,
         })
         .await
-        .map_err(|source| {
-            AgentTaskError::new(operation, AgentTaskPhase::ProviderInference, source)
-        })?;
+        .map_err(|source| AgentTaskError::new(AgentFailureStage::ProviderInference, source))?;
     let _ = stream_forwarder.await;
     Ok(response)
 }
