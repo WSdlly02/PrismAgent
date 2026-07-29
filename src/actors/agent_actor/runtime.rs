@@ -4,7 +4,7 @@ use crate::actors::agent_actor::model::{
     SelfUpdateRequest, SendMessageRequest, ToolBatchOutput,
 };
 use crate::actors::agent_actor::state::{
-    AgentEntry, AgentRuntime, ApprovalMask, NextAction, TurnContext,
+    AgentEntry, AgentState, ApprovalMask, NextAction, TurnContext,
 };
 use crate::actors::context_actor::model::RenderInitialPromptsRequest;
 use crate::actors::shell_actor::model::WsEvent;
@@ -138,7 +138,7 @@ impl AgentActor {
         if !self.contains(workspace_uuid, agent_uuid) {
             return Err(SubsystemError::not_found(ResourceKind::Agent, agent_uuid));
         }
-        if !self.runtime(agent_uuid)?.is_idle() {
+        if !self.state(agent_uuid)?.is_idle() {
             return Err(SubsystemError::conflict(
                 ConflictKind::AgentBusy,
                 agent_uuid,
@@ -167,7 +167,7 @@ impl AgentActor {
     fn try_shutdown(&self) -> SubsystemResult<bool> {
         // Workflow work is already represented by an agent's non-idle status:
         // its final tool completion transitions directly into the final LLM output.
-        Ok(self.entries.values().all(|entry| entry.runtime.is_idle()))
+        Ok(self.entries.values().all(|entry| entry.state.is_idle()))
     }
 
     fn contains(&self, workspace_uuid: &str, agent_uuid: &str) -> bool {
@@ -187,16 +187,16 @@ impl AgentActor {
                 .read_units(workspace_uuid, agent.unit_chain.clone())
                 .await?
         };
-        let runtime = self.runtime(agent_uuid)?;
+        let state = self.state(agent_uuid)?;
         Ok(AgentSnapshot {
             units,
-            status: runtime.status(),
-            pending_approval: pending_approval_from_runtime(runtime),
+            status: state.status(),
+            pending_approval: pending_approval_from_state(state),
         })
     }
 
     async fn send_message(&mut self, request: SendMessageRequest) -> SubsystemResult<()> {
-        if !self.runtime(&request.agent_uuid)?.is_idle() {
+        if !self.state(&request.agent_uuid)?.is_idle() {
             return Err(SubsystemError::conflict(
                 ConflictKind::AgentBusy,
                 request.agent_uuid,
@@ -339,7 +339,7 @@ impl AgentActor {
             auto_loop: agent.auto_loop,
             context_refs: agent.context_refs.clone(),
             context_out: agent.context_out.clone(),
-            status: entry.runtime.status(),
+            status: entry.state.status(),
         }
     }
 
@@ -350,14 +350,14 @@ impl AgentActor {
             .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, agent_uuid))
     }
 
-    pub(super) fn runtime(&self, agent_uuid: &str) -> SubsystemResult<&AgentRuntime> {
+    pub(super) fn state(&self, agent_uuid: &str) -> SubsystemResult<&AgentState> {
         self.entries
             .get(agent_uuid)
-            .map(|entry| &entry.runtime)
+            .map(|entry| &entry.state)
             .ok_or_else(|| {
                 SubsystemError::internal(
-                    "access agent runtime",
-                    format!("runtime is missing for agent {agent_uuid}"),
+                    "access agent state",
+                    format!("state is missing for agent {agent_uuid}"),
                 )
             })
     }
@@ -470,9 +470,9 @@ pub(super) fn effective_approval_mask(
     ApprovalMask::from_bits(auto_approved_mask | (user_approval_mask & manual_approval_mask))
 }
 
-fn pending_approval_from_runtime(runtime: &AgentRuntime) -> Option<PendingApproval> {
-    match runtime {
-        AgentRuntime::WaitingApproval {
+fn pending_approval_from_state(state: &AgentState) -> Option<PendingApproval> {
+    match state {
+        AgentState::WaitingApproval {
             request_uuid,
             tool_calls,
             auto_approved_mask,
@@ -579,7 +579,7 @@ mod runtime_tests {
     }
 
     #[test]
-    fn try_shutdown_requires_every_runtime_to_be_idle() {
+    fn try_shutdown_requires_every_agent_state_to_be_idle() {
         let (_tx, rx) = mpsc::channel(1);
         let mut actor = AgentActor::load(rx, crate::handles::test_handles());
 
@@ -591,13 +591,13 @@ mod runtime_tests {
         );
         assert!(actor.try_shutdown().unwrap());
 
-        actor.entries.get_mut("agent-a").unwrap().runtime = AgentRuntime::RunningLlm {
+        actor.entries.get_mut("agent-a").unwrap().state = AgentState::RunningLlm {
             inference_uuid: "inference".to_string(),
             turn: TurnContext::default(),
         };
         assert!(!actor.try_shutdown().unwrap());
         assert_eq!(
-            actor.entries["agent-a"].runtime.status(),
+            actor.entries["agent-a"].state.status(),
             AgentStatus::RunningLlm
         );
     }

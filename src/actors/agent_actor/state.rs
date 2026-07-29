@@ -6,11 +6,11 @@ use std::sync::Arc;
 /// Persisted Agent data and its process-local execution state.
 ///
 /// Keeping them in one map entry prevents the actor from having to maintain
-/// parallel agent/workspace/runtime maps.
+/// parallel agent/workspace/state maps.
 pub(crate) struct AgentEntry {
     pub workspace_uuid: String,
     pub agent: Agent,
-    pub runtime: AgentRuntime,
+    pub state: AgentState,
 }
 
 impl AgentEntry {
@@ -18,7 +18,7 @@ impl AgentEntry {
         Self {
             workspace_uuid,
             agent,
-            runtime: AgentRuntime::Idle,
+            state: AgentState::Idle,
         }
     }
 }
@@ -36,7 +36,7 @@ pub(crate) struct TurnContext {
 /// Runtime state is represented as a tagged union so invalid combinations such
 /// as `Idle + active_tool_batch` cannot be constructed.
 #[derive(Clone, Debug)]
-pub(crate) enum AgentRuntime {
+pub(crate) enum AgentState {
     Idle,
     RunningLlm {
         inference_uuid: String,
@@ -56,7 +56,7 @@ pub(crate) enum AgentRuntime {
     },
 }
 
-impl AgentRuntime {
+impl AgentState {
     pub fn status(&self) -> AgentStatus {
         match self {
             Self::Idle => AgentStatus::Idle,
@@ -149,22 +149,22 @@ mod tests {
     }
 
     #[test]
-    fn runtime_status_is_derived_from_the_state_variant() {
-        assert_eq!(AgentRuntime::Idle.status(), AgentStatus::Idle);
-        assert!(AgentRuntime::Idle.is_idle());
+    fn state_status_is_derived_from_the_variant() {
+        assert_eq!(AgentState::Idle.status(), AgentStatus::Idle);
+        assert!(AgentState::Idle.is_idle());
 
-        let running_llm = AgentRuntime::RunningLlm {
+        let running_llm = AgentState::RunningLlm {
             inference_uuid: "inference".to_string(),
             turn: TurnContext::default(),
         };
-        let waiting_approval = AgentRuntime::WaitingApproval {
+        let waiting_approval = AgentState::WaitingApproval {
             request_uuid: "approval".to_string(),
             tool_calls: vec![tool_call()].into(),
             auto_approved_mask: 0,
             manual_approval_mask: 1,
             turn: TurnContext::default(),
         };
-        let running_tool = AgentRuntime::RunningTool {
+        let running_tool = AgentState::RunningTool {
             job_uuid: "job".to_string(),
             tool_calls: vec![tool_call()].into(),
             turn: TurnContext::default(),

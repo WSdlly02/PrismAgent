@@ -8,7 +8,7 @@ use crate::actors::agent_actor::pipeline::{
     tool_response_units,
 };
 use crate::actors::agent_actor::runtime::effective_approval_mask;
-use crate::actors::agent_actor::state::{AgentRuntime, ApprovalMask, NextAction, TurnContext};
+use crate::actors::agent_actor::state::{AgentState, ApprovalMask, NextAction, TurnContext};
 use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{ErrorClass, ExternalKind, SubsystemError, SubsystemResult};
@@ -18,6 +18,26 @@ use uuid::Uuid;
 
 const MAX_MALFORMED_TOOL_CALL_RETRIES: u8 = 2;
 
+// ┌──────────────────────────────────────────────────────────────────────────┐
+// │                     AgentActor State Machine                             │
+// │                                                                          │
+// │  Idle ── send_message / initial task ──> RunningLlm                      │
+// │                                                                          │
+// │  RunningLlm ── malformed tool calls (repair) ──────────> RunningLlm      │
+// │             ├── text + auto_loop ──────────────────────> RunningLlm      │
+// │             ├── text + no auto_loop ───────────────────> Idle            │
+// │             ├── tool calls (auto-approved) ────────────> RunningTool     │
+// │             └── tool calls (approval required) ────────> WaitingApproval │
+// │                                                                          │
+// │  WaitingApproval ── approve / deny ────────────────────> RunningTool     │
+// │  RunningTool ── continue_loop ─────────────────────────> RunningLlm      │
+// │              └── no continuation ──────────────────────> Idle            │
+// │                                                                          │
+// │  Cancel:                                                                 │
+// │    RunningLlm → cancel LLM → Idle                                        │
+// │    WaitingApproval / RunningTool → run all-denied tool batch → Idle      │
+// └──────────────────────────────────────────────────────────────────────────┘
+
 impl AgentActor {
     pub(super) fn apply_next_action(
         &mut self,
@@ -25,7 +45,7 @@ impl AgentActor {
         action: NextAction,
     ) -> SubsystemResult<()> {
         match action {
-            NextAction::Finish => self.replace_runtime(agent_uuid, AgentRuntime::Idle),
+            NextAction::Finish => self.transition_to(agent_uuid, AgentState::Idle),
             NextAction::StartInference { request, turn } => {
                 self.start_inference(agent_uuid, request, turn)
             }
@@ -38,9 +58,9 @@ impl AgentActor {
             } => {
                 let request_uuid = Uuid::now_v7().to_string();
                 let tool_count = tool_calls.len();
-                self.replace_runtime(
+                self.transition_to(
                     agent_uuid,
-                    AgentRuntime::WaitingApproval {
+                    AgentState::WaitingApproval {
                         request_uuid: request_uuid.clone(),
                         tool_calls,
                         auto_approved_mask,
@@ -71,9 +91,9 @@ impl AgentActor {
                 let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
                 let profile_name = self.agent(agent_uuid)?.profile.clone();
                 let job_uuid = Uuid::now_v7().to_string();
-                self.replace_runtime(
+                self.transition_to(
                     agent_uuid,
-                    AgentRuntime::RunningTool {
+                    AgentState::RunningTool {
                         job_uuid: job_uuid.clone(),
                         tool_calls: tool_calls.clone(),
                         turn,
@@ -117,9 +137,9 @@ impl AgentActor {
         let profile_name = agent.profile.clone();
         let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
         let inference_uuid = Uuid::now_v7().to_string();
-        self.replace_runtime(
+        self.transition_to(
             agent_uuid,
-            AgentRuntime::RunningLlm {
+            AgentState::RunningLlm {
                 inference_uuid: inference_uuid.clone(),
                 turn,
             },
@@ -152,9 +172,9 @@ impl AgentActor {
         let profile_name = agent.profile.clone();
         let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
         let inference_uuid = Uuid::now_v7().to_string();
-        self.replace_runtime(
+        self.transition_to(
             agent_uuid,
-            AgentRuntime::RunningLlm {
+            AgentState::RunningLlm {
                 inference_uuid: inference_uuid.clone(),
                 turn,
             },
@@ -187,8 +207,8 @@ impl AgentActor {
         inference_uuid: &str,
         result: AgentTaskResult<AgentInferenceOutput>,
     ) {
-        let turn = match self.runtime(agent_uuid) {
-            Ok(AgentRuntime::RunningLlm {
+        let turn = match self.state(agent_uuid) {
+            Ok(AgentState::RunningLlm {
                 inference_uuid: active_uuid,
                 turn,
             }) if active_uuid == inference_uuid => *turn,
@@ -293,8 +313,8 @@ impl AgentActor {
         job_uuid: &str,
         result: AgentTaskResult<ToolBatchOutput>,
     ) {
-        let (active_tool_calls, turn) = match self.runtime(agent_uuid) {
-            Ok(AgentRuntime::RunningTool {
+        let (active_tool_calls, turn) = match self.state(agent_uuid) {
+            Ok(AgentState::RunningTool {
                 job_uuid: active_uuid,
                 tool_calls,
                 turn,
@@ -380,8 +400,8 @@ impl AgentActor {
     }
 
     pub(super) async fn approve_request(&mut self, request: ApproveRequest) -> SubsystemResult<()> {
-        let action = match self.runtime(&request.agent_uuid)?.clone() {
-            AgentRuntime::WaitingApproval {
+        let action = match self.state(&request.agent_uuid)?.clone() {
+            AgentState::WaitingApproval {
                 request_uuid,
                 tool_calls,
                 auto_approved_mask,
@@ -416,12 +436,12 @@ impl AgentActor {
     }
 
     pub(super) async fn cancel(&mut self, agent_uuid: &str) -> SubsystemResult<()> {
-        let action = match self.runtime(agent_uuid)?.clone() {
-            AgentRuntime::RunningLlm { inference_uuid, .. } => {
+        let action = match self.state(agent_uuid)?.clone() {
+            AgentState::RunningLlm { inference_uuid, .. } => {
                 let _ = self.handles.llm.cancel(inference_uuid).await?;
                 NextAction::Finish
             }
-            AgentRuntime::WaitingApproval {
+            AgentState::WaitingApproval {
                 tool_calls, turn, ..
             } => NextAction::StartTools {
                 tool_calls,
@@ -429,7 +449,7 @@ impl AgentActor {
                 denied_reason: "tool execution cancelled by user".to_string(),
                 turn,
             },
-            AgentRuntime::RunningTool {
+            AgentState::RunningTool {
                 job_uuid,
                 tool_calls,
                 turn,
@@ -442,7 +462,7 @@ impl AgentActor {
                     turn,
                 }
             }
-            AgentRuntime::Idle => return Ok(()),
+            AgentState::Idle => return Ok(()),
         };
         self.apply_next_action(agent_uuid, action)
     }
@@ -484,9 +504,9 @@ impl AgentActor {
         }
     }
 
-    fn replace_runtime(&mut self, agent_uuid: &str, runtime: AgentRuntime) -> SubsystemResult<()> {
-        let status = runtime.status();
-        self.entry_mut(agent_uuid)?.runtime = runtime;
+    fn transition_to(&mut self, agent_uuid: &str, state: AgentState) -> SubsystemResult<()> {
+        let status = state.status();
+        self.entry_mut(agent_uuid)?.state = state;
         self.emit_agent_event(
             agent_uuid,
             WsEvent::StatusChanged {
@@ -544,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn router_is_the_single_runtime_action_boundary() {
+    fn router_is_the_single_state_transition_boundary() {
         let mut actor = test_actor();
         let tool_call = ToolCall {
             call_id: "call".to_string(),
@@ -565,11 +585,11 @@ mod tests {
             )
             .unwrap();
 
-        let runtime = actor.runtime("agent").unwrap();
-        assert_eq!(runtime.status(), AgentStatus::WaitingApproval);
+        let state = actor.state("agent").unwrap();
+        assert_eq!(state.status(), AgentStatus::WaitingApproval);
         assert!(matches!(
-            runtime,
-            AgentRuntime::WaitingApproval {
+            state,
+            AgentState::WaitingApproval {
                 tool_calls,
                 auto_approved_mask: 0,
                 manual_approval_mask: 1,
@@ -580,6 +600,6 @@ mod tests {
         actor
             .apply_next_action("agent", NextAction::Finish)
             .unwrap();
-        assert!(actor.runtime("agent").unwrap().is_idle());
+        assert!(actor.state("agent").unwrap().is_idle());
     }
 }
