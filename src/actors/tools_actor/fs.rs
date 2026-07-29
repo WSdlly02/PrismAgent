@@ -346,7 +346,6 @@ pub(super) async fn run_rtk_json(
     stdin: Option<Vec<u8>>,
     timeout_secs: u64,
 ) -> String {
-    let command = format!("rtk {}", args.join(" "));
     let mut child = match Command::new("rtk")
         .args(&args)
         .current_dir(cwd)
@@ -364,7 +363,6 @@ pub(super) async fn run_rtk_json(
         Err(error) => {
             return json!({
                 "status": "error",
-                "command": command,
                 "error": error.to_string(),
             })
             .to_string();
@@ -385,7 +383,6 @@ pub(super) async fn run_rtk_json(
     {
         Ok(Ok(output)) => json!({
             "status": if output.status.success() { "ok" } else { "error" },
-            "command": command,
             "exit_code": output.status.code(),
             "success": output.status.success(),
             "stdout": String::from_utf8_lossy(&output.stdout),
@@ -394,13 +391,11 @@ pub(super) async fn run_rtk_json(
         .to_string(),
         Ok(Err(error)) => json!({
             "status": "error",
-            "command": command,
             "error": error.to_string(),
         })
         .to_string(),
         Err(_) => json!({
             "status": "timeout",
-            "command": command,
             "timeout_secs": timeout_secs,
         })
         .to_string(),
