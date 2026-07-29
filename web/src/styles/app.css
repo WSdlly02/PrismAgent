@@ -510,6 +510,7 @@ textarea {
   position: relative;
   display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -529,6 +530,7 @@ textarea {
 
 .message-timeline-content {
   display: flex;
+  min-width: 0;
   min-height: 100%;
   flex-direction: column;
   gap: 10px;
@@ -647,6 +649,7 @@ textarea {
 }
 
 .message {
+  min-width: 0;
   max-width: min(820px, 90%);
   border: 1px solid #dde3ea;
   border-radius: 8px;
@@ -763,6 +766,8 @@ textarea {
 
 /* ---- Markdown 渲染样式 ---- */
 .markdown-body {
+  min-width: 0;
+  max-width: 100%;
   color: #20252b;
   font-size: 14px;
   line-height: 1.65;
@@ -843,8 +848,25 @@ textarea {
   text-decoration: underline;
 }
 
-.markdown-body table {
+.markdown-table-scroll {
+  width: 100%;
+  max-width: 100%;
   margin: 0.7em 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.markdown-table-scroll:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid #4f9dd966;
+  outline-offset: 2px;
+}
+
+.markdown-table-scroll table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
   border-collapse: collapse;
   font-size: 0.95em;
 }

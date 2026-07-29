@@ -87,6 +87,39 @@ describe("MessageTimeline", () => {
     ).toBeNull();
   });
 
+  it("wraps Markdown tables in a keyboard-accessible scroll area", () => {
+    const tableUnit: Unit = {
+      ...baseUnit,
+      uuid: "unit-table",
+      content: {
+        role: "assistant",
+        content: [
+          {
+            Text: [
+              "| Name | Details |",
+              "| --- | --- |",
+              "| PrismAgent | A deliberately wide table value |",
+            ].join("\n"),
+          },
+        ],
+      },
+    };
+
+    const { container } = render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText=""
+        units={[tableUnit]}
+      />,
+    );
+
+    const scrollArea = container.querySelector(".markdown-table-scroll");
+    expect(scrollArea?.getAttribute("role")).toBe("region");
+    expect(scrollArea?.getAttribute("aria-label")).toBe("Scrollable table");
+    expect(scrollArea?.getAttribute("tabindex")).toBe("0");
+    expect(scrollArea?.querySelector("table")).toBeTruthy();
+  });
+
   it("renders streaming reasoning verbatim separately from streaming answer text", () => {
     const { container } = render(
       <MessageTimeline

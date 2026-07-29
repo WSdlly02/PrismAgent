@@ -23,7 +23,21 @@ function renderMd(text: string): string {
     return "";
   }
   const raw = marked.parse(text, { async: false }) as string;
-  return DOMPurify.sanitize(raw);
+  const sanitized = DOMPurify.sanitize(raw);
+  const template = document.createElement("template");
+  template.innerHTML = sanitized;
+
+  template.content.querySelectorAll("table").forEach((table) => {
+    const scrollArea = document.createElement("div");
+    scrollArea.className = "markdown-table-scroll";
+    scrollArea.setAttribute("aria-label", "Scrollable table");
+    scrollArea.setAttribute("role", "region");
+    scrollArea.tabIndex = 0;
+    table.replaceWith(scrollArea);
+    scrollArea.appendChild(table);
+  });
+
+  return template.innerHTML;
 }
 
 // ---------------------------------------------------------------------------
