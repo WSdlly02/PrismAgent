@@ -39,11 +39,26 @@ export type AgentSummary = {
   status: AgentStatus;
 };
 
+export type ToolCallContent = {
+  call_id: string;
+  fn_name: string;
+  fn_arguments: unknown;
+  thought_signatures?: string[];
+};
+
+export type ToolResponseContent = {
+  call_id: string;
+  fn_name?: string;
+  content: string;
+};
+
 export type ChatPart = {
   Text?: string;
   text?: string;
   ReasoningContent?: string;
   reasoning_content?: string;
+  ToolCall?: ToolCallContent;
+  ToolResponse?: ToolResponseContent;
   [key: string]: unknown;
 };
 

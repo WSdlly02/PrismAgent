@@ -1,7 +1,19 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronRight } from "lucide-react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import type { Unit } from "../../api/types";
+import type {
+  ToolCallContent,
+  ToolResponseContent,
+  Unit,
+} from "../../api/types";
 import {
   ConversationRail,
   type ConversationAnchor,
@@ -13,6 +25,46 @@ type MessageTimelineProps = {
   streamingText: string;
   streamingReasoningText: string;
 };
+
+type CollapsibleMessageProps = {
+  children: ReactNode;
+  dataRole: "reasoning" | "tool" | "tool_call";
+  label: string;
+  meta: ReactNode;
+  onToggle: () => void;
+  streaming?: boolean;
+};
+
+function CollapsibleMessage({
+  children,
+  dataRole,
+  label,
+  meta,
+  onToggle,
+  streaming = false,
+}: CollapsibleMessageProps) {
+  return (
+    <details
+      className={`message message-collapsible${streaming ? " message-streaming" : ""}`}
+      data-role={dataRole}
+      onToggle={onToggle}
+    >
+      <summary>
+        <span className="message-summary-label">
+          <ChevronRight
+            aria-hidden="true"
+            className="message-disclosure-icon"
+            size={14}
+            strokeWidth={2}
+          />
+          <span>{label}</span>
+        </span>
+        {meta}
+      </summary>
+      <div className="message-collapsible-content">{children}</div>
+    </details>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Markdown → 安全的 HTML
@@ -58,54 +110,110 @@ function collectText(unit: Unit): string {
 }
 
 // ---------------------------------------------------------------------------
-// 工具调用摘要：🔧 fn_name(args…)
+// 提取独立 reasoning 内容
 // ---------------------------------------------------------------------------
-function toolCallSummary(unit: Unit): string[] {
+function collectReasoning(unit: Unit): string[] {
   const content = unit.content.content;
   if (!Array.isArray(content)) {
     return [];
   }
-  return content
-    .filter((part) => part.ToolCall)
-    .map((part) => {
-      const tc = part.ToolCall as
-        | { fn_name?: string; fn_arguments?: Record<string, unknown> }
-        | undefined;
-      if (!tc) {
-        return "";
-      }
-      const args = tc.fn_arguments ?? {};
-      const argsStr = Object.keys(args).length
-        ? Object.entries(args)
-            .map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`)
-            .join(", ")
-        : "";
-      return `🔧 ${tc.fn_name}(${argsStr})`;
-    })
-    .filter(Boolean);
+  return content.flatMap((part) => {
+    if (typeof part.ReasoningContent === "string") {
+      return [part.ReasoningContent];
+    }
+    if (typeof part.reasoning_content === "string") {
+      return [part.reasoning_content];
+    }
+    return [];
+  });
 }
 
 // ---------------------------------------------------------------------------
-// 工具回复摘要：📥 fn_name → content（截断）
+// 提取完整工具调用与回复
 // ---------------------------------------------------------------------------
-function toolResponseSummary(unit: Unit): string[] {
+function collectToolCalls(unit: Unit): ToolCallContent[] {
   const content = unit.content.content;
   if (!Array.isArray(content)) {
     return [];
   }
-  return content
-    .filter((part) => part.ToolResponse)
-    .map((part) => {
-      const tr = part.ToolResponse as
-        | { call_id?: string; content?: string }
-        | undefined;
-      if (!tr) {
-        return "";
-      }
-      const snippet = (tr.content ?? "").slice(0, 120);
-      return `📥 ${snippet}`;
-    })
-    .filter(Boolean);
+  return content.flatMap((part) =>
+    part.ToolCall ? [part.ToolCall] : [],
+  );
+}
+
+function collectToolResponses(unit: Unit): ToolResponseContent[] {
+  const content = unit.content.content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.flatMap((part) =>
+    part.ToolResponse ? [part.ToolResponse] : [],
+  );
+}
+
+function formatStructuredPayload(value: unknown, indent = 0): string {
+  const currentIndent = " ".repeat(indent);
+  const childIndent = " ".repeat(indent + 2);
+
+  if (typeof value === "string") {
+    if (!value.includes("\n") && !value.includes("\r")) {
+      return JSON.stringify(value) ?? '""';
+    }
+    const lines = value.replace(/\r\n?/g, "\n").split("\n");
+    return [
+      '"""',
+      ...lines.map((line) => `${childIndent}${line}`),
+      `${currentIndent}"""`,
+    ].join("\n");
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return "[]";
+    }
+    return [
+      "[",
+      ...value.map(
+        (item, index) =>
+          `${childIndent}${formatStructuredPayload(item, indent + 2)}${
+            index === value.length - 1 ? "" : ","
+          }`,
+      ),
+      `${currentIndent}]`,
+    ].join("\n");
+  }
+
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return "{}";
+    }
+    return [
+      "{",
+      ...entries.map(
+        ([key, entryValue], index) =>
+          `${childIndent}${JSON.stringify(key)}: ${formatStructuredPayload(
+            entryValue,
+            indent + 2,
+          )}${index === entries.length - 1 ? "" : ","}`,
+      ),
+      `${currentIndent}}`,
+    ].join("\n");
+  }
+
+  return JSON.stringify(value) ?? String(value);
+}
+
+function formatToolResponse(content: string): string {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (parsed !== null && typeof parsed === "object") {
+      return formatStructuredPayload(parsed);
+    }
+  } catch {
+    // Tool output is often plain text; preserve it verbatim.
+  }
+  return content;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +342,19 @@ export function MessageTimeline({
     scrollToBottom("smooth");
   }
 
+  function handleCollapsibleToggle() {
+    requestAnimationFrame(() => {
+      const el = containerRef.current;
+      if (!el) {
+        return;
+      }
+      if (isStreaming && autoScroll.current) {
+        scrollToBottom("auto");
+      }
+      updateJumpButton(el);
+    });
+  }
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) {
@@ -334,54 +455,93 @@ export function MessageTimeline({
 
           {visibleUnits.map((unit) => {
             const role = unit.content.role.toLowerCase();
+            const unitTime = new Date(
+              unit.created_at * 1000,
+            ).toLocaleTimeString();
+            const reasoningBubbles = collectReasoning(unit).map(
+              (reasoning, index) => (
+                <CollapsibleMessage
+                  dataRole="reasoning"
+                  key={`${unit.uuid}-reasoning-${index}`}
+                  label="reasoning"
+                  meta={<time>{unitTime}</time>}
+                  onToggle={handleCollapsibleToggle}
+                >
+                  <div
+                    className="markdown-body"
+                    dangerouslySetInnerHTML={{
+                      __html: renderMd(reasoning),
+                    }}
+                  />
+                </CollapsibleMessage>
+              ),
+            );
 
             // --- 工具调用消息（assistant 中含有 ToolCall）---
             if (isToolCallMessage(unit)) {
               const text = collectText(unit);
-              const calls = toolCallSummary(unit);
+              const calls = collectToolCalls(unit);
               return (
                 <Fragment key={unit.uuid}>
-                  <article className="message" data-role="tool_call">
-                    <header>
-                      <span>tool calls</span>
-                      <time>
-                        {new Date(unit.created_at * 1000).toLocaleTimeString()}
-                      </time>
-                    </header>
+                  {reasoningBubbles}
+                  <CollapsibleMessage
+                    dataRole="tool_call"
+                    label={calls.length === 1 ? "tool call" : "tool calls"}
+                    meta={<time>{unitTime}</time>}
+                    onToggle={handleCollapsibleToggle}
+                  >
                     {text ? (
                       <div
                         className="markdown-body"
                         dangerouslySetInnerHTML={{ __html: renderMd(text) }}
                       />
                     ) : null}
-                    {calls.map((c, i) => (
-                      <pre className="tool-summary" key={i}>
-                        {c}
-                      </pre>
+                    {calls.map((call, index) => (
+                      <div
+                        className="tool-entry"
+                        key={call.call_id || index}
+                      >
+                        <div className="tool-entry-meta">
+                          <code>{call.fn_name}</code>
+                          <span>{call.call_id}</span>
+                        </div>
+                        <pre className="tool-content">
+                          {formatStructuredPayload(call.fn_arguments)}
+                        </pre>
+                      </div>
                     ))}
-                  </article>
+                  </CollapsibleMessage>
                 </Fragment>
               );
             }
 
             // --- 工具回复消息 ---
             if (isToolResponseMessage(unit)) {
-              const summaries = toolResponseSummary(unit);
+              const responses = collectToolResponses(unit);
               return (
                 <Fragment key={unit.uuid}>
-                  <article className="message" data-role="tool">
-                    <header>
-                      <span>tool result</span>
-                      <time>
-                        {new Date(unit.created_at * 1000).toLocaleTimeString()}
-                      </time>
-                    </header>
-                    {summaries.map((s, i) => (
-                      <pre className="tool-summary" key={i}>
-                        {s}
-                      </pre>
+                  {reasoningBubbles}
+                  <CollapsibleMessage
+                    dataRole="tool"
+                    label="tool result"
+                    meta={<time>{unitTime}</time>}
+                    onToggle={handleCollapsibleToggle}
+                  >
+                    {responses.map((response, index) => (
+                      <div
+                        className="tool-entry"
+                        key={response.call_id || index}
+                      >
+                        <div className="tool-entry-meta">
+                          <code>{response.fn_name ?? "tool"}</code>
+                          <span>{response.call_id}</span>
+                        </div>
+                        <pre className="tool-content">
+                          {formatToolResponse(response.content)}
+                        </pre>
+                      </div>
                     ))}
-                  </article>
+                  </CollapsibleMessage>
                 </Fragment>
               );
             }
@@ -391,6 +551,7 @@ export function MessageTimeline({
             const isHistoryAnchor = role === "user" || role === "assistant";
             return (
               <Fragment key={unit.uuid}>
+                {reasoningBubbles}
                 {text ? (
                   <article
                     className="message"
@@ -403,9 +564,7 @@ export function MessageTimeline({
                         {isHistoryAnchor ? (
                           <MessageCopyButton text={text} />
                         ) : null}
-                        <time>
-                          {new Date(unit.created_at * 1000).toLocaleTimeString()}
-                        </time>
+                        <time>{unitTime}</time>
                       </div>
                     </header>
                     <div
@@ -419,18 +578,20 @@ export function MessageTimeline({
           })}
 
           {streamingReasoningText ? (
-            <article className="message message-streaming" data-role="reasoning">
-              <header>
-                <span>reasoning</span>
-                <time>streaming</time>
-              </header>
+            <CollapsibleMessage
+              dataRole="reasoning"
+              label="reasoning"
+              meta={<span>streaming</span>}
+              onToggle={handleCollapsibleToggle}
+              streaming
+            >
               <div
                 className="markdown-body"
                 dangerouslySetInnerHTML={{
                   __html: renderMd(streamingReasoningText),
                 }}
               />
-            </article>
+            </CollapsibleMessage>
           ) : null}
 
           {streamingText ? (

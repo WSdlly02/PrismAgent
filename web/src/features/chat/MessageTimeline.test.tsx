@@ -26,12 +26,65 @@ const userUnit: Unit = {
   content: { role: "user", content: [{ Text: "Where are we?" }] },
 };
 
+const toolArgumentLines = [
+  "printf 'this argument is intentionally longer than sixty characters and must remain complete'",
+  "echo 'the second command line must render on its own line'",
+];
+const fullToolArgument = toolArgumentLines.join("\n");
+const plainToolResult =
+  "tool output: this result is intentionally longer than one hundred and twenty characters so the expanded bubble must preserve every character returned by the tool without applying a preview limit";
+const fullToolResult = {
+  command: fullToolArgument,
+  output: "first line\nsecond line\nthird line",
+  status: "success",
+};
+
+const toolCallUnit: Unit = {
+  ...baseUnit,
+  uuid: "unit-tool-call",
+  content: {
+    role: "assistant",
+    content: [
+      {
+        ToolCall: {
+          call_id: "call-1",
+          fn_name: "inspect",
+          fn_arguments: {
+            command: fullToolArgument,
+            options: { include_hidden: true },
+          },
+        },
+      },
+      {
+        ReasoningContent: "reasoning before the tool call",
+      },
+    ],
+  },
+};
+
+const toolResultUnit: Unit = {
+  ...baseUnit,
+  uuid: "unit-tool-result",
+  content: {
+    role: "tool",
+    content: [
+      {
+        ToolResponse: {
+          call_id: "call-1",
+          fn_name: "inspect",
+          content: JSON.stringify(fullToolResult),
+        },
+      },
+    ],
+  },
+};
+
 function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 describe("MessageTimeline", () => {
-  it("does not render snapshot reasoning content after inference is committed", () => {
+  it("renders snapshot reasoning as a separate collapsed bubble", () => {
     const { container } = render(
       <MessageTimeline
         streamingReasoningText=""
@@ -40,11 +93,21 @@ describe("MessageTimeline", () => {
       />,
     );
 
-    const reasoning = container.querySelector('[data-role="reasoning"]');
+    const reasoning = container.querySelector(
+      'details[data-role="reasoning"]',
+    ) as HTMLDetailsElement;
     const assistant = container.querySelector('[data-role="assistant"]');
 
-    expect(reasoning).toBeNull();
+    expect(reasoning.open).toBe(false);
+    expect(reasoning.textContent).toContain(
+      "historical reasoning should not be rendered",
+    );
     expect(assistant?.textContent).toContain("final answer");
+    expect(
+      Array.from(container.querySelectorAll(".message")).map(
+        (message) => message.getAttribute("data-role"),
+      ),
+    ).toEqual(["reasoning", "assistant"]);
   });
 
   it("copies raw text from committed user and assistant messages", async () => {
@@ -136,6 +199,128 @@ describe("MessageTimeline", () => {
     expect(container.querySelector('[data-role="assistant"]')?.textContent).toContain(
       "live answer",
     );
+  });
+
+  it("collapses tool calls and tool results independently by default", () => {
+    const { container } = render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText=""
+        units={[toolCallUnit, toolResultUnit]}
+      />,
+    );
+
+    const toolCall = container.querySelector(
+      'details[data-role="tool_call"]',
+    ) as HTMLDetailsElement;
+    const toolResult = container.querySelector(
+      'details[data-role="tool"]',
+    ) as HTMLDetailsElement;
+
+    expect(toolCall.open).toBe(false);
+    expect(toolResult.open).toBe(false);
+    expect(
+      Array.from(container.querySelectorAll(".message")).map(
+        (message) => message.getAttribute("data-role"),
+      ),
+    ).toEqual(["reasoning", "tool_call", "tool"]);
+    expect(
+      container.querySelector('details[data-role="reasoning"]')?.textContent,
+    ).toContain("reasoning before the tool call");
+
+    fireEvent.click(toolCall.querySelector("summary") as HTMLElement);
+
+    expect(toolCall.open).toBe(true);
+    expect(toolResult.open).toBe(false);
+    expect(toolCall.querySelector(".tool-content")?.textContent).toBe(
+      [
+        "{",
+        '  "command": """',
+        ...toolArgumentLines.map((line) => `    ${line}`),
+        '  """,',
+        '  "options": {',
+        '    "include_hidden": true',
+        "  }",
+        "}",
+      ].join("\n"),
+    );
+    expect(toolResult.querySelector(".tool-content")?.textContent).toBe(
+      [
+        "{",
+        '  "command": """',
+        ...toolArgumentLines.map((line) => `    ${line}`),
+        '  """,',
+        '  "output": """',
+        "    first line",
+        "    second line",
+        "    third line",
+        '  """,',
+        '  "status": "success"',
+        "}",
+      ].join("\n"),
+    );
+  });
+
+  it("preserves non-JSON tool results verbatim", () => {
+    const plainResultUnit: Unit = {
+      ...toolResultUnit,
+      uuid: "unit-plain-tool-result",
+      content: {
+        role: "tool",
+        content: [
+          {
+            ToolResponse: {
+              call_id: "call-plain",
+              fn_name: "inspect",
+              content: plainToolResult,
+            },
+          },
+        ],
+      },
+    };
+
+    const { container } = render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText=""
+        units={[plainResultUnit]}
+      />,
+    );
+
+    expect(container.querySelector(".tool-content")?.textContent).toBe(
+      plainToolResult,
+    );
+  });
+
+  it("preserves an expanded reasoning bubble across streaming updates", () => {
+    const { container, rerender } = render(
+      <MessageTimeline
+        streamingReasoningText="first reasoning chunk"
+        streamingText=""
+        units={[]}
+      />,
+    );
+    const reasoning = container.querySelector(
+      'details[data-role="reasoning"]',
+    ) as HTMLDetailsElement;
+
+    expect(reasoning.open).toBe(false);
+    fireEvent.click(reasoning.querySelector("summary") as HTMLElement);
+    expect(reasoning.open).toBe(true);
+
+    rerender(
+      <MessageTimeline
+        streamingReasoningText="first reasoning chunk and more"
+        streamingText=""
+        units={[]}
+      />,
+    );
+
+    expect(container.querySelector('details[data-role="reasoning"]')).toBe(
+      reasoning,
+    );
+    expect(reasoning.open).toBe(true);
+    expect(reasoning.textContent).toContain("and more");
   });
 
   it("pauses auto-scroll when the user scrolls up and resumes from the jump button", () => {
@@ -367,31 +552,6 @@ describe("MessageTimeline", () => {
         };
       },
     );
-
-    const toolCallUnit: Unit = {
-      ...baseUnit,
-      uuid: "unit-tool-call",
-      content: {
-        role: "assistant",
-        content: [
-          {
-            ToolCall: {
-              call_id: "call-1",
-              fn_name: "inspect",
-              fn_arguments: {},
-            },
-          },
-        ],
-      },
-    };
-    const toolResultUnit: Unit = {
-      ...baseUnit,
-      uuid: "unit-tool-result",
-      content: {
-        role: "tool",
-        content: [{ ToolResponse: { call_id: "call-1", content: "done" } }],
-      },
-    };
 
     const { container } = render(
       <MessageTimeline

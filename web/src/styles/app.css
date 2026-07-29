@@ -685,29 +685,98 @@ textarea {
   font-size: 13px;
 }
 
-.tool-summary {
+.tool-entry + .tool-entry {
+  margin-top: 10px;
+}
+
+.tool-entry-meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #687481;
+  font-size: 11px;
+}
+
+.tool-entry-meta code {
+  color: #20252b;
+  font-weight: 700;
+}
+
+.tool-entry-meta span {
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.tool-content {
+  max-width: 100%;
   margin-top: 6px !important;
   padding: 6px 10px;
   border-radius: 6px;
   background: #ffffffd0;
   font-size: 12px !important;
   line-height: 1.4 !important;
-  overflow: hidden;
-  word-break: break-all;
-  text-overflow: ellipsis;
-  max-width: 100%;
 }
 
-.message header {
+.message header,
+.message-collapsible > summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
   color: #687481;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
+}
+
+.message header,
+.message-collapsible[open] > summary {
+  margin-bottom: 8px;
+}
+
+.message-collapsible > summary {
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+  outline: none;
+}
+
+.message-collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+.message-collapsible > summary::marker {
+  content: "";
+}
+
+.message-collapsible > summary:hover {
+  color: #20252b;
+}
+
+.message-collapsible > summary:focus-visible {
+  box-shadow: 0 0 0 2px #4f9dd966;
+}
+
+.message-summary-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.message-disclosure-icon {
+  flex: 0 0 auto;
+  transition: transform 140ms ease;
+}
+
+.message-collapsible[open] .message-disclosure-icon {
+  transform: rotate(90deg);
+}
+
+.message-collapsible-content {
+  min-width: 0;
 }
 
 .message-meta {
