@@ -274,23 +274,6 @@ fn render_capabilities(request: RenderCapabilitiesRequest) -> SubsystemResult<St
                 .to_string(),
         );
     }
-
-    if !request.profile.tools.available_tools.is_empty() {
-        sections.push(format!(
-            "Available tools: {}.",
-            request.profile.tools.available_tools.join(", ")
-        ));
-    }
-    if request.profile.tools.yolo {
-        sections.push("Tool approval mode: yolo.".to_string());
-    } else if !request.profile.tools.auto_approve.is_empty() {
-        sections.push(format!(
-            "Auto-approved tools: {}.",
-            request.profile.tools.auto_approve.join(", ")
-        ));
-    } else {
-        sections.push("Tool approval mode: ask before tool execution.".to_string());
-    }
     Ok(sections.join("\n\n"))
 }
 
