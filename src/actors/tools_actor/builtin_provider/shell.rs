@@ -1,11 +1,10 @@
-use crate::actors::tools_actor::fs::{resolve_tool_path, run_rtk_json};
+use crate::actors::tools_actor::builtin_provider::fs::{resolve_tool_path, run_rtk_json};
 use crate::actors::tools_actor::model::ToolExecutionContext;
-use crate::actors::tools_actor::runtime::tool_template;
-use genai::chat::Tool;
+use crate::actors::tools_actor::provider::{ToolResult, ToolSpec};
 use serde_json::{Value, json};
 
-pub fn exec() -> Tool {
-    tool_template(
+pub fn exec() -> ToolSpec {
+    ToolSpec::new(
         "shell_exec",
         "Execute a shell command in the workspace through rtk. Known commands are token-optimized; unknown commands are passed through.",
         json!({
@@ -20,7 +19,7 @@ pub fn exec() -> Tool {
     )
 }
 
-pub async fn execute(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let command = args.get("command").and_then(Value::as_str).unwrap_or("");
     let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let timeout_secs = args
@@ -30,11 +29,9 @@ pub async fn execute(ctx: ToolExecutionContext, args: Value) -> String {
         .clamp(1, 300);
 
     if command.trim().is_empty() {
-        return json!({
-            "status": "error",
+        return ToolResult::error(json!({
             "error": "command must not be empty",
-        })
-        .to_string();
+        }));
     }
 
     let cwd = resolve_tool_path(&ctx.workspace_path, cwd);

@@ -1,6 +1,5 @@
-pub(super) mod fs;
+pub(super) mod builtin_provider;
+pub(super) mod mcp_provider;
 pub mod model;
-pub(super) mod prismagent;
+pub mod provider;
 pub mod runtime;
-pub(super) mod shell;
-pub(super) mod web;

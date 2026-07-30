@@ -304,7 +304,7 @@ fn start_runtime() -> anyhow::Result<ShellHandle> {
     ContextActor::load(context_rx, handles.clone())?.spawn();
     WorkspaceActor::load(workspace_rx)?.spawn();
     LlmActor::load(llm_rx).spawn();
-    ToolsActor::load(tools_rx, handles.clone()).spawn();
+    ToolsActor::load(tools_rx, handles.clone())?.spawn();
     WorkflowActor::load(workflow_rx, handles.clone()).spawn();
     AgentActor::load(agent_rx, handles.clone()).spawn();
     ShellActor::load(shell_rx, handles.clone()).spawn();

@@ -1,6 +1,5 @@
 use crate::actors::tools_actor::model::ToolExecutionContext;
-use crate::actors::tools_actor::runtime::tool_template;
-use genai::chat::Tool;
+use crate::actors::tools_actor::provider::{ToolResult, ToolSpec};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,8 +9,8 @@ use tokio::process::Command;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-pub fn tree_list() -> Tool {
-    tool_template(
+pub fn tree_list() -> ToolSpec {
+    ToolSpec::new(
         "fs_tree_list",
         "List the directory tree of a given path.",
         json!({
@@ -25,8 +24,8 @@ pub fn tree_list() -> Tool {
     )
 }
 
-pub fn file_read() -> Tool {
-    tool_template(
+pub fn file_read() -> ToolSpec {
+    ToolSpec::new(
         "fs_file_read",
         "Read a UTF-8 text file from the filesystem.",
         json!({
@@ -39,8 +38,8 @@ pub fn file_read() -> Tool {
     )
 }
 
-pub fn dir_list() -> Tool {
-    tool_template(
+pub fn dir_list() -> ToolSpec {
+    ToolSpec::new(
         "fs_dir_list",
         "List direct children of a directory.",
         json!({
@@ -53,8 +52,8 @@ pub fn dir_list() -> Tool {
     )
 }
 
-pub fn path_stat() -> Tool {
-    tool_template(
+pub fn path_stat() -> ToolSpec {
+    ToolSpec::new(
         "fs_path_stat",
         "Return metadata for a file or directory.",
         json!({
@@ -67,8 +66,8 @@ pub fn path_stat() -> Tool {
     )
 }
 
-pub fn file_write() -> Tool {
-    tool_template(
+pub fn file_write() -> ToolSpec {
+    ToolSpec::new(
         "fs_file_write",
         "Write a UTF-8 text file. Creates the file if it does not exist.",
         json!({
@@ -83,8 +82,8 @@ pub fn file_write() -> Tool {
     )
 }
 
-pub fn file_replace() -> Tool {
-    tool_template(
+pub fn file_replace() -> ToolSpec {
+    ToolSpec::new(
         "fs_file_replace",
         "Replace one exact text occurrence in a UTF-8 text file.",
         json!({
@@ -99,8 +98,8 @@ pub fn file_replace() -> Tool {
     )
 }
 
-pub fn dir_create() -> Tool {
-    tool_template(
+pub fn dir_create() -> ToolSpec {
+    ToolSpec::new(
         "fs_dir_create",
         "Create a directory and any missing parent directories.",
         json!({
@@ -113,8 +112,8 @@ pub fn dir_create() -> Tool {
     )
 }
 
-pub fn path_remove() -> Tool {
-    tool_template(
+pub fn path_remove() -> ToolSpec {
+    ToolSpec::new(
         "fs_path_remove",
         "Remove a file or an empty directory. Recursive removal requires recursive=true.",
         json!({
@@ -128,8 +127,8 @@ pub fn path_remove() -> Tool {
     )
 }
 
-pub fn path_rename() -> Tool {
-    tool_template(
+pub fn path_rename() -> ToolSpec {
+    ToolSpec::new(
         "fs_path_rename",
         "Rename or move a file or directory.",
         json!({
@@ -143,8 +142,8 @@ pub fn path_rename() -> Tool {
     )
 }
 
-pub fn file_copy() -> Tool {
-    tool_template(
+pub fn file_copy() -> ToolSpec {
+    ToolSpec::new(
         "fs_file_copy",
         "Copy a file.",
         json!({
@@ -158,7 +157,7 @@ pub fn file_copy() -> Tool {
     )
 }
 
-pub async fn execute_file_read(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_read(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -169,7 +168,7 @@ pub async fn execute_file_read(ctx: ToolExecutionContext, args: Value) -> String
     .await
 }
 
-pub async fn execute_tree_list(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_tree_list(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(2);
     run_rtk_json(
@@ -181,7 +180,7 @@ pub async fn execute_tree_list(ctx: ToolExecutionContext, args: Value) -> String
     .await
 }
 
-pub async fn execute_dir_list(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_dir_list(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -192,7 +191,7 @@ pub async fn execute_dir_list(ctx: ToolExecutionContext, args: Value) -> String 
     .await
 }
 
-pub async fn execute_path_stat(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_path_stat(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -203,7 +202,7 @@ pub async fn execute_path_stat(ctx: ToolExecutionContext, args: Value) -> String
     .await
 }
 
-pub async fn execute_file_write(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_write(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(&ctx.workspace_path, path_arg);
     let content = args.get("content").and_then(Value::as_str).unwrap_or("");
@@ -215,81 +214,65 @@ pub async fn execute_file_write(ctx: ToolExecutionContext, args: Value) -> Strin
         && let Some(parent) = path.parent()
         && let Err(error) = fs::create_dir_all(parent)
     {
-        return json!({
-            "status": "error",
+        return ToolResult::error(json!({
             "path": path.display().to_string(),
             "error": error.to_string(),
-        })
-        .to_string();
+        }));
     }
     match fs::write(&path, content) {
-        Ok(()) => json!({
-            "status": "ok",
+        Ok(()) => ToolResult::success(json!({
             "path": path.display().to_string(),
             "bytes": content.len(),
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
+        })),
+        Err(error) => ToolResult::error(json!({
             "path": path.display().to_string(),
             "error": error.to_string(),
-        })
-        .to_string(),
+        })),
     }
 }
 
-pub async fn execute_file_replace(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_replace(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path_arg = args.get("path").and_then(Value::as_str).unwrap_or(".");
     let path = resolve_tool_path(&ctx.workspace_path, path_arg);
     let old = args.get("old").and_then(Value::as_str).unwrap_or("");
     let new = args.get("new").and_then(Value::as_str).unwrap_or("");
     if old.is_empty() {
-        return json!({
-            "status": "error",
+        return ToolResult::error(json!({
             "path": path.display().to_string(),
             "error": "old must not be empty",
-        })
-        .to_string();
+        }));
     }
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) => {
-            return json!({
-                "status": "error",
+            return ToolResult::error(json!({
                 "path": path.display().to_string(),
                 "error": error.to_string(),
-            })
-            .to_string();
+            }));
         }
     };
     let count = content.matches(old).count();
     if count != 1 {
-        return json!({
-            "status": "error",
+        return ToolResult::error(json!({
             "path": path.display().to_string(),
             "matches": count,
             "error": "old text must match exactly once",
-        })
-        .to_string();
+        }));
     }
     let updated = content.replacen(old, new, 1);
     match fs::write(&path, updated) {
-        Ok(()) => json!({
-            "status": "ok",
+        Ok(()) => ToolResult::success(json!({
             "path": path.display().to_string(),
             "replacements": 1,
-        })
-        .to_string(),
-        Err(error) => json!({
-            "status": "error",
+        })),
+        Err(error) => ToolResult::error(json!({
             "path": path.display().to_string(),
             "error": error.to_string(),
-        })
-        .to_string(),
+        })),
     }
 }
 
-pub async fn execute_dir_create(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_dir_create(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     run_rtk_json(
         &ctx.workspace_path,
@@ -300,7 +283,7 @@ pub async fn execute_dir_create(ctx: ToolExecutionContext, args: Value) -> Strin
     .await
 }
 
-pub async fn execute_path_remove(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_path_remove(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
     let recursive = args
         .get("recursive")
@@ -316,7 +299,7 @@ pub async fn execute_path_remove(ctx: ToolExecutionContext, args: Value) -> Stri
     run_rtk_json(&ctx.workspace_path, command, None, DEFAULT_TIMEOUT_SECS).await
 }
 
-pub async fn execute_path_rename(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_path_rename(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let from = tool_arg(args.get("from").and_then(Value::as_str));
     let to = tool_arg(args.get("to").and_then(Value::as_str));
     run_rtk_json(
@@ -328,7 +311,7 @@ pub async fn execute_path_rename(ctx: ToolExecutionContext, args: Value) -> Stri
     .await
 }
 
-pub async fn execute_file_copy(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_file_copy(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let from = tool_arg(args.get("from").and_then(Value::as_str));
     let to = tool_arg(args.get("to").and_then(Value::as_str));
     run_rtk_json(
@@ -345,7 +328,7 @@ pub(super) async fn run_rtk_json(
     args: Vec<String>,
     stdin: Option<Vec<u8>>,
     timeout_secs: u64,
-) -> String {
+) -> ToolResult {
     let mut child = match Command::new("rtk")
         .args(&args)
         .current_dir(cwd)
@@ -361,11 +344,9 @@ pub(super) async fn run_rtk_json(
     {
         Ok(child) => child,
         Err(error) => {
-            return json!({
-                "status": "error",
+            return ToolResult::error(json!({
                 "error": error.to_string(),
-            })
-            .to_string();
+            }));
         }
     };
     if let Some(input) = stdin
@@ -381,24 +362,26 @@ pub(super) async fn run_rtk_json(
     )
     .await
     {
-        Ok(Ok(output)) => json!({
-            "status": if output.status.success() { "ok" } else { "error" },
-            "exit_code": output.status.code(),
-            "success": output.status.success(),
-            "stdout": String::from_utf8_lossy(&output.stdout),
-            "stderr": String::from_utf8_lossy(&output.stderr),
-        })
-        .to_string(),
-        Ok(Err(error)) => json!({
-            "status": "error",
+        Ok(Ok(output)) => {
+            let content = json!({
+                "exit_code": output.status.code(),
+                "success": output.status.success(),
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+            });
+            if output.status.success() {
+                ToolResult::success(content)
+            } else {
+                ToolResult::error(content)
+            }
+        }
+        Ok(Err(error)) => ToolResult::error(json!({
             "error": error.to_string(),
-        })
-        .to_string(),
-        Err(_) => json!({
-            "status": "timeout",
+        })),
+        Err(_) => ToolResult::error(json!({
+            "error": "command timed out",
             "timeout_secs": timeout_secs,
-        })
-        .to_string(),
+        })),
     }
 }
 

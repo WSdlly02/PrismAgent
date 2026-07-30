@@ -1,7 +1,6 @@
 use crate::actors::tools_actor::model::ToolExecutionContext;
-use crate::actors::tools_actor::runtime::tool_template;
-use genai::chat::Tool;
-use reqwest::Client;
+use crate::actors::tools_actor::provider::{ToolResult, ToolSpec};
+use reqwest::{Client, Response};
 use serde_json::{Value, json};
 
 static CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(Client::new);
@@ -18,8 +17,8 @@ async fn api_key(_ctx: &ToolExecutionContext) -> Result<String, String> {
 
 // ─── web_search ───────────────────────────────────────────────────────────────
 
-pub fn search() -> Tool {
-    tool_template(
+pub fn search() -> ToolSpec {
+    ToolSpec::new(
         "web_search",
         "使用 TinyFish 搜索互联网实时信息，返回标题/摘要/URL列表。不知道目标URL时使用。",
         json!({
@@ -33,14 +32,14 @@ pub fn search() -> Tool {
     )
 }
 
-pub async fn execute_search(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_search(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let query = match args["query"].as_str() {
         Some(q) => q,
-        None => return json!({"status":"error","error":"missing query"}).to_string(),
+        None => return ToolResult::error(json!({"error": "missing query"})),
     };
     let api_key = match api_key(&ctx).await {
         Ok(api_key) => api_key,
-        Err(error) => return json!({"status":"error","error":error}).to_string(),
+        Err(error) => return ToolResult::error(json!({"error": error})),
     };
 
     let mut url = format!(
@@ -52,18 +51,15 @@ pub async fn execute_search(ctx: ToolExecutionContext, args: Value) -> String {
     }
 
     match CLIENT.get(&url).header("X-API-Key", api_key).send().await {
-        Ok(resp) => resp
-            .text()
-            .await
-            .unwrap_or_else(|e| json!({"status":"error","error":e.to_string()}).to_string()),
-        Err(e) => json!({"status":"error","error":e.to_string()}).to_string(),
+        Ok(response) => response_result(response).await,
+        Err(error) => ToolResult::error(json!({"error": error.to_string()})),
     }
 }
 
 // ─── web_fetch ────────────────────────────────────────────────────────────────
 
-pub fn fetch() -> Tool {
-    tool_template(
+pub fn fetch() -> ToolSpec {
+    ToolSpec::new(
         "web_fetch",
         "抓取指定URL的网页正文内容，支持JS渲染页面。已知URL时使用，最多10个URL。",
         json!({
@@ -80,14 +76,14 @@ pub fn fetch() -> Tool {
     )
 }
 
-pub async fn execute_fetch(ctx: ToolExecutionContext, args: Value) -> String {
+pub async fn execute_fetch(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let urls = match args["urls"].as_array() {
         Some(u) => u.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
-        None => return json!({"status":"error","error":"missing urls"}).to_string(),
+        None => return ToolResult::error(json!({"error": "missing urls"})),
     };
     let api_key = match api_key(&ctx).await {
         Ok(api_key) => api_key,
-        Err(error) => return json!({"status":"error","error":error}).to_string(),
+        Err(error) => return ToolResult::error(json!({"error": error})),
     };
 
     let body = json!({ "urls": urls, "format": "markdown" });
@@ -99,10 +95,24 @@ pub async fn execute_fetch(ctx: ToolExecutionContext, args: Value) -> String {
         .send()
         .await
     {
-        Ok(resp) => resp
-            .text()
-            .await
-            .unwrap_or_else(|e| json!({"status":"error","error":e.to_string()}).to_string()),
-        Err(e) => json!({"status":"error","error":e.to_string()}).to_string(),
+        Ok(response) => response_result(response).await,
+        Err(error) => ToolResult::error(json!({"error": error.to_string()})),
+    }
+}
+
+async fn response_result(response: Response) -> ToolResult {
+    let status = response.status();
+    let text = match response.text().await {
+        Ok(text) => text,
+        Err(error) => return ToolResult::error(json!({"error": error.to_string()})),
+    };
+    let content = serde_json::from_str(&text).unwrap_or(Value::String(text));
+    if status.is_success() {
+        ToolResult::success(content)
+    } else {
+        ToolResult::error(json!({
+            "http_status": status.as_u16(),
+            "body": content,
+        }))
     }
 }
