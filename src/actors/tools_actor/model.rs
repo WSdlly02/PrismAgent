@@ -1,13 +1,11 @@
 use crate::actors::storage_actor::model::unit::Unit;
+use crate::actors::tools_actor::provider::ToolRouter;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
 use genai::chat::{Tool, ToolCall};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -21,8 +19,7 @@ pub struct ToolsHandle {
 pub struct ToolsActor {
     pub(super) rx: mpsc::Receiver<ToolsMsg>,
     pub(super) handles: AppHandles,
-    pub(super) tools: Vec<Tool>,
-    pub(super) tools_map: HashMap<String, ToolExecutor>,
+    pub(super) router: Arc<ToolRouter>,
     pub(super) inflight: HashMap<String, tokio::task::JoinHandle<()>>,
 }
 
@@ -40,9 +37,6 @@ pub enum ToolsMsg {
         reply: oneshot::Sender<SubsystemResult<bool>>,
     },
 }
-
-pub type ToolFuture = Pin<Box<dyn Future<Output = String> + Send>>; // type alias for boxed future of string result, since async fn pointers are not directly supported in traits or structs
-pub type ToolExecutor = fn(ToolExecutionContext, Value) -> ToolFuture; // fn pointer to async function that takes context and args, returns future of string result
 
 #[derive(Clone)]
 pub struct ToolExecutionContext {
