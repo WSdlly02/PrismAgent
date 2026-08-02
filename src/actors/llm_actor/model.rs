@@ -32,7 +32,7 @@ pub enum LlmMsg {
 
 pub struct LlmInferRequest {
     pub inference_uuid: String,
-    pub model: FinalModelConfig,
+    pub config: FinalModelConfig,
     pub units: Vec<Unit>,
     pub tools: Vec<Tool>,
     pub stream_tx: mpsc::Sender<LlmStreamEvent>,

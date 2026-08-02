@@ -70,6 +70,7 @@ impl ProfileActor {
             provider: model.provider,
             model_name: model.model_name,
             api_key,
+            reasoning_effort: model.reasoning_effort,
         })
     }
 }
@@ -159,6 +160,9 @@ fn read_profile(path: &Path) -> SubsystemResult<Profile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actors::profile_actor::model::{
+        ModelConfigSection, ReasoningEffortConfig, ReasoningEffortLevel,
+    };
     use uuid::Uuid;
 
     #[tokio::test]
@@ -213,8 +217,51 @@ auto_approve = ["fs_tree_list"]
         let profile = handle.profile("default").await.unwrap();
         assert_eq!(profile.model.model_name, "custom-model");
         assert_eq!(profile.model.api_key_env, "CUSTOM_KEY");
+        assert_eq!(profile.model.reasoning_effort, None);
 
         let names = handle.list_profiles().await.unwrap();
         assert!(names.contains(&"planner".to_string()));
+    }
+
+    #[test]
+    fn parses_named_reasoning_effort_and_budget() {
+        let named: ModelConfigSection = toml::from_str(
+            r#"provider = "openai"
+model_name = "gpt-5.2"
+api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "xhigh"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            named.reasoning_effort,
+            Some(ReasoningEffortConfig::Level(ReasoningEffortLevel::XHigh))
+        );
+
+        let budget: ModelConfigSection = toml::from_str(
+            r#"provider = "anthropic"
+model_name = "claude"
+api_key_env = "ANTHROPIC_API_KEY"
+reasoning_effort = { budget = 8000 }
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            budget.reasoning_effort,
+            Some(ReasoningEffortConfig::Budget { budget: 8000 })
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_reasoning_effort() {
+        let result = toml::from_str::<ModelConfigSection>(
+            r#"provider = "openai"
+model_name = "gpt-5.2"
+api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "extreme"
+"#,
+        );
+
+        assert!(result.is_err());
     }
 }

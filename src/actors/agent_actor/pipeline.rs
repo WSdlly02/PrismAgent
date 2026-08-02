@@ -293,7 +293,7 @@ async fn call_llm_with_units(
     inference_uuid: String,
     units: Vec<Unit>,
 ) -> AgentTaskResult<crate::actors::llm_actor::model::LlmInferResponse> {
-    let model = handles
+    let config = handles
         .profile
         .model_config(&profile_name)
         .await
@@ -335,7 +335,7 @@ async fn call_llm_with_units(
         .llm
         .infer(LlmInferRequest {
             inference_uuid,
-            model,
+            config,
             units,
             tools,
             stream_tx,

@@ -53,6 +53,8 @@ pub struct ModelConfigSection {
     pub provider: String,    // "deepseek"
     pub model_name: String,  // "deepseek-v4-flash"
     pub api_key_env: String, // name of env var containing API key, e.g. "DEEPSEEK_API_KEY"
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -60,6 +62,30 @@ pub struct FinalModelConfig {
     pub provider: String,
     pub model_name: String,
     pub api_key: String,
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
+}
+
+/// Provider-neutral reasoning configuration persisted in a Profile.
+///
+/// Named levels cover the common provider APIs. Providers that expose an
+/// explicit token budget can use `reasoning_effort = { budget = 8000 }`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ReasoningEffortConfig {
+    Level(ReasoningEffortLevel),
+    Budget { budget: u32 },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffortLevel {
+    None,
+    // Minimal is a legacy level that is no longer used. Prismagent does not support it, even if genai supports it.
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PromptsConfigSection {

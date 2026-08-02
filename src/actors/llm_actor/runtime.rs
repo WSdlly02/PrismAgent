@@ -2,11 +2,14 @@ use crate::actors::llm_actor::adapters;
 use crate::actors::llm_actor::model::{
     LLM_ACTOR, LlmActor, LlmHandle, LlmInferRequest, LlmInferResponse, LlmMsg, LlmStreamEvent,
 };
+use crate::actors::profile_actor::model::{
+    FinalModelConfig, ReasoningEffortConfig, ReasoningEffortLevel,
+};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{ErrorClass, ExternalKind, SubsystemError, SubsystemResult};
 use crate::impl_handle_methods;
 use futures_util::StreamExt;
-use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent};
+use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, ReasoningEffort};
 use genai::resolver::{AuthData, AuthResolver};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -29,7 +32,7 @@ impl LlmActor {
             self.prune_finished();
             match msg {
                 LlmMsg::Infer { request, reply } => {
-                    let client = self.client_for(&request.model.provider, &request.model.api_key);
+                    let client = self.client_for(&request.config.provider, &request.config.api_key);
                     let inference_uuid = request.inference_uuid.clone();
                     let task = tokio::spawn(async move {
                         let result = run_streaming_inference(client, request).await;
@@ -112,8 +115,9 @@ async fn run_streaming_inference(
     if !request.tools.is_empty() {
         chat_request = chat_request.with_tools(request.tools);
     }
+    let options = request_chat_options(&request.config);
     let stream_response = client
-        .exec_chat_stream(&request.model.model_name, chat_request, None)
+        .exec_chat_stream(&request.config.model_name, chat_request, options.as_ref())
         .await
         .map_err(llm_error)?;
     let mut stream = stream_response.stream;
@@ -178,6 +182,37 @@ async fn run_streaming_inference(
     ))
 }
 
+fn request_chat_options(config: &FinalModelConfig) -> Option<ChatOptions> {
+    match &config.reasoning_effort {
+        Some(effort) => match effort {
+            ReasoningEffortConfig::Level(level) => match level {
+                ReasoningEffortLevel::None => {
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::None))
+                }
+                ReasoningEffortLevel::Low => {
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::Low))
+                }
+                ReasoningEffortLevel::Medium => {
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::Medium))
+                }
+                ReasoningEffortLevel::High => {
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::High))
+                }
+                ReasoningEffortLevel::XHigh => {
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::XHigh))
+                }
+                ReasoningEffortLevel::Max => {
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::Max))
+                }
+            },
+            ReasoningEffortConfig::Budget { budget } => {
+                Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::Budget(*budget)))
+            }
+        },
+        None => None,
+    }
+}
+
 fn llm_error(error: genai::Error) -> SubsystemError {
     let (class, retryable) = genai_error_semantics(&error);
     SubsystemError::external(ExternalKind::Llm, class, error.to_string(), retryable)
@@ -228,8 +263,12 @@ fn http_error_semantics(status: reqwest::StatusCode) -> (ErrorClass, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::http_error_semantics;
+    use super::{http_error_semantics, request_chat_options};
+    use crate::actors::profile_actor::model::{
+        FinalModelConfig, ReasoningEffortConfig, ReasoningEffortLevel,
+    };
     use crate::error::ErrorClass;
+    use genai::chat::ReasoningEffort;
     use reqwest::StatusCode;
 
     #[test]
@@ -254,5 +293,28 @@ mod tests {
             http_error_semantics(StatusCode::UNAUTHORIZED),
             (ErrorClass::Internal, false)
         );
+    }
+
+    #[test]
+    fn reasoning_effort_is_applied_per_request() {
+        let mut model = FinalModelConfig {
+            provider: "openai".to_string(),
+            model_name: "gpt-5.2".to_string(),
+            api_key: "test".to_string(),
+            reasoning_effort: None,
+        };
+        assert!(request_chat_options(&model).is_none());
+
+        model.reasoning_effort = Some(ReasoningEffortConfig::Level(ReasoningEffortLevel::High));
+        let high = request_chat_options(&model).expect("request options");
+        assert!(matches!(high.reasoning_effort, Some(ReasoningEffort::High)));
+
+        model.reasoning_effort = Some(ReasoningEffortConfig::Budget { budget: 8000 });
+        let budget = request_chat_options(&model).expect("request options");
+        assert!(matches!(
+            budget.reasoning_effort,
+            Some(ReasoningEffort::Budget(8000))
+        ));
+        assert!(matches!(high.reasoning_effort, Some(ReasoningEffort::High)));
     }
 }
