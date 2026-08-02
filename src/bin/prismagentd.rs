@@ -55,6 +55,7 @@ const ALLOWED_NETS: &[&str] = &[
     "::1/128",
     "192.168.0.0/16",
     "10.144.144.0/24",
+    "10.42.0.0/16",
 ];
 
 fn allowed_nets() -> &'static [IpNetwork] {
