@@ -75,7 +75,6 @@ impl LlmActor {
                 match provider {
                     "mimo" => adapters::mimo::build_mimo_client(builder),
                     "sensenova" => adapters::sensenova::build_sensenova_client(builder),
-                    // "codex-oauth" => adapters::codex_oauth::build_codex_oauth_client(builder), not implemented yet!
                     _ => builder.build(),
                 }
             })
