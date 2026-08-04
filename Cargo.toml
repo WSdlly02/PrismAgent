@@ -18,6 +18,7 @@ futures-util = "0.3"
 genai = "0.6"
 include_dir = "0.7"
 ipnetwork = "0.21"
+mimalloc = "0.1.52"
 petname = {
   version = "3.1.0",
   default-features = false,

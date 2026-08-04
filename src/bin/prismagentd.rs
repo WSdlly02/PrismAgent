@@ -12,6 +12,7 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use ipnetwork::IpNetwork;
+use mimalloc::MiMalloc;
 use prismagent::{
     actors::{
         agent_actor::model::{AgentActor, AgentHandle, AgentMsg},
@@ -47,6 +48,9 @@ use std::{
     time::Duration,
 };
 use tokio::sync::mpsc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:7618";
 
