@@ -28,6 +28,7 @@ import type {
   WorkspaceSummary,
 } from "../api/types";
 import { applyAgentEvent, initialChatState } from "./sessionModel";
+import { createStreamDeltaBuffer } from "./streamDeltaBuffer";
 
 const PENDING_UUID_PREFIX = "__pending-";
 const LEASE_RENEW_SKEW_SECONDS = 3;
@@ -105,6 +106,22 @@ export function usePrismSession(): PrismSession {
   const subscribedWorkspaceUuidRef = useRef<string | null>(null);
   const subscribedAgentUuidRef = useRef<string | null>(null);
   const workspaceLeasesRef = useRef(workspaceLeases);
+  const streamDeltaBufferRef = useRef<ReturnType<
+    typeof createStreamDeltaBuffer
+  > | null>(null);
+  if (!streamDeltaBufferRef.current) {
+    streamDeltaBufferRef.current = createStreamDeltaBuffer(
+      ({ text, reasoningText }) => {
+        setChat((current) => ({
+          ...current,
+          streamingText: current.streamingText + text,
+          streamingReasoningText:
+            current.streamingReasoningText + reasoningText,
+        }));
+      },
+    );
+  }
+  const streamDeltaBuffer = streamDeltaBufferRef.current;
 
   // Message handler ref — updated every render to capture current state
   const handleWsMessageRef = useRef<(msg: WsServerMessage) => void>(() => {});
@@ -223,6 +240,7 @@ export function usePrismSession(): PrismSession {
       }
       subscribedWorkspaceUuidRef.current = null;
       selectedAgentUuidRef.current = null;
+      streamDeltaBuffer.clear();
       setChat(initialChatState());
       setConnectionStatus("idle");
     }
@@ -250,7 +268,7 @@ export function usePrismSession(): PrismSession {
       delete next[workspaceUuid];
       return next;
     });
-  }, [sendOrQueue, workspaceAgents]);
+  }, [sendOrQueue, streamDeltaBuffer, workspaceAgents]);
 
   const ensureWorkspaceLease = useCallback(
     async (workspaceUuid: string): Promise<WorkspaceLease> => {
@@ -356,6 +374,7 @@ export function usePrismSession(): PrismSession {
         );
         if (selectedAgentUuidRef.current === msg.agent_uuid) {
           subscribedAgentUuidRef.current = null;
+          streamDeltaBuffer.clear();
           setChat(initialChatState());
           setConnectionStatus("idle");
         }
@@ -379,10 +398,15 @@ export function usePrismSession(): PrismSession {
     }
 
     // --- Agent events ---
-    if (
-      (msg.type === "stream_delta" || msg.type === "reasoning_delta") &&
-      ignoreStreamUntilNextStatusRef.current
-    ) {
+    if (msg.type === "stream_delta" || msg.type === "reasoning_delta") {
+      if (ignoreStreamUntilNextStatusRef.current) {
+        return;
+      }
+      if (msg.type === "stream_delta") {
+        streamDeltaBuffer.appendText(msg.text);
+      } else {
+        streamDeltaBuffer.appendReasoning(msg.text);
+      }
       return;
     }
     if (msg.type === "status_changed") {
@@ -393,6 +417,11 @@ export function usePrismSession(): PrismSession {
       msg.agent_uuid !== selectedAgentUuidRef.current
     ) {
       return;
+    }
+    if (msg.type === "unit_append" || msg.type === "operation_failed") {
+      streamDeltaBuffer.clear();
+    } else {
+      streamDeltaBuffer.flush();
     }
     setChat((current) => applyAgentEvent(current, msg as AgentEvent));
   };
@@ -412,6 +441,7 @@ export function usePrismSession(): PrismSession {
           sendOrQueue({ type: "unsubscribe_agent" });
           subscribedAgentUuidRef.current = null;
           setSelectedAgent(null);
+          streamDeltaBuffer.clear();
           setChat(initialChatState());
           setConnectionStatus("idle");
         }
@@ -470,6 +500,7 @@ export function usePrismSession(): PrismSession {
       subscribedAgentUuidRef.current = agent.agent_uuid;
       selectedAgentUuidRef.current = agent.agent_uuid;
       setSelectedAgent(agent);
+      streamDeltaBuffer.clear();
       setChat(initialChatState());
       setConnectionStatus("connecting");
       setError(null);
@@ -487,7 +518,7 @@ export function usePrismSession(): PrismSession {
         pendingApproval: snapshot.pending_approval,
       });
     },
-    [runRestAction, sendOrQueue, workspaceAgents],
+    [runRestAction, sendOrQueue, streamDeltaBuffer, workspaceAgents],
   );
 
   const loadInitialData = useCallback(
@@ -609,6 +640,7 @@ export function usePrismSession(): PrismSession {
           approvalMask,
         );
       });
+      streamDeltaBuffer.clear();
       setChat((current) => ({
         ...current,
         pendingApproval: null,
@@ -616,7 +648,14 @@ export function usePrismSession(): PrismSession {
         streamingReasoningText: "",
       }));
     },
-    [activeSession, chat.pendingApproval, ensureWorkspaceLease, runRestAction, selectedAgent],
+    [
+      activeSession,
+      chat.pendingApproval,
+      ensureWorkspaceLease,
+      runRestAction,
+      selectedAgent,
+      streamDeltaBuffer,
+    ],
   );
 
   const cancel = useCallback(async () => {
@@ -631,6 +670,7 @@ export function usePrismSession(): PrismSession {
 
     if (status === "running_llm") {
       ignoreStreamUntilNextStatusRef.current = true;
+      streamDeltaBuffer.clear();
       setChat((current) => ({
         ...current,
         units: current.pendingUserUuid
@@ -652,6 +692,7 @@ export function usePrismSession(): PrismSession {
       return;
     }
 
+    streamDeltaBuffer.clear();
     setChat((current) => ({
       ...current,
       streamingText: "",
@@ -661,18 +702,27 @@ export function usePrismSession(): PrismSession {
       const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
       await cancelAgent(access, selectedAgent.agent_uuid);
     });
-  }, [activeSession, approve, chat.status, ensureWorkspaceLease, runRestAction, selectedAgent]);
+  }, [
+    activeSession,
+    approve,
+    chat.status,
+    ensureWorkspaceLease,
+    runRestAction,
+    selectedAgent,
+    streamDeltaBuffer,
+  ]);
 
   // Cleanup on unmount
   useEffect(
     () => () => {
+      streamDeltaBuffer.clear();
       wsRef.current?.close();
       wsRef.current = null;
       for (const lease of Object.values(workspaceLeasesRef.current)) {
         void releaseLease(lease.workspace_uuid, lease.lease_token).catch(() => {});
       }
     },
-    [],
+    [streamDeltaBuffer],
   );
 
   return {

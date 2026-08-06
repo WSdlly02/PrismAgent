@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
 import type { AgentSummary, PendingApproval, Unit } from "../../api/types";
 import { approvalMaskForManual } from "../../state/approval";
 import { ApprovalCard } from "./ApprovalCard";
+import { ChatComposer } from "./ChatComposer";
 import { MessageTimeline } from "./MessageTimeline";
 
 type ChatPaneProps = {
@@ -31,35 +31,6 @@ export function ChatPane({
   onCancel,
   onApprove
 }: ChatPaneProps) {
-  const [draft, setDraft] = useState("");
-  const lastSentRef = useRef("");
-  const isRunningLlm = statusLabel === "running_llm";
-  const canCancel = isRunningLlm || statusLabel === "running_tool" || statusLabel === "waiting_approval";
-
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (canCancel) {
-      await onCancel();
-      if (isRunningLlm) {
-        setDraft(lastSentRef.current);
-      }
-      lastSentRef.current = "";
-      return;
-    }
-    const text = draft.trim();
-    if (!text || !agent) {
-      return;
-    }
-    lastSentRef.current = text;
-    setDraft("");
-    try {
-      await onSend(text);
-    } catch {
-      setDraft(text);
-      lastSentRef.current = "";
-    }
-  }
-
   return (
     <div className="chat-pane">
       <header className="chat-header">
@@ -91,22 +62,12 @@ export function ChatPane({
         />
       ) : null}
 
-      <form className="composer" onSubmit={submit}>
-        <textarea
-          disabled={!agent || canCancel}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="Send a message"
-          rows={3}
-          value={draft}
-        />
-        <button
-          className={canCancel ? "secondary-button" : "primary-button"}
-          disabled={!canCancel && (!agent || !draft.trim())}
-          type="submit"
-        >
-          {canCancel ? "Cancel" : "Send"}
-        </button>
-      </form>
+      <ChatComposer
+        hasAgent={Boolean(agent)}
+        onCancel={onCancel}
+        onSend={onSend}
+        statusLabel={statusLabel}
+      />
     </div>
   );
 }

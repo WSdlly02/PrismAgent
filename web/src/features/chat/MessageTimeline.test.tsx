@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { marked } from "marked";
 import { describe, expect, it, vi } from "vitest";
 import type { Unit } from "../../api/types";
 import { MessageTimeline } from "./MessageTimeline";
@@ -201,6 +202,48 @@ describe("MessageTimeline", () => {
     );
   });
 
+  it("does not reparse committed messages during streaming updates", () => {
+    const parse = vi.spyOn(marked, "parse");
+    const units = [baseUnit];
+    const { rerender } = render(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText=""
+        units={units}
+      />,
+    );
+    parse.mockClear();
+
+    rerender(
+      <MessageTimeline
+        streamingReasoningText=""
+        streamingText="partial answer"
+        units={units}
+      />,
+    );
+    expect(parse).toHaveBeenCalledTimes(1);
+
+    parse.mockClear();
+    rerender(
+      <MessageTimeline
+        streamingReasoningText="partial reasoning"
+        streamingText="partial answer"
+        units={units}
+      />,
+    );
+    expect(parse).toHaveBeenCalledTimes(1);
+
+    parse.mockClear();
+    rerender(
+      <MessageTimeline
+        streamingReasoningText="partial reasoning"
+        streamingText="partial answer"
+        units={[...units, userUnit]}
+      />,
+    );
+    expect(parse).toHaveBeenCalledTimes(1);
+  });
+
   it("collapses tool calls and tool results independently by default", () => {
     const { container } = render(
       <MessageTimeline
@@ -323,7 +366,7 @@ describe("MessageTimeline", () => {
     expect(reasoning.textContent).toContain("and more");
   });
 
-  it("pauses auto-scroll when the user scrolls up and resumes from the jump button", () => {
+  it("pauses auto-scroll when the user scrolls up and resumes from the jump button", async () => {
     const { container } = render(
       <MessageTimeline
         streamingReasoningText=""
@@ -332,6 +375,11 @@ describe("MessageTimeline", () => {
       />,
     );
     const timeline = container.querySelector(".message-timeline") as HTMLDivElement;
+    const bottom = container.querySelector(
+      ".message-timeline-content > div:last-child",
+    ) as HTMLDivElement;
+    const scrollIntoView = vi.fn();
+    bottom.scrollIntoView = scrollIntoView;
 
     Object.defineProperties(timeline, {
       clientHeight: { configurable: true, value: 200 },
@@ -345,9 +393,13 @@ describe("MessageTimeline", () => {
     expect(button).toBeTruthy();
     expect(button.textContent).toBe("↓");
 
+    await nextAnimationFrame();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
     fireEvent.click(button);
 
     expect(screen.queryByRole("button", { name: "Jump to bottom" })).toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth" });
   });
 
   it("resumes auto-scroll when the user manually scrolls back to the bottom", () => {
