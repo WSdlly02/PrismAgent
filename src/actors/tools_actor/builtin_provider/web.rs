@@ -5,11 +5,10 @@ use serde_json::{Value, json};
 
 static CLIENT: std::sync::LazyLock<Client> = std::sync::LazyLock::new(Client::new);
 
-async fn api_key(_ctx: &ToolExecutionContext) -> Result<String, String> {
-    let key =
-        std::env::var("TINYFISH_API_KEY").map_err(|_| "TINYFISH_API_KEY is missing".to_string())?;
+async fn api_key(_ctx: &ToolExecutionContext) -> Result<String, &'static str> {
+    let key = std::env::var("TINYFISH_API_KEY").map_err(|_| "TINYFISH_API_KEY is missing")?;
     if key.trim().is_empty() {
-        Err("TINYFISH_API_KEY is empty".to_string())
+        Err("TINYFISH_API_KEY is empty")
     } else {
         Ok(key)
     }
@@ -20,12 +19,12 @@ async fn api_key(_ctx: &ToolExecutionContext) -> Result<String, String> {
 pub fn search() -> ToolSpec {
     ToolSpec::new(
         "web_search",
-        "使用 TinyFish 搜索互联网实时信息，返回标题/摘要/URL列表。不知道目标URL时使用。",
+        "Use TinyFish to search the internet for real-time information, returning a list of titles/summaries/URLs. Use when you don't know the target URL.",
         json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "搜索关键词" },
-                "language": { "type": "string", "description": "语言代码如 zh/en，可选" }
+                "query": { "type": "string", "description": "Search query" },
+                "language": { "type": "string", "description": "Language code like zh/en, optional" }
             },
             "required": ["query"]
         }),
@@ -61,14 +60,14 @@ pub async fn execute_search(ctx: ToolExecutionContext, args: Value) -> ToolResul
 pub fn fetch() -> ToolSpec {
     ToolSpec::new(
         "web_fetch",
-        "抓取指定URL的网页正文内容，支持JS渲染页面。已知URL时使用，最多10个URL。",
+        "Fetch the main content of specified URLs, supporting JS-rendered pages. Use when the target URL is known, up to 10 URLs.",
         json!({
             "type": "object",
             "properties": {
                 "urls": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "要抓取的URL列表，最多10个"
+                    "description": "List of URLs to fetch, up to 10"
                 }
             },
             "required": ["urls"]
