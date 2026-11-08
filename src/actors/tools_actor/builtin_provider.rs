@@ -1,5 +1,6 @@
 mod fs;
 mod prismagent;
+mod progress;
 mod shell;
 mod web;
 
@@ -29,6 +30,7 @@ macro_rules! register_tools {
 }
 
 register_tools! {
+    progress::publish / execute_publish,
     fs::dir_list / execute_dir_list,
     fs::tree_list / execute_tree_list,
     fs::path_stat / execute_path_stat,

@@ -81,11 +81,10 @@ impl ToolsActor {
 
 fn to_genai_tool(spec: &ToolSpec) -> Tool {
     Tool {
-        name: spec.name.clone().into(),
         description: spec.description.clone(),
         schema: Some(spec.input_schema.clone()),
         strict: spec.strict,
-        config: None,
+        ..Tool::new(spec.name.clone())
     }
 }
 

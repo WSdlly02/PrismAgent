@@ -32,7 +32,14 @@ impl LlmActor {
             self.prune_finished();
             match msg {
                 LlmMsg::Infer { request, reply } => {
-                    let client = self.client_for(&request.config.provider, &request.config.api_key);
+                    let client =
+                        match self.client_for(&request.config.provider, &request.config.api_key) {
+                            Ok(client) => client,
+                            Err(error) => {
+                                let _ = reply.send(Err(error));
+                                continue;
+                            }
+                        };
                     let inference_uuid = request.inference_uuid.clone();
                     let task = tokio::spawn(async move {
                         let result = run_streaming_inference(client, request).await;
@@ -58,30 +65,31 @@ impl LlmActor {
         }
     }
 
-    fn client_for(&mut self, provider: &str, api_key: &str) -> genai::Client {
-        self.clients
-            .entry(provider.to_string())
-            .or_insert_with(|| {
-                let api_key = api_key.to_string();
-                let options = ChatOptions::default()
-                    .with_capture_content(true)
-                    .with_capture_usage(true)
-                    .with_capture_reasoning_content(true)
-                    .with_capture_tool_calls(true);
+    fn client_for(&mut self, provider: &str, api_key: &str) -> SubsystemResult<genai::Client> {
+        if let Some(client) = self.clients.get(provider) {
+            return Ok(client.clone());
+        }
+        let api_key = api_key.to_string();
+        let options = ChatOptions::default()
+            .with_capture_content(true)
+            .with_capture_usage(true)
+            .with_capture_reasoning_content(true)
+            .with_capture_tool_calls(true);
 
-                let builder = genai::Client::builder()
-                    .with_auth_resolver(AuthResolver::from_resolver_fn(
-                        // ModelIden is not used in current case
-                        |_| Ok(Some(AuthData::from_single(api_key))),
-                    ))
-                    .with_chat_options(options);
-                match provider {
-                    "mimo" => adapters::mimo::build_mimo_client(builder),
-                    "sensenova" => adapters::sensenova::build_sensenova_client(builder),
-                    _ => builder.build(),
-                }
-            })
-            .clone()
+        let builder = genai::Client::builder()
+            .with_auth_resolver(AuthResolver::from_resolver_fn(
+                // ModelIden is not used in current case
+                |_| Ok(Some(AuthData::from_single(api_key))),
+            ))
+            .with_chat_options(options);
+        let client = match provider {
+            "mimo" => adapters::mimo::build_mimo_client(builder),
+            "sensenova" => adapters::sensenova::build_sensenova_client(builder),
+            _ => builder.build(),
+        }
+        .map_err(llm_error)?;
+        self.clients.insert(provider.to_string(), client.clone());
+        Ok(client)
     }
 
     fn prune_finished(&mut self) {
@@ -124,7 +132,8 @@ async fn run_streaming_inference(
 
     while let Some(event) = stream.next().await {
         match event.map_err(llm_error)? {
-            ChatStreamEvent::Start => {}
+            // Heartbeats keep the transport alive but carry no user-visible content.
+            ChatStreamEvent::Start | ChatStreamEvent::Heartbeat => {}
             ChatStreamEvent::Chunk(chunk) => {
                 let _ = request
                     .stream_tx
@@ -187,7 +196,7 @@ fn request_chat_options(config: &FinalModelConfig) -> Option<ChatOptions> {
         Some(effort) => match effort {
             ReasoningEffortConfig::Level(level) => match level {
                 ReasoningEffortLevel::None => {
-                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::None))
+                    Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::Zero))
                 }
                 ReasoningEffortLevel::Low => {
                     Some(ChatOptions::default().with_reasoning_effort(ReasoningEffort::Low))
@@ -304,6 +313,13 @@ mod tests {
             reasoning_effort: None,
         };
         assert!(request_chat_options(&model).is_none());
+
+        model.reasoning_effort = Some(ReasoningEffortConfig::Level(ReasoningEffortLevel::None));
+        let disabled = request_chat_options(&model).expect("explicitly disabled reasoning");
+        assert!(matches!(
+            disabled.reasoning_effort,
+            Some(ReasoningEffort::Zero)
+        ));
 
         model.reasoning_effort = Some(ReasoningEffortConfig::Level(ReasoningEffortLevel::High));
         let high = request_chat_options(&model).expect("request options");

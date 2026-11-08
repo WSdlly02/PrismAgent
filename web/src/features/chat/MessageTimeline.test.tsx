@@ -85,6 +85,68 @@ function nextAnimationFrame(): Promise<void> {
 }
 
 describe("MessageTimeline", () => {
+  it("preserves mixed tool and pub order while grouping adjacent ordinary calls", () => {
+    const call = (fn_name: string, command: string, index: number) => ({
+      ToolCall: { call_id: `call-${index}`, fn_name, fn_arguments: { command } },
+    });
+    const unit: Unit = { ...baseUnit, content: { role: "assistant", content: [
+      call("shell_exec", "pwd", 0),
+      call("shell_exec", "ls", 1),
+      call("pub", "Workspace checked", 2),
+      call("shell_exec", "git status", 3),
+      call("pub", "Checking SSH", 4),
+    ] } };
+    const { container } = render(<MessageTimeline units={[unit]} streamingText="" streamingReasoningText="" />);
+    const messages = Array.from(container.querySelectorAll(".message"));
+    expect(messages.map((message) => message.getAttribute("data-role"))).toEqual([
+      "tool_call", "assistant", "tool_call", "assistant",
+    ]);
+    expect(messages[0].querySelectorAll(".tool-entry")).toHaveLength(2);
+    expect(messages[1].textContent).toContain("Workspace checked");
+    expect(messages[2].textContent).toContain("git status");
+    expect(messages[3].textContent).toContain("Checking SSH");
+  });
+
+  it("renders pub calls as copyable assistant messages alongside ordinary tool calls", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const unit: Unit = {
+      ...baseUnit,
+      content: { role: "assistant", content: [
+        { ToolCall: { call_id: "pub-1", fn_name: "pub", fn_arguments: { command: "Checking **SSH**", extra: true } } },
+        { ToolCall: { call_id: "pub-2", fn_name: "pub", fn_arguments: { command: "Reading workspace" } } },
+        { ToolCall: { call_id: "exec-1", fn_name: "shell_exec", fn_arguments: { command: "pwd" } } },
+      ] },
+    };
+    const { container, rerender } = render(
+      <MessageTimeline units={[]} streamingText="" streamingReasoningText="" />,
+    );
+    rerender(<MessageTimeline units={[unit]} streamingText="" streamingReasoningText="" />);
+    expect(container.querySelectorAll('article[data-role="assistant"]')).toHaveLength(2);
+    expect(container.querySelector('article strong')?.textContent).toBe("SSH");
+    expect(container.querySelectorAll('[data-history-anchor]')).toHaveLength(2);
+    expect(container.querySelector('[data-role="tool_call"]')?.textContent).toContain("shell_exec");
+    expect(container.querySelector('[data-role="tool_call"]')?.textContent).not.toContain("Checking");
+    fireEvent.click(screen.getAllByRole("button", { name: "Copy message" })[0]);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Checking **SSH**"));
+  });
+
+  it("hides only successful pub acknowledgements and preserves errors and malformed calls", () => {
+    const response = (content: string) => ({ ToolResponse: { call_id: "pub-1", fn_name: "pub", content } });
+    const units: Unit[] = [
+      { ...baseUnit, uuid: "bad-call", content: { role: "assistant", content: [
+        { ToolCall: { call_id: "bad", fn_name: "pub", fn_arguments: { command: " " } } },
+      ] } },
+      { ...baseUnit, uuid: "ack", content: { role: "tool", content: [response('{"is_error":false,"content":{"published":true}}')] } },
+      { ...baseUnit, uuid: "failure", content: { role: "tool", content: [response('{"is_error":true,"content":{"error":"invalid command"}}')] } },
+    ];
+    const { container } = render(<MessageTimeline units={units} streamingText="" streamingReasoningText="" />);
+    expect(container.querySelectorAll('[data-role="tool"]')).toHaveLength(1);
+    expect(container.querySelector('[data-role="tool"]')?.textContent).toContain("invalid command");
+    expect(container.querySelector('[data-role="tool_call"]')?.textContent).toContain("pub");
+    expect(container.querySelector('article[data-role="assistant"]')).toBeNull();
+  });
+
   it("renders snapshot reasoning as a separate collapsed bubble", () => {
     const { container } = render(
       <MessageTimeline

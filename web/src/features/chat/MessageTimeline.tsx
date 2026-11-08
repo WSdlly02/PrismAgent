@@ -241,6 +241,67 @@ function historyAnchorLabel(text: string): string {
   return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
 }
 
+function progressText(call: ToolCallContent): string | null {
+  if (call.fn_name !== "pub" || !call.fn_arguments || typeof call.fn_arguments !== "object") {
+    return null;
+  }
+  const command = (call.fn_arguments as Record<string, unknown>).command;
+  return typeof command === "string" && command.trim() ? command : null;
+}
+
+function isProgressAcknowledgement(response: ToolResponseContent): boolean {
+  if (response.fn_name !== "pub") return false;
+  try {
+    const result = JSON.parse(response.content);
+    return result?.is_error === false && result?.content?.published === true;
+  } catch {
+    return false;
+  }
+}
+
+function progressAnchorId(unit: Unit, index: number): string {
+  return `${unit.uuid}-pub-${index}`;
+}
+
+type ToolCallGroup =
+  | { kind: "progress"; index: number; text: string }
+  | { kind: "tools"; index: number; calls: ToolCallContent[] };
+
+function groupToolCalls(calls: ToolCallContent[]): ToolCallGroup[] {
+  const groups: ToolCallGroup[] = [];
+  calls.forEach((call, index) => {
+    const text = progressText(call);
+    if (text !== null) {
+      groups.push({ kind: "progress", index, text });
+    } else {
+      // Preserve call order while keeping adjacent ordinary calls collapsed together.
+      const previous = groups.at(-1);
+      if (previous?.kind === "tools") previous.calls.push(call);
+      else groups.push({ kind: "tools", index, calls: [call] });
+    }
+  });
+  return groups;
+}
+
+function AssistantMessage({ text, time, anchorId }: {
+  text: string;
+  time: string;
+  anchorId: string;
+}) {
+  return (
+    <article className="message" data-role="assistant" data-history-anchor={anchorId}>
+      <header>
+        <span>assistant</span>
+        <div className="message-meta">
+          <MessageCopyButton text={text} />
+          <time>{time}</time>
+        </div>
+      </header>
+      <div className="markdown-body" dangerouslySetInnerHTML={{ __html: renderMd(text) }} />
+    </article>
+  );
+}
+
 const CommittedUnitView = memo(function CommittedUnitView({
   unit,
 }: {
@@ -264,43 +325,59 @@ const CommittedUnitView = memo(function CommittedUnitView({
 
   if (isToolCallMessage(unit)) {
     const text = collectText(unit);
-    const calls = collectToolCalls(unit);
+    const groups = groupToolCalls(collectToolCalls(unit));
+    const firstToolGroup = groups.find((group) => group.kind === "tools");
     return (
       <>
         {reasoningBubbles}
-        <CollapsibleMessage
-          dataRole="tool_call"
-          label={calls.length === 1 ? "tool call" : "tool calls"}
-          meta={<time>{unitTime}</time>}
-        >
-          {text ? (
-            <div
-              className="markdown-body"
-              dangerouslySetInnerHTML={{ __html: renderMd(text) }}
+        {!firstToolGroup && text ? (
+          <AssistantMessage text={text} time={unitTime} anchorId={unit.uuid} />
+        ) : null}
+        {groups.map((group) => group.kind === "progress" ? (
+            <AssistantMessage
+              key={progressAnchorId(unit, group.index)}
+              anchorId={progressAnchorId(unit, group.index)}
+              text={group.text}
+              time={unitTime}
             />
-          ) : null}
-          {calls.map((call, index) => (
-            <div className="tool-entry" key={call.call_id || index}>
-              <div className="tool-entry-meta">
-                <code>{call.fn_name}</code>
-                <span>{call.call_id}</span>
-              </div>
-              <pre className="tool-content">
-                {formatStructuredPayload(call.fn_arguments)}
-              </pre>
-            </div>
+          ) : (
+            <CollapsibleMessage
+              key={`${unit.uuid}-tools-${group.index}`}
+              dataRole="tool_call"
+              label={group.calls.length === 1 ? "tool call" : "tool calls"}
+              meta={<time>{unitTime}</time>}
+            >
+              {text && group === firstToolGroup ? (
+                <div
+                  className="markdown-body"
+                  dangerouslySetInnerHTML={{ __html: renderMd(text) }}
+                />
+              ) : null}
+              {group.calls.map((call, index) => (
+                <div className="tool-entry" key={call.call_id || index}>
+                  <div className="tool-entry-meta">
+                    <code>{call.fn_name}</code>
+                    <span>{call.call_id}</span>
+                  </div>
+                  <pre className="tool-content">
+                    {formatStructuredPayload(call.fn_arguments)}
+                  </pre>
+                </div>
+              ))}
+            </CollapsibleMessage>
           ))}
-        </CollapsibleMessage>
       </>
     );
   }
 
   if (isToolResponseMessage(unit)) {
-    const responses = collectToolResponses(unit);
+    const responses = collectToolResponses(unit).filter(
+      (response) => !isProgressAcknowledgement(response),
+    );
     return (
       <>
         {reasoningBubbles}
-        <CollapsibleMessage
+        {responses.length > 0 ? <CollapsibleMessage
           dataRole="tool"
           label="tool result"
           meta={<time>{unitTime}</time>}
@@ -316,7 +393,7 @@ const CommittedUnitView = memo(function CommittedUnitView({
               </pre>
             </div>
           ))}
-        </CollapsibleMessage>
+        </CollapsibleMessage> : null}
       </>
     );
   }
@@ -582,9 +659,24 @@ export const MessageTimeline = memo(function MessageTimeline({
     () =>
       visibleUnits.flatMap<ConversationAnchor>((unit) => {
         const role = unit.content.role.toLowerCase();
+        if (isToolCallMessage(unit)) {
+          const calls = collectToolCalls(unit);
+          const progressAnchors = calls.flatMap<ConversationAnchor>((call, index) => {
+            const text = progressText(call);
+            return text === null ? [] : [{
+              id: progressAnchorId(unit, index),
+              label: historyAnchorLabel(text),
+              role: "assistant",
+            }];
+          });
+          const text = collectText(unit);
+          if (text && calls.every((call) => progressText(call) !== null)) {
+            progressAnchors.unshift({ id: unit.uuid, label: historyAnchorLabel(text), role: "assistant" });
+          }
+          return progressAnchors;
+        }
         if (
-          (role !== "user" && role !== "assistant") ||
-          isToolCallMessage(unit)
+          role !== "user" && role !== "assistant"
         ) {
           return [];
         }

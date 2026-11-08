@@ -43,6 +43,7 @@ auto_loop_message = ""
 [tools]
 yolo = false
 available_tools = [
+  "pub",
   "fs_tree_list",
   "fs_file_read",
   "fs_dir_list",
@@ -61,6 +62,7 @@ available_tools = [
   "prismagent_agent_list",
 ]
 auto_approve = [
+  "pub",
   "fs_tree_list",
   "fs_file_read",
   "fs_dir_list",

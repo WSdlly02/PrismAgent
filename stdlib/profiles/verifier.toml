@@ -46,6 +46,7 @@ auto_loop_message = "Go ahead until you have completed all tasks, or use prismag
 [tools]
 yolo = true
 available_tools = [
+  "pub",
   "fs_tree_list",
   "fs_file_read",
   "fs_dir_list",
@@ -60,6 +61,7 @@ available_tools = [
   "prismagent_task_finish",
 ]
 auto_approve = [
+  "pub",
   "fs_tree_list",
   "fs_file_read",
   "fs_dir_list",
