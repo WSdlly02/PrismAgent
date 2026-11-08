@@ -327,11 +327,10 @@ const CommittedUnitView = memo(function CommittedUnitView({
   if (isToolCallMessage(unit)) {
     const text = collectText(unit);
     const groups = groupToolCalls(collectToolCalls(unit));
-    const firstToolGroup = groups.find((group) => group.kind === "tools");
     return (
       <>
         {reasoningBubbles}
-        {!firstToolGroup && text ? (
+        {text ? (
           <AssistantMessage text={text} time={unitTime} anchorId={unit.uuid} />
         ) : null}
         {groups.map((group) => group.kind === "progress" ? (
@@ -348,12 +347,6 @@ const CommittedUnitView = memo(function CommittedUnitView({
               label={group.calls.length === 1 ? "tool call" : "tool calls"}
               meta={<time>{unitTime}</time>}
             >
-              {text && group === firstToolGroup ? (
-                <div
-                  className="markdown-body"
-                  dangerouslySetInnerHTML={{ __html: renderMd(text) }}
-                />
-              ) : null}
               {group.calls.map((call, index) => (
                 <div className="tool-entry" key={call.call_id || index}>
                   <div className="tool-entry-meta">
@@ -675,7 +668,7 @@ export const MessageTimeline = memo(function MessageTimeline({
             }];
           });
           const text = collectText(unit);
-          if (text && calls.every((call) => progressText(call) !== null)) {
+          if (text) {
             progressAnchors.unshift({ id: unit.uuid, label: historyAnchorLabel(text), role: "assistant" });
           }
           return progressAnchors;

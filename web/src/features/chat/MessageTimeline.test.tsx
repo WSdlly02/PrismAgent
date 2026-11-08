@@ -85,6 +85,32 @@ function nextAnimationFrame(): Promise<void> {
 }
 
 describe("MessageTimeline", () => {
+  it("keeps assistant text outside tool disclosures after a stream is committed", async () => {
+    const text = "I'll take a look at that image.";
+    const unit: Unit = {
+      ...baseUnit,
+      content: { role: "Assistant", content: [
+        { Text: text },
+        { ToolCall: { call_id: "read-image", fn_name: "fs_file_read", fn_arguments: { path: "image.png" } } },
+      ] },
+    };
+    const { container, rerender } = render(
+      <MessageTimeline units={[]} streamingText={text} streamingReasoningText="" />,
+    );
+    rerender(<MessageTimeline units={[unit]} streamingText="" streamingReasoningText="" />);
+    const messages = Array.from(container.querySelectorAll(".message"));
+    expect(messages.map((message) => message.getAttribute("data-role"))).toEqual(["assistant", "tool_call"]);
+    expect(messages[0].textContent).toContain(text);
+    expect(messages[0].getAttribute("data-history-anchor")).toBe(unit.uuid);
+    expect(messages[1].textContent).not.toContain(text);
+    expect((messages[1] as HTMLDetailsElement).open).toBe(false);
+    expect(messages[0].querySelector('button[aria-label="Copy message"]')).not.toBeNull();
+
+    // Reloaded snapshots must use the same rendering as the committed stream.
+    rerender(<MessageTimeline key="reloaded" units={[unit]} streamingText="" streamingReasoningText="" />);
+    expect(container.querySelector('article[data-role="assistant"]')?.textContent).toContain(text);
+  });
+
   it("renders persisted tool images without exposing base64 as result text", () => {
     const unit: Unit = {
       ...toolResultUnit,
