@@ -75,6 +75,18 @@ export type Unit = {
   token_usage: unknown | null;
   metadata: Record<string, string>;
   created_at: number;
+  tool_images?: ToolImage[];
+};
+
+export type ToolImage = {
+  call_id: string;
+  image: {
+    mimetype: string;
+    filename: string;
+    width: number;
+    height: number;
+    data: string;
+  };
 };
 
 export type AgentSnapshot = {

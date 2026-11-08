@@ -85,6 +85,42 @@ function nextAnimationFrame(): Promise<void> {
 }
 
 describe("MessageTimeline", () => {
+  it("renders persisted tool images without exposing base64 as result text", () => {
+    const unit: Unit = {
+      ...toolResultUnit,
+      tool_images: [{ call_id: "call-1", image: {
+        mimetype: "image/png", filename: "screenshot.png", width: 3, height: 2,
+        data: "aW1hZ2UtYnl0ZXM=",
+      } }],
+    };
+    const { container, rerender } = render(
+      <MessageTimeline units={[]} streamingText="" streamingReasoningText="" />,
+    );
+    rerender(<MessageTimeline units={[unit]} streamingText="" streamingReasoningText="" />);
+    const toolResult = container.querySelector('details[data-role="tool"]') as HTMLDetailsElement;
+    fireEvent.click(toolResult.querySelector("summary") as HTMLElement);
+    const preview = screen.getByRole("button", { name: "View image: screenshot.png" });
+    expect(preview.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,aW1hZ2UtYnl0ZXM=");
+    expect(toolResult.textContent).not.toContain("aW1hZ2UtYnl0ZXM=");
+    expect(container.querySelector('[data-role="user"]')).toBeNull();
+    const dialog = container.querySelector("dialog") as HTMLDialogElement;
+    expect(dialog.querySelector("img")).toBeNull();
+    // jsdom does not implement the native dialog methods.
+    const show = vi.fn(() => { dialog.open = true; });
+    const close = vi.fn(() => {
+      dialog.open = false;
+      fireEvent(dialog, new Event("close"));
+    });
+    dialog.showModal = show;
+    dialog.close = close;
+    fireEvent.click(preview);
+    expect(show).toHaveBeenCalledOnce();
+    expect(dialog.querySelector("img")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close image" }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(dialog.querySelector("img")).toBeNull();
+  });
+
   it("preserves mixed tool and pub order while grouping adjacent ordinary calls", () => {
     const call = (fn_name: string, command: string, index: number) => ({
       ToolCall: { call_id: `call-${index}`, fn_name, fn_arguments: { command } },

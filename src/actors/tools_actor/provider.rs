@@ -1,5 +1,7 @@
+use crate::actors::storage_actor::model::unit::{ImageAttachment, ToolImage, Unit};
 use crate::actors::tools_actor::model::ToolExecutionContext;
 use crate::error::{SubsystemError, SubsystemResult};
+use genai::chat::{ChatMessage, ToolCall, ToolResponse};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -9,13 +11,16 @@ use std::sync::Arc;
 pub type ToolFuture = Pin<Box<dyn Future<Output = SubsystemResult<ToolResult>> + Send>>;
 pub type ToolExecutor = fn(ToolExecutionContext, Value) -> ToolFuture;
 
-/// Provider-neutral result. `content` is always JSON; `is_error` distinguishes
+/// Provider-neutral result. `content` is JSON; images are separate snapshots and
+/// must be carried into the response Unit rather than serialized into tool text.
+/// `is_error` distinguishes
 /// tool execution failures from successful results. Provider/protocol failures
 /// remain `SubsystemError`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolResult {
     pub content: Value,
     pub is_error: bool,
+    pub images: Vec<ImageAttachment>,
 }
 
 impl ToolResult {
@@ -23,6 +28,7 @@ impl ToolResult {
         Self {
             content,
             is_error: false,
+            images: Vec::new(),
         }
     }
 
@@ -30,6 +36,7 @@ impl ToolResult {
         Self {
             content,
             is_error: true,
+            images: Vec::new(),
         }
     }
 
@@ -39,6 +46,22 @@ impl ToolResult {
             "content": self.content,
         })
         .to_string()
+    }
+
+    pub fn into_response_unit(mut self, call: &ToolCall) -> Unit {
+        let images = std::mem::take(&mut self.images);
+        let mut unit = Unit::from_chat_message(ChatMessage::from(ToolResponse::from_tool_call(
+            call,
+            self.into_response_content(),
+        )));
+        unit.tool_images = images
+            .into_iter()
+            .map(|image| ToolImage {
+                call_id: call.call_id.clone(),
+                image,
+            })
+            .collect();
+        unit
     }
 }
 

@@ -8,7 +8,7 @@ use crate::actors::tools_actor::provider::{ToolProvider, ToolResult, ToolRouter,
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
 use crate::impl_handle_methods;
-use genai::chat::{ChatMessage, Tool, ToolCall, ToolResponse};
+use genai::chat::{Tool, ToolCall};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -147,11 +147,9 @@ async fn dispatch_batch(
         );
     }
     let _ = request.stream_tx.send(ToolStreamEvent::Finished).await;
-    let output_units = responses
-        .into_iter()
-        .map(|response| Unit::from_chat_message(ChatMessage::from(response)))
-        .collect();
-    Ok(ToolBatchResponse { output_units })
+    Ok(ToolBatchResponse {
+        output_units: responses,
+    })
 }
 
 async fn execute_one(
@@ -161,17 +159,16 @@ async fn execute_one(
     tool_call: &ToolCall,
     approval: &ToolApproval,
     stream_tx: &mpsc::Sender<ToolStreamEvent>,
-) -> ToolResponse {
+) -> Unit {
     if !approval.approved {
-        let content = ToolResult::error(json!({
+        return ToolResult::error(json!({
             "status": "denied",
             "reason": approval
                 .reason
                 .clone()
                 .unwrap_or_else(|| "tool execution was not approved".to_string()),
         }))
-        .into_response_content();
-        return ToolResponse::from_tool_call(tool_call, content);
+        .into_response_unit(tool_call);
     }
 
     let _ = stream_tx
@@ -192,15 +189,14 @@ async fn execute_one(
         Err(error) => ToolResult::error(json!({
             "error": error.to_string(),
         })),
-    }
-    .into_response_content();
+    };
     let _ = stream_tx
         .send(ToolStreamEvent::ToolFinished {
             index,
             name: tool_call.fn_name.clone(),
         })
         .await;
-    ToolResponse::from_tool_call(tool_call, output)
+    output.into_response_unit(tool_call)
 }
 
 fn non_empty(value: String) -> Option<String> {

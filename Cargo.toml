@@ -17,6 +17,7 @@ chrono = "0.4.45"
 dirs = "7.0.0"
 futures-util = "0.3"
 genai = "0.7"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 include_dir = "0.7"
 ipnetwork = "0.21"
 mimalloc = "0.1.52"

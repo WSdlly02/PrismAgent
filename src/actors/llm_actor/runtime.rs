@@ -114,11 +114,7 @@ async fn run_streaming_inference(
     request: LlmInferRequest,
 ) -> SubsystemResult<LlmInferResponse> {
     let _ = request.stream_tx.send(LlmStreamEvent::Started).await;
-    let messages = request
-        .units
-        .iter()
-        .map(Unit::to_chat_message)
-        .collect::<Vec<ChatMessage>>();
+    let messages = super::messages::model_messages(&request.units);
     let mut chat_request = ChatRequest::from_messages(messages);
     if !request.tools.is_empty() {
         chat_request = chat_request.with_tools(request.tools);

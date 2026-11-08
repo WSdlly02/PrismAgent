@@ -11,6 +11,11 @@ pub struct Unit {
     pub content: genai::chat::ChatMessage, // 直接使用 genai 的 ChatMessage 结构
     pub token_usage: Option<genai::chat::Usage>, // LLM 返回的真实请求级 token usage, 只有assistant消息才会有值
 
+    /// Tool-owned image snapshots, separate from the textual provider ToolResponse.
+    /// Converted to multimodal input only at the LLM request boundary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_images: Vec<ToolImage>,
+
     pub metadata: HashMap<String, String>,
     pub created_at: i64,
 }
@@ -34,6 +39,7 @@ impl Unit {
             visibility: UnitVisibility::Public,
             content: message,
             token_usage,
+            tool_images: Vec::new(),
             metadata: HashMap::new(),
             created_at: chrono::Utc::now().timestamp(),
         }
@@ -42,6 +48,22 @@ impl Unit {
     pub fn to_chat_message(&self) -> genai::chat::ChatMessage {
         self.content.clone()
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ImageAttachment {
+    pub mimetype: String,
+    pub filename: String,
+    pub width: u32,
+    pub height: u32,
+    /// Base64 of the original bytes, so replay never rereads the source path.
+    pub data: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ToolImage {
+    pub call_id: String,
+    pub image: ImageAttachment,
 }
 
 impl From<String> for Unit {

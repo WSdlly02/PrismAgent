@@ -27,7 +27,7 @@ pub fn tree_list() -> ToolSpec {
 pub fn file_read() -> ToolSpec {
     ToolSpec::new(
         "fs_file_read",
-        "Read a UTF-8 text file from the filesystem.",
+        "Read a text file or inspect a PNG, JPEG or WebP image. Images are detected by content and attached for visual inspection (requires a vision-capable model). Image limits: 10 MiB, 25 million pixels, 16384 pixels per side.",
         json!({
             "type": "object",
             "properties": {
@@ -159,6 +159,18 @@ pub fn file_copy() -> ToolSpec {
 
 pub async fn execute_file_read(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let path = tool_arg(args.get("path").and_then(Value::as_str));
+    let resolved = resolve_tool_path(&ctx.workspace_path, &path);
+    let image_result = tokio::time::timeout(
+        Duration::from_secs(DEFAULT_TIMEOUT_SECS),
+        super::image_read::try_read(&resolved, &path),
+    )
+    .await
+    .unwrap_or_else(|_| Err("file read timed out".into()));
+    match image_result {
+        Ok(Some(image)) => return image,
+        Ok(None) => {}
+        Err(error) => return ToolResult::error(json!({"path": path, "error": error})),
+    }
     run_rtk_json(
         &ctx.workspace_path,
         vec!["read".into(), path],

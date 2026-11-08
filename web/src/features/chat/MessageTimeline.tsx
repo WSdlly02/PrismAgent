@@ -19,6 +19,7 @@ import {
   type ConversationAnchor,
 } from "./ConversationRail";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { ToolImagePreview } from "./ToolImagePreview";
 
 type MessageTimelineProps = {
   units: Unit[];
@@ -391,6 +392,10 @@ const CommittedUnitView = memo(function CommittedUnitView({
               <pre className="tool-content">
                 {formatToolResponse(response.content)}
               </pre>
+              {unit.tool_images?.filter((attachment) => attachment.call_id === response.call_id)
+                .map((attachment, imageIndex) => (
+                  <ToolImagePreview key={imageIndex} image={attachment.image} />
+                ))}
             </div>
           ))}
         </CollapsibleMessage> : null}

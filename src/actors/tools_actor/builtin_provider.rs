@@ -1,4 +1,5 @@
 mod fs;
+mod image_read;
 mod prismagent;
 mod progress;
 mod shell;
