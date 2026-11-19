@@ -131,8 +131,7 @@ mod tests {
             let result = execute_file_read(
                 ToolExecutionContext {
                     handles: test_handles(),
-                    workspace_uuid: "ws".into(),
-                    caller_agent_uuid: "agent".into(),
+                    caller: crate::id::AgentAddr::new("ws", "agent"),
                     workspace_path: root.clone(),
                 },
                 json!({"path": "image.txt"}),

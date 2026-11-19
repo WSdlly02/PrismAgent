@@ -299,8 +299,7 @@ mod tests {
                 "file_read".to_string(),
                 ToolExecutionContext {
                     handles: test_handles(),
-                    workspace_uuid: "workspace".to_string(),
-                    caller_agent_uuid: "agent".to_string(),
+                    caller: crate::id::AgentAddr::new("workspace", "agent"),
                     workspace_path: PathBuf::from("/tmp"),
                 },
                 serde_json::json!({}),

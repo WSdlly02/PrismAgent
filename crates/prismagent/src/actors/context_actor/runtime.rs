@@ -56,10 +56,11 @@ impl ContextActor {
         request: Box<RenderInitialPromptsRequest>,
     ) -> SubsystemResult<Vec<Unit>> {
         let capabilities = render_capabilities(RenderCapabilitiesRequest {
-            workspace_uuid: request.workspace_uuid.clone(),
+            workspace_uuid: request.addr.workspace_uuid.clone(),
             profile: request.profile.clone(),
         })?;
-        let system = render_system_prompt(&request.profile, &request.agent_uuid, &capabilities);
+        let system =
+            render_system_prompt(&request.profile, &request.addr.agent_uuid, &capabilities);
         let mut system_unit = Unit::from_chat_message(ChatMessage::system(system));
         system_unit.visibility =
             crate::actors::storage_actor::model::unit::UnitVisibility::Internal;
@@ -68,7 +69,7 @@ impl ContextActor {
         if !request.context_refs.is_empty() {
             let contexts = self
                 .resolve_context_refs(ResolveContextRefsRequest {
-                    workspace_uuid: request.workspace_uuid,
+                    workspace_uuid: request.addr.workspace_uuid,
                     context_refs: request.context_refs,
                 })
                 .await?;

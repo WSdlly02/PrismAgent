@@ -170,7 +170,7 @@ pub async fn execute_agent_list(ctx: ToolExecutionContext, _args: Value) -> Tool
         .handles
         .workflow
         .list_agents(ListAgentsRequest {
-            workspace_uuid: ctx.workspace_uuid.clone(),
+            workspace_uuid: ctx.caller.workspace_uuid.clone(),
         })
         .await
     {
@@ -188,7 +188,7 @@ pub async fn execute_profile_list(ctx: ToolExecutionContext, _args: Value) -> To
 
 pub async fn execute_skill_dir_get(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let request = GetSkillDirRequest {
-        workspace_uuid: ctx.workspace_uuid.clone(),
+        workspace_uuid: ctx.caller.workspace_uuid.clone(),
         name: string_arg(&args, "name").unwrap_or_default(),
     };
     match ctx.handles.context.get_skill_dir(request).await {
@@ -199,7 +199,7 @@ pub async fn execute_skill_dir_get(ctx: ToolExecutionContext, args: Value) -> To
 
 pub async fn execute_context_create(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let request = ContextCreateRequest {
-        workspace_uuid: ctx.workspace_uuid.clone(),
+        workspace_uuid: ctx.caller.workspace_uuid.clone(),
         uuid: string_arg(&args, "uuid").unwrap_or_default(),
         title: string_arg(&args, "title").unwrap_or_else(|| "Untitled context".to_string()),
         content: string_arg(&args, "content").unwrap_or_default(),
@@ -215,7 +215,7 @@ pub async fn execute_context_create(ctx: ToolExecutionContext, args: Value) -> T
 
 pub async fn execute_workflow_create(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let request = WorkflowCreateRequest {
-        workspace_uuid: ctx.workspace_uuid.clone(),
+        workspace_uuid: ctx.caller.workspace_uuid.clone(),
         uuid: string_arg(&args, "uuid").unwrap_or_default(),
         title: string_arg(&args, "title").unwrap_or_else(|| "Untitled workflow".to_string()),
         content: string_arg(&args, "content").unwrap_or_default(),
@@ -240,7 +240,7 @@ pub async fn execute_uuid_generate(ctx: ToolExecutionContext, args: Value) -> To
 
 pub async fn execute_workflow_start(ctx: ToolExecutionContext, args: Value) -> ToolResult {
     let request = WorkflowStartRequest {
-        workspace_uuid: ctx.workspace_uuid.clone(),
+        workspace_uuid: ctx.caller.workspace_uuid.clone(),
         workflow_uuid: string_arg(&args, "workflow_uuid").unwrap_or_default(),
     };
     match ctx.handles.workflow.workflow_start(request).await {
@@ -250,10 +250,7 @@ pub async fn execute_workflow_start(ctx: ToolExecutionContext, args: Value) -> T
 }
 
 pub async fn execute_self_show(ctx: ToolExecutionContext, _args: Value) -> ToolResult {
-    let request = SelfShowRequest {
-        workspace_uuid: ctx.workspace_uuid.clone(),
-        agent_uuid: ctx.caller_agent_uuid.clone(),
-    };
+    let request = SelfShowRequest { addr: ctx.caller };
     match ctx.handles.workflow.self_show(request).await {
         Ok(response) => ToolResult::success(json!({
             "agent": response,
@@ -269,7 +266,7 @@ pub async fn execute_self_update(ctx: ToolExecutionContext, args: Value) -> Tool
         }));
     }
     let request = SelfUpdateRequest {
-        agent_uuid: ctx.caller_agent_uuid.clone(),
+        addr: ctx.caller,
         context_refs: None,
         context_out: None,
         auto_loop: args.get("auto_loop").and_then(Value::as_bool),
@@ -291,8 +288,7 @@ pub async fn execute_task_finish(ctx: ToolExecutionContext, args: Value) -> Tool
         .handles
         .workflow
         .task_finish(TaskFinishRequest {
-            workspace_uuid: ctx.workspace_uuid.clone(),
-            agent_uuid: ctx.caller_agent_uuid.clone(),
+            addr: ctx.caller,
             summary,
             context_outputs,
         })

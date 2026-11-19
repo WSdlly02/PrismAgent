@@ -1,11 +1,12 @@
 use crate::actors::storage_actor::model::unit::Unit;
+use crate::id::AgentAddr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// $PWD/.prismagent/agents/{uuid}.json
+/// Stored under `workspaces/<workspace_uuid>/agents/<agent_uuid>.json`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Agent {
-    pub uuid: String,              // Agent的唯一标识符
+    pub uuid: String,              // 工作区内的 Agent 标识符
     pub name: String,              // Agent的展示名称，最好不要重复
     pub profile: String,           // Agent的配置文件名称，例如 "default"、"custom-profile-1" 等
     pub auto_loop: bool,           // 是否自动循环执行，默认为false
@@ -39,15 +40,12 @@ pub struct AgentWriteRequest {
     pub agents: Vec<Agent>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Debug)]
 pub struct AgentCreateRequest {
-    pub workspace_uuid: String,
-    pub uuid: String,
+    pub addr: AgentAddr,
     pub name: String,
     pub profile: String,
-    #[serde(default)]
     pub context_refs: Vec<String>,
-    #[serde(default)]
     pub context_out: Vec<String>,
     // cannot set auto_loop and auto_loop_message when creating an agent, because they are inherited from the profile.
     // If you want to set them, please update the agent after creating it.
@@ -55,8 +53,8 @@ pub struct AgentCreateRequest {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct AgentUpdateRequest {
-    pub workspace_uuid: String,
-    pub agent_uuid: String,
+    #[serde(flatten)]
+    pub addr: AgentAddr,
     pub context_refs: Option<Vec<String>>,
     pub context_out: Option<Vec<String>>,
     pub auto_loop: Option<bool>,

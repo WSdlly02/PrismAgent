@@ -2,6 +2,7 @@ use crate::actors::profile_actor::model::Profile;
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
@@ -30,8 +31,7 @@ pub enum ContextMsg {
 
 #[derive(Debug, Clone)]
 pub struct RenderInitialPromptsRequest {
-    pub workspace_uuid: String,
-    pub agent_uuid: String,
+    pub addr: AgentAddr,
     pub context_refs: Vec<String>,
     pub profile: Profile,
 }

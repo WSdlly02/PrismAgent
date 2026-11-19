@@ -158,15 +158,38 @@ impl WorkspaceActor {
         })
     }
 
-    async fn contains(&self, workspace_uuid: String) -> SubsystemResult<bool> {
-        Ok(self.workspaces.contains_key(&workspace_uuid))
+    async fn contains(&mut self, workspace_uuid: String) -> SubsystemResult<bool> {
+        match self.get(workspace_uuid).await {
+            Ok(_) => Ok(true),
+            Err(SubsystemError::NotFound {
+                resource: ResourceKind::Workspace,
+                ..
+            }) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
-    async fn get(&self, workspace_uuid: String) -> SubsystemResult<Workspace> {
-        self.workspaces
-            .get(&workspace_uuid)
-            .cloned()
-            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Workspace, &workspace_uuid))
+    async fn get(&mut self, workspace_uuid: String) -> SubsystemResult<Workspace> {
+        if let Some(workspace) = self.workspaces.get(&workspace_uuid) {
+            return Ok(workspace.clone());
+        }
+        let name = std::path::Path::new(&workspace_uuid);
+        if name.file_name() != Some(name.as_os_str()) || workspace_uuid == ".trash" {
+            return Err(SubsystemError::validation_field(
+                "workspace_uuid",
+                "invalid workspace ID",
+            ));
+        }
+        let path = self.root.join(name).join("metadata.json");
+        let workspace = read_workspace(&path).map_err(|error| match error {
+            SubsystemError::Io {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            } => SubsystemError::not_found(ResourceKind::Workspace, &workspace_uuid),
+            other => other,
+        })?;
+        self.workspaces.insert(workspace_uuid, workspace.clone());
+        Ok(workspace)
     }
 
     async fn delete(&mut self, workspace_uuid: String) -> SubsystemResult<()> {

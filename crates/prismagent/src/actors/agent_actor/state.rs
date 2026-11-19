@@ -8,15 +8,13 @@ use std::sync::Arc;
 /// Keeping them in one map entry prevents the actor from having to maintain
 /// parallel agent/workspace/state maps.
 pub(crate) struct AgentEntry {
-    pub workspace_uuid: String,
     pub agent: Agent,
     pub state: AgentState,
 }
 
 impl AgentEntry {
-    pub fn idle(workspace_uuid: String, agent: Agent) -> Self {
+    pub fn idle(agent: Agent) -> Self {
         Self {
-            workspace_uuid,
             agent,
             state: AgentState::Idle,
         }

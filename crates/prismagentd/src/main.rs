@@ -22,10 +22,10 @@ use prismagent::{
         llm_actor::model::{LlmActor, LlmHandle, LlmMsg},
         profile_actor::model::{ProfileActor, ProfileHandle, ProfileMsg},
         shell_actor::model::{
-            AgentAccessRequest, AgentWriteAccessRequest, AuthorizedAgentCreateRequest,
-            AuthorizedApproveRequest, AuthorizedCancelWorkflowRequest,
-            AuthorizedDeleteWorkspaceRequest, AuthorizedSendMessageRequest, ConnectionId,
-            ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest, WsEvent,
+            AgentWriteAccessRequest, AuthorizedAgentCreateRequest, AuthorizedApproveRequest,
+            AuthorizedCancelWorkflowRequest, AuthorizedDeleteWorkspaceRequest,
+            AuthorizedSendMessageRequest, ConnectionId, ShellActor, ShellHandle, ShellMsg,
+            WorkspaceAccessRequest, WsEvent,
         },
         storage_actor::model::{StorageActor, StorageHandle, StorageMsg},
         tools_actor::model::{ToolsActor, ToolsHandle, ToolsMsg},
@@ -37,6 +37,7 @@ use prismagent::{
     },
     error::{ErrorClass, PublicError, SubsystemError, SubsystemResult},
     handles::AppHandles,
+    id::AgentAddr,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -676,7 +677,7 @@ async fn list_agents(
 
 async fn agent_snapshot(
     State(state): State<AppState>,
-    RestQuery(query): RestQuery<AgentAccessRequest>,
+    RestQuery(query): RestQuery<AgentAddr>,
 ) -> RestApiResult<Json<Value>> {
     Ok(Json(json!(state.shell.agent_snapshot(query).await?)))
 }

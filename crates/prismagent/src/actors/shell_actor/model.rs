@@ -9,6 +9,7 @@ use crate::actors::workspace_actor::model::{
 };
 use crate::error::{PublicError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -33,19 +34,19 @@ pub struct ShellActor {
     pub(super) connection_channels: HashMap<ConnectionId, mpsc::Sender<WsEvent>>,
     pub(super) leases: HashMap<String, Lease>,
     pub(super) workspace_subscribers: HashMap<String, Vec<ConnectionId>>, // multi-reader
-    pub(super) agent_subscribers: HashMap<String, Vec<ConnectionId>>,     // multi-reader
+    pub(super) agent_subscribers: HashMap<AgentAddr, Vec<ConnectionId>>,  // multi-reader
 }
 
 pub struct ConnectionSession {
     pub connection_id: ConnectionId,
     pub subscribed_workspace: Option<String>,
-    pub subscribed_agent: Option<String>,
+    pub subscribed_agent: Option<AgentAddr>,
 }
 
 /// Routing target for a WS event.
 pub enum EventTarget {
     Workspace(String),
-    Agent(String),
+    Agent(AgentAddr),
 }
 
 /// Unified WS event (merged WorkspaceEvent + AgentEvent).
@@ -187,7 +188,7 @@ pub enum ShellMsg {
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
     AgentSnapshot {
-        request: AgentAccessRequest,
+        addr: AgentAddr,
         reply: oneshot::Sender<SubsystemResult<AgentSnapshot>>,
     },
     SendMessage {
@@ -219,13 +220,6 @@ pub enum ShellMsg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentAccessRequest {
-    #[serde(flatten)]
-    pub workspace: WorkspaceAccessRequest,
-    pub agent_uuid: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceAccessRequest {
     pub workspace_uuid: String,
 }
@@ -245,8 +239,8 @@ pub struct AuthorizedDeleteWorkspaceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentWriteAccessRequest {
     #[serde(flatten)]
-    pub workspace: WorkspaceWriteAccessRequest,
-    pub agent_uuid: String,
+    pub addr: AgentAddr,
+    pub lease_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,6 +287,17 @@ pub struct AuthorizedAgentCreateRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_requests_keep_the_flat_rest_address() {
+        let json = serde_json::json!({
+            "workspace_uuid": "workspace", "agent_uuid": "agent", "lease_token": "lease",
+            "message_body": {"text": "hello", "attachments": []}
+        });
+        let request: AuthorizedSendMessageRequest = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(request.access.addr, AgentAddr::new("workspace", "agent"));
+        assert_eq!(serde_json::to_value(request).unwrap(), json);
+    }
 
     #[test]
     fn operation_failed_event_preserves_failure_stage() {

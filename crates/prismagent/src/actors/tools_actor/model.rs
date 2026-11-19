@@ -2,6 +2,7 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::tools_actor::provider::ToolRouter;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use genai::chat::{Tool, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -41,15 +42,13 @@ pub enum ToolsMsg {
 #[derive(Clone)]
 pub struct ToolExecutionContext {
     pub handles: AppHandles,
-    pub workspace_uuid: String,
-    pub caller_agent_uuid: String,
+    pub caller: AgentAddr,
     pub workspace_path: PathBuf,
 }
 
 pub struct ToolBatchRequest {
     pub job_uuid: String,
-    pub workspace_uuid: String,
-    pub caller_agent_uuid: String,
+    pub caller: AgentAddr,
     pub workspace_path: PathBuf,
     pub tool_calls: Arc<[ToolCall]>,
     pub approvals: Vec<ToolApproval>,

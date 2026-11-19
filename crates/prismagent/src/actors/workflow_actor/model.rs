@@ -4,6 +4,7 @@ use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequ
 use crate::actors::workflow_actor::dag::WorkflowRuntime;
 use crate::error::SubsystemResult;
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -77,8 +78,8 @@ pub struct WorkflowCancelResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskFinishRequest {
-    pub workspace_uuid: String,
-    pub agent_uuid: String,
+    #[serde(flatten)]
+    pub addr: AgentAddr,
     pub summary: String,
     #[serde(default)]
     pub context_outputs: Vec<String>,
@@ -94,8 +95,8 @@ pub struct TaskFinishResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfShowRequest {
-    pub workspace_uuid: String,
-    pub agent_uuid: String,
+    #[serde(flatten)]
+    pub addr: AgentAddr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

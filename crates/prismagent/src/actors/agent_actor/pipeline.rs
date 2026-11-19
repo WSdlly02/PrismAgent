@@ -11,6 +11,7 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::tools_actor::model::{ToolApproval, ToolBatchRequest, ToolStreamEvent};
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use genai::chat::{ChatMessage, ContentPart, ToolCall, ToolResponse};
 use serde_json::json;
 use std::collections::HashSet;
@@ -62,7 +63,6 @@ fn user_message(message_body: MessageBody) -> SubsystemResult<ChatMessage> {
 
 pub async fn run_llm_inference(
     handles: &AppHandles,
-    workspace_uuid: String,
     unit_uuids: Vec<String>,
     request: SendMessageRequest,
     profile_name: String,
@@ -74,7 +74,7 @@ pub async fn run_llm_inference(
     } else {
         handles
             .storage
-            .read_units(&workspace_uuid, unit_uuids)
+            .read_units(&request.addr.workspace_uuid, unit_uuids)
             .await
             .map_err(|source| AgentTaskError::new(AgentFailureStage::ReadHistory, source))?
     };
@@ -82,7 +82,7 @@ pub async fn run_llm_inference(
         .map_err(|source| AgentTaskError::new(AgentFailureStage::BuildInput, source))?;
     let response = call_llm_with_units(
         handles,
-        request.agent_uuid.clone(),
+        request.addr,
         profile_name,
         inference_uuid,
         units.clone(),
@@ -97,8 +97,7 @@ pub async fn run_llm_inference(
 
 pub async fn run_llm_continuation(
     handles: &AppHandles,
-    workspace_uuid: String,
-    agent_uuid: String,
+    addr: AgentAddr,
     unit_uuids: Vec<String>,
     profile_name: String,
     inference_uuid: String,
@@ -106,17 +105,11 @@ pub async fn run_llm_continuation(
     let history_len = unit_uuids.len();
     let mut units = handles
         .storage
-        .read_units(&workspace_uuid, unit_uuids)
+        .read_units(&addr.workspace_uuid, unit_uuids)
         .await
         .map_err(|source| AgentTaskError::new(AgentFailureStage::ReadHistory, source))?;
-    let response = call_llm_with_units(
-        handles,
-        agent_uuid,
-        profile_name,
-        inference_uuid,
-        units.clone(),
-    )
-    .await?;
+    let response =
+        call_llm_with_units(handles, addr, profile_name, inference_uuid, units.clone()).await?;
     units.push(response.output_unit);
     Ok(AgentInferenceOutput {
         units: units.split_off(history_len),
@@ -125,8 +118,7 @@ pub async fn run_llm_continuation(
 }
 
 pub(crate) struct RunToolBatchRequest {
-    pub workspace_uuid: String,
-    pub agent_uuid: String,
+    pub addr: AgentAddr,
     pub profile_name: String,
     pub job_uuid: String,
     pub tool_calls: Arc<[ToolCall]>,
@@ -139,8 +131,7 @@ pub(crate) async fn run_tool_batch(
     request: RunToolBatchRequest,
 ) -> AgentTaskResult<ToolBatchOutput> {
     let RunToolBatchRequest {
-        workspace_uuid,
-        agent_uuid,
+        addr,
         profile_name,
         job_uuid,
         tool_calls,
@@ -149,12 +140,12 @@ pub(crate) async fn run_tool_batch(
     } = request;
     let workspace = handles
         .workspace
-        .get(&workspace_uuid)
+        .get(&addr.workspace_uuid)
         .await
         .map_err(|source| AgentTaskError::new(AgentFailureStage::LoadToolWorkspace, source))?;
     let (tool_stream_tx, mut tool_stream_rx) = mpsc::channel::<ToolStreamEvent>(64);
     let shell = handles.shell.clone();
-    let stream_agent_uuid = agent_uuid.clone();
+    let stream_addr = addr.clone();
     let tool_stream_forwarder = tokio::spawn(async move {
         while let Some(event) = tool_stream_rx.recv().await {
             let text = match event {
@@ -169,8 +160,7 @@ pub(crate) async fn run_tool_batch(
                 }
                 ToolStreamEvent::Finished => "tool batch finished".to_string(),
             };
-            let _ =
-                shell.emit_agent_event(stream_agent_uuid.clone(), WsEvent::StreamDelta { text });
+            let _ = shell.emit_agent_event(stream_addr.clone(), WsEvent::StreamDelta { text });
         }
     });
     let tools_config = handles
@@ -202,8 +192,7 @@ pub(crate) async fn run_tool_batch(
         .tools
         .dispatch_batch(ToolBatchRequest {
             job_uuid: job_uuid.clone(),
-            workspace_uuid: workspace_uuid.clone(),
-            caller_agent_uuid: agent_uuid.clone(),
+            caller: addr,
             workspace_path: workspace.path,
             tool_calls,
             approvals,
@@ -288,7 +277,7 @@ pub fn tool_response_units(tool_calls: &[ToolCall], status: &str, reason: &str) 
 
 async fn call_llm_with_units(
     handles: &AppHandles,
-    agent_uuid: String,
+    addr: AgentAddr,
     profile_name: String,
     inference_uuid: String,
     units: Vec<Unit>,
@@ -318,12 +307,10 @@ async fn call_llm_with_units(
         while let Some(event) = stream_rx.recv().await {
             match event {
                 LlmStreamEvent::TextDelta { text } => {
-                    let _ =
-                        shell.emit_agent_event(agent_uuid.clone(), WsEvent::StreamDelta { text });
+                    let _ = shell.emit_agent_event(addr.clone(), WsEvent::StreamDelta { text });
                 }
                 LlmStreamEvent::ReasoningDelta { text } => {
-                    let _ = shell
-                        .emit_agent_event(agent_uuid.clone(), WsEvent::ReasoningDelta { text });
+                    let _ = shell.emit_agent_event(addr.clone(), WsEvent::ReasoningDelta { text });
                 }
                 LlmStreamEvent::Started
                 | LlmStreamEvent::ToolCallDelta { .. }

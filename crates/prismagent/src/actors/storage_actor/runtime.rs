@@ -5,6 +5,7 @@ use crate::actors::storage_actor::model::unit::Unit;
 use crate::actors::storage_actor::model::workflow::{Workflow, WorkflowCreateRequest};
 use crate::actors::storage_actor::model::{STORAGE_ACTOR, StorageActor, StorageHandle, StorageMsg};
 use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
+use crate::id::AgentAddr;
 use crate::{actor_dispatch, impl_handle_methods};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,12 +43,13 @@ impl StorageActor {
             actor_dispatch!(msg;
                 StorageMsg::Root { ; reply } => Ok(self.root.clone()),
                 StorageMsg::ListAgents { workspace_uuid ; reply } => self.list_agents(&workspace_uuid),
+                StorageMsg::ReadAgent { addr ; reply } => self.read_agent(&addr),
                 StorageMsg::ReadAgents { workspace_uuid, uuids ; reply } => self.read_agents(&workspace_uuid, uuids),
                 StorageMsg::CreateAgent { request, auto_loop, auto_loop_message ; reply } => self.create_agent(request, auto_loop, auto_loop_message),
-                StorageMsg::DeleteAgent { workspace_uuid, agent_uuid ; reply } => self.delete_agent(&workspace_uuid, &agent_uuid),
-                StorageMsg::SetAgentAutoLoop { workspace_uuid, agent_uuid, enabled ; reply } => self.set_agent_auto_loop(&workspace_uuid, &agent_uuid, enabled),
+                StorageMsg::DeleteAgent { addr ; reply } => self.delete_agent(&addr),
+                StorageMsg::SetAgentAutoLoop { addr, enabled ; reply } => self.set_agent_auto_loop(&addr, enabled),
                 StorageMsg::UpdateAgent { request ; reply } => self.update_agent(request),
-                StorageMsg::AppendAgentUnits { workspace_uuid, agent_uuid, units ; reply } => self.append_agent_units(&workspace_uuid, &agent_uuid, &units),
+                StorageMsg::AppendAgentUnits { addr, units ; reply } => self.append_agent_units(&addr, &units),
                 StorageMsg::ListUnits { workspace_uuid ; reply } => self.list_units(&workspace_uuid),
                 StorageMsg::ReadUnits { workspace_uuid, uuids ; reply } => self.read_units(&workspace_uuid, uuids),
                 StorageMsg::ListContexts { workspace_uuid ; reply } => self.list_contexts(&workspace_uuid),
@@ -68,16 +70,20 @@ impl StorageActor {
         list_json_object_ids(&self.workspace_root(workspace_uuid)?.join("agents"))
     }
 
+    fn read_agent(&self, addr: &AgentAddr) -> SubsystemResult<Agent> {
+        read_agent_file(&self.agent_path(addr)?, addr).map(|(agent, _)| agent)
+    }
+
     fn read_agents(&self, workspace_uuid: &str, uuids: Vec<String>) -> SubsystemResult<Vec<Agent>> {
         uuids
             .iter()
-            .map(|uuid| read_json(&self.agent_path(workspace_uuid, uuid)?))
+            .map(|uuid| self.read_agent(&AgentAddr::new(workspace_uuid, uuid)))
             .collect()
     }
 
     fn create_agent(
         &self,
-        request: AgentCreateRequest,
+        mut request: AgentCreateRequest,
         auto_loop: bool,
         auto_loop_message: String,
     ) -> SubsystemResult<Agent> {
@@ -89,8 +95,10 @@ impl StorageActor {
             auto_loop_message
         };
         let now = chrono::Utc::now().timestamp();
+        request.addr.agent_uuid = safe_object_name(request.addr.agent_uuid, "agent uuid")?;
+        let path = self.agent_path(&request.addr)?;
         let agent = Agent {
-            uuid: safe_object_name(request.uuid, "agent uuid")?,
+            uuid: request.addr.agent_uuid,
             name,
             profile,
             auto_loop,
@@ -103,95 +111,72 @@ impl StorageActor {
             created_at: now,
             updated_at: now,
         };
-        write_json_create_only(
-            &self.agent_path(&request.workspace_uuid, &agent.uuid)?,
-            &agent,
-        )?;
+        write_json_create_only(&path, &agent)?;
         Ok(agent)
     }
 
-    fn delete_agent(&self, workspace_uuid: &str, agent_uuid: &str) -> SubsystemResult<()> {
-        let path = self.agent_path(workspace_uuid, agent_uuid)?;
+    fn delete_agent(&self, addr: &AgentAddr) -> SubsystemResult<()> {
+        let path = self.agent_path(addr)?;
         if !path.exists() {
-            return Err(SubsystemError::not_found(ResourceKind::Agent, agent_uuid));
+            return Err(SubsystemError::not_found(
+                ResourceKind::Agent,
+                &addr.agent_uuid,
+            ));
         }
         io_result("delete agent file", &path, std::fs::remove_file(&path))?;
         Ok(())
     }
 
-    fn set_agent_auto_loop(
+    fn edit_agent(
         &self,
-        workspace_uuid: &str,
-        agent_uuid: &str,
-        enabled: bool,
+        addr: &AgentAddr,
+        edit: impl FnOnce(&mut Agent) -> SubsystemResult<()>,
     ) -> SubsystemResult<Agent> {
-        let agent_path = self.agent_path(workspace_uuid, agent_uuid)?;
-        let old_data = io_result("read agent file", &agent_path, std::fs::read(&agent_path))?;
-        let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
-            SubsystemError::corrupt_state(
-                "agent file",
-                format!("{}: {error}", agent_path.display()),
-            )
-        })?;
-        agent.auto_loop = enabled;
+        let agent_path = self.agent_path(addr)?;
+        let (mut agent, old_data) = read_agent_file(&agent_path, addr)?;
+        edit(&mut agent)?;
         agent.updated_at = chrono::Utc::now().timestamp();
         let new_data = to_pretty_json_vec(&agent)?;
         atomic_replace_file(&agent_path, &old_data, &new_data)?;
         Ok(agent)
+    }
+
+    fn set_agent_auto_loop(&self, addr: &AgentAddr, enabled: bool) -> SubsystemResult<Agent> {
+        self.edit_agent(addr, |agent| {
+            agent.auto_loop = enabled;
+            Ok(())
+        })
     }
 
     fn update_agent(&self, request: AgentUpdateRequest) -> SubsystemResult<Agent> {
-        let agent_path = self.agent_path(&request.workspace_uuid, &request.agent_uuid)?;
-        let old_data = io_result("read agent file", &agent_path, std::fs::read(&agent_path))?;
-        let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
-            SubsystemError::corrupt_state(
-                "agent file",
-                format!("{}: {error}", agent_path.display()),
-            )
-        })?;
-        if let Some(context_refs) = request.context_refs {
-            validate_object_names(&context_refs, "context_refs")?;
-            agent.context_refs = context_refs;
-        }
-        if let Some(context_out) = request.context_out {
-            validate_object_names(&context_out, "context_out")?;
-            agent.context_out = context_out;
-        }
-        if let Some(auto_loop) = request.auto_loop {
-            agent.auto_loop = auto_loop;
-        }
-        if let Some(auto_loop_message) = request.auto_loop_message {
-            agent.auto_loop_message = non_empty_string(auto_loop_message, "auto_loop_message")?;
-        }
-        agent.updated_at = chrono::Utc::now().timestamp();
-        let new_data = to_pretty_json_vec(&agent)?;
-        atomic_replace_file(&agent_path, &old_data, &new_data)?;
-        Ok(agent)
+        self.edit_agent(&request.addr, |agent| {
+            if let Some(context_refs) = request.context_refs {
+                validate_object_names(&context_refs, "context_refs")?;
+                agent.context_refs = context_refs;
+            }
+            if let Some(context_out) = request.context_out {
+                validate_object_names(&context_out, "context_out")?;
+                agent.context_out = context_out;
+            }
+            if let Some(auto_loop) = request.auto_loop {
+                agent.auto_loop = auto_loop;
+            }
+            if let Some(auto_loop_message) = request.auto_loop_message {
+                agent.auto_loop_message = non_empty_string(auto_loop_message, "auto_loop_message")?;
+            }
+            Ok(())
+        })
     }
 
-    fn append_agent_units(
-        &self,
-        workspace_uuid: &str,
-        agent_uuid: &str,
-        units: &[Unit],
-    ) -> SubsystemResult<Agent> {
-        let agent_path = self.agent_path(workspace_uuid, agent_uuid)?;
-        let old_data = io_result("read agent file", &agent_path, std::fs::read(&agent_path))?;
-        let mut agent: Agent = serde_json::from_slice(&old_data).map_err(|error| {
-            SubsystemError::corrupt_state(
-                "agent file",
-                format!("{}: {error}", agent_path.display()),
-            )
-        })?;
-        for unit in units {
-            write_json_create_only(&self.unit_path(workspace_uuid, &unit.uuid)?, unit)?;
-            agent.unit_chain.push(unit.uuid.clone());
-            agent.unit_head = unit.uuid.clone();
-        }
-        agent.updated_at = chrono::Utc::now().timestamp();
-        let new_data = to_pretty_json_vec(&agent)?;
-        atomic_replace_file(&agent_path, &old_data, &new_data)?;
-        Ok(agent)
+    fn append_agent_units(&self, addr: &AgentAddr, units: &[Unit]) -> SubsystemResult<Agent> {
+        self.edit_agent(addr, |agent| {
+            for unit in units {
+                write_json_create_only(&self.unit_path(&addr.workspace_uuid, &unit.uuid)?, unit)?;
+                agent.unit_chain.push(unit.uuid.clone());
+                agent.unit_head = unit.uuid.clone();
+            }
+            Ok(())
+        })
     }
 
     fn list_units(&self, workspace_uuid: &str) -> SubsystemResult<Vec<String>> {
@@ -326,12 +311,12 @@ impl StorageActor {
         Ok(root)
     }
 
-    fn agent_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
-        validate_object_name(uuid, "agent uuid")?;
+    fn agent_path(&self, addr: &AgentAddr) -> SubsystemResult<PathBuf> {
+        validate_object_name(&addr.agent_uuid, "agent uuid")?;
         Ok(self
-            .workspace_root(workspace_uuid)?
+            .workspace_root(&addr.workspace_uuid)?
             .join("agents")
-            .join(format!("{uuid}.json")))
+            .join(format!("{}.json", addr.agent_uuid)))
     }
 
     fn unit_path(&self, workspace_uuid: &str, uuid: &str) -> SubsystemResult<PathBuf> {
@@ -383,7 +368,10 @@ impl_handle_methods! {
     fn list_agents(&self, workspace_uuid: impl Into<String>) -> Vec<String>
         => ListAgents { workspace_uuid: workspace_uuid.into() };
 
-    fn read_agents(&self,workspace_uuid: impl Into<String>, uuids: Vec<String>) -> Vec<Agent>
+    fn read_agent(&self, addr: AgentAddr) -> Agent
+        => ReadAgent { addr: addr };
+
+    fn read_agents(&self, workspace_uuid: impl Into<String>, uuids: Vec<String>) -> Vec<Agent>
         => ReadAgents { workspace_uuid: workspace_uuid.into(), uuids: uuids };
 
     fn create_agent(&self, request: AgentCreateRequest, auto_loop: bool, auto_loop_message: String) -> Agent
@@ -392,14 +380,14 @@ impl_handle_methods! {
     fn update_agent(&self, request: AgentUpdateRequest) -> Agent
         => UpdateAgent { request: request };
 
-    fn append_agent_units(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>, units: Vec<Unit>) -> Agent
-        => AppendAgentUnits { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into(), units: units };
+    fn append_agent_units(&self, addr: AgentAddr, units: Vec<Unit>) -> Agent
+        => AppendAgentUnits { addr: addr, units: units };
 
-    fn set_agent_auto_loop(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>, enabled: bool) -> Agent
-        => SetAgentAutoLoop { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into(), enabled: enabled };
+    fn set_agent_auto_loop(&self, addr: AgentAddr, enabled: bool) -> Agent
+        => SetAgentAutoLoop { addr: addr, enabled: enabled };
 
-    fn delete_agent(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> ()
-        => DeleteAgent { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
+    fn delete_agent(&self, addr: AgentAddr) -> ()
+        => DeleteAgent { addr: addr };
 
     fn list_contexts(&self, workspace_uuid: impl Into<String>) -> Vec<String>
         => ListContexts { workspace_uuid: workspace_uuid.into() };
@@ -502,6 +490,33 @@ fn atomic_replace_file(dst: &Path, old: &[u8], new: &[u8]) -> SubsystemResult<()
     )?;
     io_result("commit storage file", dst, std::fs::rename(&tmp_dst, dst))?;
     Ok(())
+}
+
+// Keep the original bytes for the compare-and-replace check on writes.
+fn read_agent_file(path: &Path, addr: &AgentAddr) -> SubsystemResult<(Agent, Vec<u8>)> {
+    let read_error = |error: std::io::Error| match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            SubsystemError::not_found(ResourceKind::Agent, addr.to_string())
+        }
+        _ => SubsystemError::io("read agent file", Some(path.to_owned()), error),
+    };
+    if !std::fs::metadata(path).map_err(read_error)?.is_file() {
+        return Err(SubsystemError::corrupt_state(
+            "agent file",
+            format!("{addr} is not a regular file"),
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(read_error)?;
+    let agent: Agent = serde_json::from_slice(&bytes).map_err(|error| {
+        SubsystemError::corrupt_state("agent file", format!("{}: {error}", path.display()))
+    })?;
+    if agent.uuid != addr.agent_uuid {
+        return Err(SubsystemError::corrupt_state(
+            "agent file",
+            format!("agent ID does not match {addr}"),
+        ));
+    }
+    Ok((agent, bytes))
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> SubsystemResult<T> {
@@ -618,13 +633,30 @@ mod tests {
 
     fn create_request(uuid: &str) -> AgentCreateRequest {
         AgentCreateRequest {
-            workspace_uuid: "workspace-1".to_string(),
-            uuid: uuid.to_string(),
+            addr: AgentAddr::new("workspace-1", uuid),
             name: "Test agent".to_string(),
             profile: "default".to_string(),
             context_refs: Vec::new(),
             context_out: Vec::new(),
         }
+    }
+
+    #[test]
+    fn mismatched_agent_file_is_never_modified() {
+        let actor = test_actor();
+        actor
+            .create_agent(create_request("wrong"), false, String::new())
+            .unwrap();
+        let addr = AgentAddr::new("workspace-1", "target");
+        let path = actor.agent_path(&addr).unwrap();
+        std::fs::rename(path.with_file_name("wrong.json"), &path).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            actor.set_agent_auto_loop(&addr, true),
+            Err(SubsystemError::CorruptState { .. })
+        ));
+        assert_eq!(std::fs::read(path).unwrap(), original);
+        std::fs::remove_dir_all(actor.root).unwrap();
     }
 
     #[test]

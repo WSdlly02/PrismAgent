@@ -12,6 +12,7 @@ use crate::actors::agent_actor::state::{AgentState, ApprovalMask, NextAction, Tu
 use crate::actors::shell_actor::model::WsEvent;
 use crate::actors::storage_actor::model::unit::{Unit, UnitVisibility};
 use crate::error::{ErrorClass, ExternalKind, SubsystemError, SubsystemResult};
+use crate::id::AgentAddr;
 use genai::chat::ToolCall;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -41,15 +42,15 @@ const MAX_MALFORMED_TOOL_CALL_RETRIES: u8 = 2;
 impl AgentActor {
     pub(super) fn apply_next_action(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         action: NextAction,
     ) -> SubsystemResult<()> {
         match action {
-            NextAction::Finish => self.transition_to(agent_uuid, AgentState::Idle),
+            NextAction::Finish => self.transition_to(addr, AgentState::Idle),
             NextAction::StartInference { request, turn } => {
-                self.start_inference(agent_uuid, request, turn)
+                self.start_inference(addr, request, turn)
             }
-            NextAction::ContinueInference { turn } => self.continue_inference(agent_uuid, turn),
+            NextAction::ContinueInference { turn } => self.continue_inference(addr, turn),
             NextAction::RequestApproval {
                 tool_calls,
                 auto_approved_mask,
@@ -59,7 +60,7 @@ impl AgentActor {
                 let request_uuid = Uuid::now_v7().to_string();
                 let tool_count = tool_calls.len();
                 self.transition_to(
-                    agent_uuid,
+                    addr,
                     AgentState::WaitingApproval {
                         request_uuid: request_uuid.clone(),
                         tool_calls,
@@ -69,7 +70,7 @@ impl AgentActor {
                     },
                 )?;
                 self.emit_agent_event(
-                    agent_uuid,
+                    addr,
                     WsEvent::ApproveRequest {
                         request: PendingApproval {
                             request_uuid,
@@ -88,11 +89,10 @@ impl AgentActor {
                 denied_reason,
                 turn,
             } => {
-                let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
-                let profile_name = self.agent(agent_uuid)?.profile.clone();
+                let profile_name = self.agent(addr)?.profile.clone();
                 let job_uuid = Uuid::now_v7().to_string();
                 self.transition_to(
-                    agent_uuid,
+                    addr,
                     AgentState::RunningTool {
                         job_uuid: job_uuid.clone(),
                         tool_calls: tool_calls.clone(),
@@ -101,13 +101,12 @@ impl AgentActor {
                 )?;
 
                 let handles = self.handles.clone();
-                let task_agent_uuid = agent_uuid.to_string();
+                let task_addr = addr.clone();
                 tokio::spawn(async move {
                     let result = run_tool_batch(
                         &handles,
                         RunToolBatchRequest {
-                            workspace_uuid,
-                            agent_uuid: task_agent_uuid.clone(),
+                            addr: task_addr.clone(),
                             profile_name,
                             job_uuid: job_uuid.clone(),
                             tool_calls,
@@ -118,7 +117,7 @@ impl AgentActor {
                     .await;
                     let _ = handles
                         .agent
-                        .tool_batch_complete(task_agent_uuid, job_uuid, result)
+                        .tool_batch_complete(task_addr, job_uuid, result)
                         .await;
                 });
                 Ok(())
@@ -128,17 +127,16 @@ impl AgentActor {
 
     fn start_inference(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         request: SendMessageRequest,
         turn: TurnContext,
     ) -> SubsystemResult<()> {
-        let agent = self.agent(agent_uuid)?;
+        let agent = self.agent(addr)?;
         let unit_uuids = agent.unit_chain.clone();
         let profile_name = agent.profile.clone();
-        let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
         let inference_uuid = Uuid::now_v7().to_string();
         self.transition_to(
-            agent_uuid,
+            addr,
             AgentState::RunningLlm {
                 inference_uuid: inference_uuid.clone(),
                 turn,
@@ -146,34 +144,27 @@ impl AgentActor {
         )?;
 
         let handles = self.handles.clone();
-        let task_agent_uuid = agent_uuid.to_string();
+        let task_addr = addr.clone();
         let task_inference_uuid = inference_uuid.clone();
         tokio::spawn(async move {
-            let result = run_llm_inference(
-                &handles,
-                workspace_uuid,
-                unit_uuids,
-                request,
-                profile_name,
-                inference_uuid,
-            )
-            .await;
+            let result =
+                run_llm_inference(&handles, unit_uuids, request, profile_name, inference_uuid)
+                    .await;
             let _ = handles
                 .agent
-                .inference_complete(task_agent_uuid, task_inference_uuid, result)
+                .inference_complete(task_addr, task_inference_uuid, result)
                 .await;
         });
         Ok(())
     }
 
-    fn continue_inference(&mut self, agent_uuid: &str, turn: TurnContext) -> SubsystemResult<()> {
-        let agent = self.agent(agent_uuid)?;
+    fn continue_inference(&mut self, addr: &AgentAddr, turn: TurnContext) -> SubsystemResult<()> {
+        let agent = self.agent(addr)?;
         let unit_uuids = agent.unit_chain.clone();
         let profile_name = agent.profile.clone();
-        let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
         let inference_uuid = Uuid::now_v7().to_string();
         self.transition_to(
-            agent_uuid,
+            addr,
             AgentState::RunningLlm {
                 inference_uuid: inference_uuid.clone(),
                 turn,
@@ -181,13 +172,12 @@ impl AgentActor {
         )?;
 
         let handles = self.handles.clone();
-        let task_agent_uuid = agent_uuid.to_string();
+        let task_addr = addr.clone();
         let task_inference_uuid = inference_uuid.clone();
         tokio::spawn(async move {
             let result = run_llm_continuation(
                 &handles,
-                workspace_uuid,
-                task_agent_uuid.clone(),
+                task_addr.clone(),
                 unit_uuids,
                 profile_name,
                 inference_uuid,
@@ -195,7 +185,7 @@ impl AgentActor {
             .await;
             let _ = handles
                 .agent
-                .inference_complete(task_agent_uuid, task_inference_uuid, result)
+                .inference_complete(task_addr, task_inference_uuid, result)
                 .await;
         });
         Ok(())
@@ -203,11 +193,11 @@ impl AgentActor {
 
     pub(super) async fn finish_inference(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         inference_uuid: &str,
         result: AgentTaskResult<AgentInferenceOutput>,
     ) {
-        let turn = match self.state(agent_uuid) {
+        let turn = match self.state(addr) {
             Ok(AgentState::RunningLlm {
                 inference_uuid: active_uuid,
                 turn,
@@ -215,15 +205,13 @@ impl AgentActor {
             _ => return,
         };
 
-        let decision = self
-            .decide_inference_completion(agent_uuid, turn, result)
-            .await;
-        self.complete_background_action(agent_uuid, inference_uuid, decision);
+        let decision = self.decide_inference_completion(addr, turn, result).await;
+        self.complete_background_action(addr, inference_uuid, decision);
     }
 
     async fn decide_inference_completion(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         turn: TurnContext,
         result: AgentTaskResult<AgentInferenceOutput>,
     ) -> AgentTaskResult<NextAction> {
@@ -241,12 +229,12 @@ impl AgentActor {
 
         if is_tool_calls && !tool_calls_sound(&tool_calls) {
             return self
-                .repair_malformed_tool_calls(agent_uuid, turn)
+                .repair_malformed_tool_calls(addr, turn)
                 .await
                 .map_err(|source| AgentTaskError::new(AgentFailureStage::RepairToolCalls, source));
         }
 
-        self.commit_units(agent_uuid, output.units)
+        self.commit_units(addr, output.units)
             .await
             .map_err(|source| AgentTaskError::new(AgentFailureStage::CommitLlmOutput, source))?;
 
@@ -255,16 +243,16 @@ impl AgentActor {
         let turn = TurnContext::default();
         if is_tool_calls {
             return self
-                .decide_tool_call_approval(agent_uuid, tool_calls, turn)
+                .decide_tool_call_approval(addr, tool_calls, turn)
                 .await
                 .map_err(|source| {
                     AgentTaskError::new(AgentFailureStage::PrepareToolBatch, source)
                 });
         }
 
-        if self.agent(agent_uuid).is_ok_and(|agent| agent.auto_loop) {
+        if self.agent(addr).is_ok_and(|agent| agent.auto_loop) {
             return self
-                .prepare_auto_loop(agent_uuid, turn)
+                .prepare_auto_loop(addr, turn)
                 .await
                 .map_err(|source| AgentTaskError::new(AgentFailureStage::PrepareAutoLoop, source));
         }
@@ -274,7 +262,7 @@ impl AgentActor {
 
     async fn repair_malformed_tool_calls(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         mut turn: TurnContext,
     ) -> SubsystemResult<NextAction> {
         let retry = if turn.malformed_tool_call_retries < MAX_MALFORMED_TOOL_CALL_RETRIES {
@@ -292,7 +280,7 @@ impl AgentActor {
                 "[PrismAgent] Tool-call repair stopped after {MAX_MALFORMED_TOOL_CALL_RETRIES} malformed attempts. Please inspect the previous output and continue manually."
             ),
         };
-        self.commit_units(agent_uuid, vec![Unit::from_user_text(text)])
+        self.commit_units(addr, vec![Unit::from_user_text(text)])
             .await?;
 
         if retry.is_some() {
@@ -309,11 +297,11 @@ impl AgentActor {
 
     pub(super) async fn finish_tool_batch(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         job_uuid: &str,
         result: AgentTaskResult<ToolBatchOutput>,
     ) {
-        let (active_tool_calls, turn) = match self.state(agent_uuid) {
+        let (active_tool_calls, turn) = match self.state(addr) {
             Ok(AgentState::RunningTool {
                 job_uuid: active_uuid,
                 tool_calls,
@@ -323,19 +311,16 @@ impl AgentActor {
         };
 
         let decision = match result {
-            Ok(output) => {
-                self.decide_tool_batch_success(agent_uuid, turn, output)
-                    .await
-            }
+            Ok(output) => self.decide_tool_batch_success(addr, turn, output).await,
             Err(error) => {
                 let units = tool_response_units(
                     &active_tool_calls,
                     "error",
                     &format!("tool batch failed: {}", error.source),
                 );
-                if let Err(source) = self.commit_units(agent_uuid, units).await {
+                if let Err(source) = self.commit_units(addr, units).await {
                     self.emit_task_failure(
-                        agent_uuid,
+                        addr,
                         job_uuid,
                         AgentTaskError::new(AgentFailureStage::CommitToolOutput, source),
                     );
@@ -343,16 +328,16 @@ impl AgentActor {
                 Err(error)
             }
         };
-        self.complete_background_action(agent_uuid, job_uuid, decision);
+        self.complete_background_action(addr, job_uuid, decision);
     }
 
     async fn decide_tool_batch_success(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         turn: TurnContext,
         output: ToolBatchOutput,
     ) -> AgentTaskResult<NextAction> {
-        self.commit_units(agent_uuid, output.units)
+        self.commit_units(addr, output.units)
             .await
             .map_err(|source| AgentTaskError::new(AgentFailureStage::CommitToolOutput, source))?;
 
@@ -365,42 +350,43 @@ impl AgentActor {
 
     fn complete_background_action(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         correlation_id: &str,
         decision: AgentTaskResult<NextAction>,
     ) {
         let action = match decision {
             Ok(action) => action,
             Err(error) => {
-                self.emit_task_failure(agent_uuid, correlation_id, error);
+                self.emit_task_failure(addr, correlation_id, error);
                 NextAction::Finish
             }
         };
 
-        if let Err(source) = self.apply_next_action(agent_uuid, action) {
+        if let Err(source) = self.apply_next_action(addr, action) {
             self.emit_task_failure(
-                agent_uuid,
+                addr,
                 correlation_id,
                 AgentTaskError::new(AgentFailureStage::ApplyNextAction, source),
             );
-            let _ = self.apply_next_action(agent_uuid, NextAction::Finish);
+            let _ = self.apply_next_action(addr, NextAction::Finish);
         }
     }
 
     async fn prepare_auto_loop(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         turn: TurnContext,
     ) -> SubsystemResult<NextAction> {
-        let auto_loop_message = self.agent(agent_uuid)?.auto_loop_message.clone();
+        let auto_loop_message = self.agent(addr)?.auto_loop_message.clone();
         let mut unit = Unit::from_chat_message(genai::chat::ChatMessage::user(auto_loop_message));
         unit.visibility = UnitVisibility::Internal;
-        self.commit_units(agent_uuid, vec![unit]).await?;
+        self.commit_units(addr, vec![unit]).await?;
         Ok(NextAction::ContinueInference { turn })
     }
 
     pub(super) async fn approve_request(&mut self, request: ApproveRequest) -> SubsystemResult<()> {
-        let action = match self.state(&request.agent_uuid)?.clone() {
+        self.ensure_loaded(&request.addr).await?;
+        let action = match self.state(&request.addr)?.clone() {
             AgentState::WaitingApproval {
                 request_uuid,
                 tool_calls,
@@ -432,11 +418,12 @@ impl AgentActor {
                 )));
             }
         };
-        self.apply_next_action(&request.agent_uuid, action)
+        self.apply_next_action(&request.addr, action)
     }
 
-    pub(super) async fn cancel(&mut self, agent_uuid: &str) -> SubsystemResult<()> {
-        let action = match self.state(agent_uuid)?.clone() {
+    pub(super) async fn cancel(&mut self, addr: &AgentAddr) -> SubsystemResult<()> {
+        self.ensure_loaded(addr).await?;
+        let action = match self.state(addr)?.clone() {
             AgentState::RunningLlm { inference_uuid, .. } => {
                 let _ = self.handles.llm.cancel(inference_uuid).await?;
                 NextAction::Finish
@@ -464,12 +451,12 @@ impl AgentActor {
             }
             AgentState::Idle => return Ok(()),
         };
-        self.apply_next_action(agent_uuid, action)
+        self.apply_next_action(addr, action)
     }
 
     async fn decide_tool_call_approval(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         tool_calls: Arc<[ToolCall]>,
         turn: TurnContext,
     ) -> SubsystemResult<NextAction> {
@@ -482,7 +469,7 @@ impl AgentActor {
                 tool_calls.len()
             )));
         }
-        let profile_name = self.agent(agent_uuid)?.profile.clone();
+        let profile_name = self.agent(addr)?.profile.clone();
         let tools_config = self.handles.profile.tools(profile_name).await?;
         let all_mask = ApprovalMask::all_for(tool_calls.len()).bits();
         let auto_approved_mask = auto_approval_mask(&tools_config, &tool_calls) & all_mask;
@@ -504,24 +491,22 @@ impl AgentActor {
         }
     }
 
-    fn transition_to(&mut self, agent_uuid: &str, state: AgentState) -> SubsystemResult<()> {
+    fn transition_to(&mut self, addr: &AgentAddr, state: AgentState) -> SubsystemResult<()> {
         let status = state.status();
-        self.entry_mut(agent_uuid)?.state = state;
+        self.entry_mut(addr)?.state = state;
         self.emit_agent_event(
-            agent_uuid,
+            addr,
             WsEvent::StatusChanged {
                 status: status.clone(),
             },
         );
-        if let Ok(workspace_uuid) = self.workspace_uuid(agent_uuid) {
-            self.emit_workspace_event(
-                workspace_uuid,
-                WsEvent::AgentStatusChanged {
-                    agent_uuid: agent_uuid.to_string(),
-                    status,
-                },
-            );
-        }
+        self.emit_workspace_event(
+            &addr.workspace_uuid,
+            WsEvent::AgentStatusChanged {
+                agent_uuid: addr.agent_uuid.clone(),
+                status,
+            },
+        );
         Ok(())
     }
 }
@@ -557,8 +542,8 @@ mod tests {
         let (_tx, rx) = mpsc::channel(1);
         let mut actor = AgentActor::load(rx, crate::handles::test_handles());
         actor.entries.insert(
-            "agent".to_string(),
-            AgentEntry::idle("workspace".to_string(), test_agent("agent")),
+            AgentAddr::new("workspace", "agent"),
+            AgentEntry::idle(test_agent("agent")),
         );
         actor
     }
@@ -575,7 +560,7 @@ mod tests {
 
         actor
             .apply_next_action(
-                "agent",
+                &AgentAddr::new("workspace", "agent"),
                 NextAction::RequestApproval {
                     tool_calls: vec![tool_call].into(),
                     auto_approved_mask: 0,
@@ -585,7 +570,7 @@ mod tests {
             )
             .unwrap();
 
-        let state = actor.state("agent").unwrap();
+        let state = actor.state(&AgentAddr::new("workspace", "agent")).unwrap();
         assert_eq!(state.status(), AgentStatus::WaitingApproval);
         assert!(matches!(
             state,
@@ -598,8 +583,13 @@ mod tests {
         ));
 
         actor
-            .apply_next_action("agent", NextAction::Finish)
+            .apply_next_action(&AgentAddr::new("workspace", "agent"), NextAction::Finish)
             .unwrap();
-        assert!(actor.state("agent").unwrap().is_idle());
+        assert!(
+            actor
+                .state(&AgentAddr::new("workspace", "agent"))
+                .unwrap()
+                .is_idle()
+        );
     }
 }

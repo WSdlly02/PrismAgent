@@ -3,11 +3,10 @@ use crate::actors::agent_actor::model::{
     AgentSnapshot, AgentStatus, AgentSummary, ApproveRequest, SendMessageRequest,
 };
 use crate::actors::shell_actor::model::{
-    AgentAccessRequest, AgentWriteAccessRequest, AuthorizedAgentCreateRequest,
-    AuthorizedApproveRequest, AuthorizedCancelWorkflowRequest, AuthorizedDeleteWorkspaceRequest,
+    AgentWriteAccessRequest, AuthorizedAgentCreateRequest, AuthorizedApproveRequest,
+    AuthorizedCancelWorkflowRequest, AuthorizedDeleteWorkspaceRequest,
     AuthorizedSendMessageRequest, ConnectionId, ConnectionSession, EventTarget, SHELL_ACTOR,
-    ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest, WorkspaceWriteAccessRequest,
-    WsEvent,
+    ShellActor, ShellHandle, ShellMsg, WorkspaceAccessRequest, WsEvent,
 };
 use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::workflow_actor::model::{WorkflowCancelRequest, WorkflowCancelResponse};
@@ -15,9 +14,9 @@ use crate::actors::workspace_actor::model::{AcquireLeaseRequest, Lease, ReleaseL
 use crate::actors::workspace_actor::model::{WorkspaceCreateRequest, WorkspaceSummary};
 use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use crate::id::petname_uuid;
 use crate::impl_handle_methods;
-use std::collections::HashSet;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -58,7 +57,7 @@ impl ShellActor {
                     ShellMsg::ListAgents { request ; reply } => self.list_agents(request).await,
                     ShellMsg::CreateAgent { request ; reply } => self.create_agent(request).await,
                     ShellMsg::DeleteAgent { request ; reply } => self.delete_agent(request).await,
-                    ShellMsg::AgentSnapshot { request ; reply } => self.agent_snapshot(request).await,
+                    ShellMsg::AgentSnapshot { addr ; reply } => self.agent_snapshot(addr).await,
                     ShellMsg::SendMessage { request ; reply } => self.send_message(request).await,
                     ShellMsg::ApproveRequest { request ; reply } => self.approve_request(request).await,
                     ShellMsg::Cancel { request ; reply } => self.cancel(request).await,
@@ -152,6 +151,8 @@ impl ShellActor {
     }
 
     fn unsubscribe_workspace(&mut self, connection_id: ConnectionId) {
+        // The sidebar's workspace subscription is independent of the open chat.
+        // Its agent subscription keeps the address captured at subscribe_agent time.
         let workspace_uuid = self
             .connections
             .get(&connection_id)
@@ -191,23 +192,16 @@ impl ShellActor {
             .ok_or_else(|| {
                 SubsystemError::validation("subscribe workspace before subscribing to an agent")
             })?;
-        if !self
-            .handles
-            .agent
-            .contains(&workspace_uuid, &agent_uuid)
-            .await?
-        {
-            return Err(SubsystemError::not_found(ResourceKind::Agent, &agent_uuid));
-        }
-        // Auto-unsubscribe from previous agent
+        let addr = AgentAddr::new(workspace_uuid, agent_uuid);
+        self.require_agent(&addr).await?;
         self.unsubscribe_agent(connection_id);
         // Set new agent subscription
         self.agent_subscribers
-            .entry(agent_uuid.clone())
+            .entry(addr.clone())
             .or_default()
             .push(connection_id);
         if let Some(session) = self.connections.get_mut(&connection_id) {
-            session.subscribed_agent = Some(agent_uuid);
+            session.subscribed_agent = Some(addr);
         }
         Ok(())
     }
@@ -387,13 +381,17 @@ impl ShellActor {
         &self,
         request: WorkspaceAccessRequest,
     ) -> SubsystemResult<Vec<AgentSummary>> {
-        self.authorize_workspace_read(&request).await?;
+        self.authorize_workspace_read(&request.workspace_uuid)
+            .await?;
         self.handles.agent.list(request.workspace_uuid).await
     }
 
     async fn create_agent(&self, request: AuthorizedAgentCreateRequest) -> SubsystemResult<Agent> {
         self.ensure_accepting_work()?;
-        self.authorize_workspace_write(&request.workspace)?;
+        self.authorize_workspace_write(
+            &request.workspace.workspace_uuid,
+            &request.workspace.lease_token,
+        )?;
         let existing = self
             .handles
             .agent
@@ -405,8 +403,7 @@ impl ShellActor {
         self.handles
             .agent
             .create(AgentCreateRequest {
-                workspace_uuid: request.workspace.workspace_uuid,
-                uuid: petname_uuid(existing)?,
+                addr: AgentAddr::new(request.workspace.workspace_uuid, petname_uuid(existing)?),
                 name: request.agent.name,
                 profile: request.agent.profile,
                 context_refs: request.agent.context_refs,
@@ -415,38 +412,43 @@ impl ShellActor {
             .await
     }
 
-    async fn delete_agent(&self, request: AgentWriteAccessRequest) -> SubsystemResult<()> {
+    async fn delete_agent(&mut self, request: AgentWriteAccessRequest) -> SubsystemResult<()> {
         self.ensure_accepting_work()?;
-        self.authorize_agent_write(&request).await?;
-        self.handles
-            .agent
-            .delete(request.workspace.workspace_uuid, request.agent_uuid)
-            .await
+        self.authorize_agent_write(&request)?;
+        self.handles.agent.delete(request.addr.clone()).await?;
+        if let Some(subscribers) = self.agent_subscribers.remove(&request.addr) {
+            for id in subscribers {
+                if let Some(session) = self.connections.get_mut(&id) {
+                    session.subscribed_agent = None;
+                }
+            }
+        }
+        Ok(())
     }
 
-    async fn agent_snapshot(&self, request: AgentAccessRequest) -> SubsystemResult<AgentSnapshot> {
-        self.authorize_agent_read(&request).await?;
-        self.handles.agent.snapshot(request.agent_uuid).await
+    async fn agent_snapshot(&self, addr: AgentAddr) -> SubsystemResult<AgentSnapshot> {
+        self.authorize_workspace_read(&addr.workspace_uuid).await?;
+        self.handles.agent.snapshot(addr).await
     }
 
     async fn send_message(&self, request: AuthorizedSendMessageRequest) -> SubsystemResult<()> {
         self.ensure_accepting_work()?;
-        self.authorize_agent_write(&request.access).await?;
+        self.authorize_agent_write(&request.access)?;
         self.handles
             .agent
             .send_message(SendMessageRequest {
-                agent_uuid: request.access.agent_uuid,
+                addr: request.access.addr,
                 message_body: request.message_body,
             })
             .await
     }
 
     async fn approve_request(&self, request: AuthorizedApproveRequest) -> SubsystemResult<()> {
-        self.authorize_agent_write(&request.access).await?;
+        self.authorize_agent_write(&request.access)?;
         self.handles
             .agent
             .approve_request(ApproveRequest {
-                agent_uuid: request.access.agent_uuid,
+                addr: request.access.addr,
                 request_uuid: request.request_uuid,
                 approval_mask: request.approval_mask,
             })
@@ -454,15 +456,18 @@ impl ShellActor {
     }
 
     async fn cancel(&self, request: AgentWriteAccessRequest) -> SubsystemResult<()> {
-        self.authorize_agent_write(&request).await?;
-        self.handles.agent.cancel(request.agent_uuid).await
+        self.authorize_agent_write(&request)?;
+        self.handles.agent.cancel(request.addr).await
     }
 
     async fn workflow_cancel(
         &self,
         request: AuthorizedCancelWorkflowRequest,
     ) -> SubsystemResult<WorkflowCancelResponse> {
-        self.authorize_workspace_write(&request.workspace)?;
+        self.authorize_workspace_write(
+            &request.workspace.workspace_uuid,
+            &request.workspace.lease_token,
+        )?;
         self.handles
             .workflow
             .workflow_cancel(WorkflowCancelRequest {
@@ -479,10 +484,7 @@ impl ShellActor {
     ) -> SubsystemResult<()> {
         self.ensure_accepting_work()?;
         // 1. Verify lease token
-        self.authorize_workspace_write(&WorkspaceWriteAccessRequest {
-            workspace_uuid: request.workspace_uuid.clone(),
-            lease_token: request.lease_token.clone(),
-        })?;
+        self.authorize_workspace_write(&request.workspace_uuid, &request.lease_token)?;
 
         // 2. List all agents in this workspace
         let agents = self
@@ -528,31 +530,16 @@ impl ShellActor {
         );
 
         // 7. All remaining cleanup is infallible in-memory state removal.
-        self.clear_deleted_workspace_state(&request.workspace_uuid, &agents);
+        self.clear_deleted_workspace_state(&request.workspace_uuid);
 
         Ok(())
     }
 
-    fn clear_deleted_workspace_state(&mut self, workspace_uuid: &str, agents: &[AgentSummary]) {
-        let mut deleted_agent_uuids = agents
-            .iter()
-            .map(|agent| agent.agent_uuid.clone())
-            .collect::<HashSet<_>>();
-
-        // Include stale per-connection agent references associated with this
-        // workspace, even if they were absent from AgentActor's latest list.
-        for session in self.connections.values() {
-            if session.subscribed_workspace.as_deref() == Some(workspace_uuid)
-                && let Some(agent_uuid) = &session.subscribed_agent
-            {
-                deleted_agent_uuids.insert(agent_uuid.clone());
-            }
-        }
-
+    fn clear_deleted_workspace_state(&mut self, workspace_uuid: &str) {
         self.leases.remove(workspace_uuid);
         self.workspace_subscribers.remove(workspace_uuid);
         self.agent_subscribers
-            .retain(|agent_uuid, _| !deleted_agent_uuids.contains(agent_uuid));
+            .retain(|addr, _| addr.workspace_uuid != workspace_uuid);
 
         for session in self.connections.values_mut() {
             if session.subscribed_workspace.as_deref() == Some(workspace_uuid) {
@@ -561,7 +548,7 @@ impl ShellActor {
             if session
                 .subscribed_agent
                 .as_ref()
-                .is_some_and(|agent_uuid| deleted_agent_uuids.contains(agent_uuid))
+                .is_some_and(|addr| addr.workspace_uuid == workspace_uuid)
             {
                 session.subscribed_agent = None;
             }
@@ -570,54 +557,25 @@ impl ShellActor {
 
     // ========== Authorization ==========
 
-    async fn authorize_agent_read(&self, request: &AgentAccessRequest) -> SubsystemResult<()> {
-        self.authorize_workspace_read(&request.workspace).await?;
-        if !self
-            .handles
-            .agent
-            .contains(&request.workspace.workspace_uuid, &request.agent_uuid)
-            .await?
-        {
+    fn authorize_agent_write(&self, request: &AgentWriteAccessRequest) -> SubsystemResult<()> {
+        self.authorize_workspace_write(&request.addr.workspace_uuid, &request.lease_token)
+    }
+
+    async fn require_agent(&self, addr: &AgentAddr) -> SubsystemResult<()> {
+        if !self.handles.agent.contains(addr.clone()).await? {
             return Err(SubsystemError::not_found(
                 ResourceKind::Agent,
-                &request.agent_uuid,
+                &addr.agent_uuid,
             ));
         }
         Ok(())
     }
 
-    async fn authorize_agent_write(
-        &self,
-        request: &AgentWriteAccessRequest,
-    ) -> SubsystemResult<()> {
-        self.authorize_workspace_write(&request.workspace)?;
-        if !self
-            .handles
-            .agent
-            .contains(&request.workspace.workspace_uuid, &request.agent_uuid)
-            .await?
-        {
-            return Err(SubsystemError::not_found(
-                ResourceKind::Agent,
-                &request.agent_uuid,
-            ));
-        }
-        Ok(())
-    }
-
-    async fn authorize_workspace_read(
-        &self,
-        request: &WorkspaceAccessRequest,
-    ) -> SubsystemResult<()> {
-        if !self
-            .handles
-            .workspace
-            .contains(&request.workspace_uuid)
-            .await?
-        {
+    async fn authorize_workspace_read(&self, workspace_uuid: &str) -> SubsystemResult<()> {
+        if !self.handles.workspace.contains(workspace_uuid).await? {
             return Err(SubsystemError::not_found(
                 ResourceKind::Workspace,
-                &request.workspace_uuid,
+                workspace_uuid,
             ));
         }
         Ok(())
@@ -625,16 +583,17 @@ impl ShellActor {
 
     fn authorize_workspace_write(
         &self,
-        request: &WorkspaceWriteAccessRequest,
+        workspace_uuid: &str,
+        lease_token: &str,
     ) -> SubsystemResult<()> {
         let lease = self
             .leases
-            .get(&request.workspace_uuid)
+            .get(workspace_uuid)
             .filter(|lease| lease.expires_at > chrono::Utc::now().timestamp())
             .ok_or(SubsystemError::PermissionDenied {
                 action: "write workspace without active lease",
             })?;
-        if lease.lease_token != request.lease_token {
+        if lease.lease_token != lease_token {
             return Err(SubsystemError::PermissionDenied {
                 action: "write workspace with invalid lease",
             });
@@ -689,8 +648,8 @@ impl_handle_methods! {
     fn list_profiles(&self) -> Vec<String>
         => ListProfiles {};
 
-    fn agent_snapshot(&self, request: AgentAccessRequest) -> AgentSnapshot
-        => AgentSnapshot { request: request };
+    fn agent_snapshot(&self, addr: AgentAddr) -> AgentSnapshot
+        => AgentSnapshot { addr: addr };
 
     fn send_message(&self, request: AuthorizedSendMessageRequest) -> ()
         => SendMessage { request: request };
@@ -733,16 +692,12 @@ impl ShellHandle {
 
     // ---- Event emission (convenience) ----
 
-    pub fn emit_agent_event(
-        &self,
-        agent_uuid: impl Into<String>,
-        event: WsEvent,
-    ) -> SubsystemResult<()> {
+    pub fn emit_agent_event(&self, addr: AgentAddr, event: WsEvent) -> SubsystemResult<()> {
         // Deliberately use try_send: callers are actors that ShellActor may be
         // awaiting, so send().await on a full mailbox could create a wait cycle.
         self.tx
             .try_send(ShellMsg::EmitEvent {
-                target: EventTarget::Agent(agent_uuid.into()),
+                target: EventTarget::Agent(addr),
                 event,
             })
             .map_err(|error| SubsystemError::internal("enqueue agent event", error.to_string()))
@@ -785,7 +740,6 @@ mod tests {
         let (tx, rx) = mpsc::channel::<WorkspaceMsg>(8);
         let handle = WorkspaceHandle { tx };
         WorkspaceActor::from_root(rx, root.clone()).unwrap().spawn();
-        handle.list().await.unwrap();
         (root, handle)
     }
 
@@ -927,28 +881,15 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(shell.authorize_workspace_read("workspace").await.is_ok());
         assert!(
             shell
-                .authorize_workspace_read(&WorkspaceAccessRequest {
-                    workspace_uuid: "workspace".to_string(),
-                })
-                .await
+                .authorize_workspace_write("workspace", &lease.lease_token)
                 .is_ok()
         );
         assert!(
             shell
-                .authorize_workspace_write(&WorkspaceWriteAccessRequest {
-                    workspace_uuid: "workspace".to_string(),
-                    lease_token: lease.lease_token,
-                })
-                .is_ok()
-        );
-        assert!(
-            shell
-                .authorize_workspace_write(&WorkspaceWriteAccessRequest {
-                    workspace_uuid: "workspace".to_string(),
-                    lease_token: "wrong-token".to_string(),
-                })
+                .authorize_workspace_write("workspace", "wrong-token")
                 .is_err()
         );
     }
@@ -1021,6 +962,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subscriptions_route_same_agent_id_by_workspace() {
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    AgentMsg::Contains { reply, .. } => reply.send(Ok(true)).unwrap(),
+                    AgentMsg::Delete { addr, reply } => {
+                        assert_eq!(addr, AgentAddr::new("a", "same"));
+                        reply.send(Ok(())).unwrap();
+                    }
+                    _ => panic!("unexpected agent request"),
+                }
+            }
+        });
+        let mut handles = crate::handles::test_handles();
+        handles.agent = AgentHandle { tx };
+        let (_tx, rx) = mpsc::channel(8);
+        let mut shell = ShellActor::load(rx, handles);
+        let mut a = shell.register_connection(1).unwrap();
+        let mut b = shell.register_connection(2).unwrap();
+        for (id, ws) in [(1, "a"), (2, "b")] {
+            shell.connections.get_mut(&id).unwrap().subscribed_workspace = Some(ws.into());
+            shell.subscribe_agent(id, "same".into()).await.unwrap();
+        }
+        let event = WsEvent::StreamDelta {
+            text: "delta".into(),
+        };
+        shell.emit_event(
+            EventTarget::Agent(AgentAddr::new("a", "same")),
+            event.clone(),
+        );
+        assert!(matches!(a.try_recv(), Ok(WsEvent::StreamDelta { .. })));
+        assert!(b.try_recv().is_err());
+        shell.leases.insert(
+            "a".into(),
+            Lease {
+                workspace_uuid: "a".into(),
+                client_id: "client".into(),
+                lease_token: "token".into(),
+                expires_at: i64::MAX,
+            },
+        );
+        let addr = AgentAddr::new("a", "same");
+        shell
+            .delete_agent(AgentWriteAccessRequest {
+                addr: addr.clone(),
+                lease_token: "token".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(shell.connections[&1].subscribed_agent, None);
+        shell.emit_event(EventTarget::Agent(addr), event.clone());
+        assert!(a.try_recv().is_err());
+        shell.clear_deleted_workspace_state("a");
+        shell.emit_event(EventTarget::Agent(AgentAddr::new("b", "same")), event);
+        assert!(matches!(b.try_recv(), Ok(WsEvent::StreamDelta { .. })));
+        assert!(a.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn successful_workspace_delete_clears_all_shell_subscription_state() {
         let (root, workspace) = workspace_fixture().await;
         let mut handles = crate::handles::test_handles();
@@ -1040,16 +1041,16 @@ mod tests {
         let mut events = shell.register_connection(1).unwrap();
         let session = shell.connections.get_mut(&1).unwrap();
         session.subscribed_workspace = Some("workspace".to_string());
-        session.subscribed_agent = Some("stale-agent".to_string());
+        session.subscribed_agent = Some(AgentAddr::new("workspace", "stale-agent"));
         shell
             .workspace_subscribers
             .insert("workspace".to_string(), vec![1]);
         shell
             .agent_subscribers
-            .insert("agent-1".to_string(), vec![99]);
+            .insert(AgentAddr::new("workspace", "agent-1"), vec![99]);
         shell
             .agent_subscribers
-            .insert("stale-agent".to_string(), vec![1]);
+            .insert(AgentAddr::new("workspace", "stale-agent"), vec![1]);
 
         shell
             .delete_workspace(AuthorizedDeleteWorkspaceRequest {
@@ -1062,8 +1063,16 @@ mod tests {
         assert!(!root.join("workspace").exists());
         assert!(!shell.leases.contains_key("workspace"));
         assert!(!shell.workspace_subscribers.contains_key("workspace"));
-        assert!(!shell.agent_subscribers.contains_key("agent-1"));
-        assert!(!shell.agent_subscribers.contains_key("stale-agent"));
+        assert!(
+            !shell
+                .agent_subscribers
+                .contains_key(&AgentAddr::new("workspace", "agent-1"))
+        );
+        assert!(
+            !shell
+                .agent_subscribers
+                .contains_key(&AgentAddr::new("workspace", "stale-agent"))
+        );
         let session = shell.connections.get(&1).unwrap();
         assert_eq!(session.subscribed_workspace, None);
         assert_eq!(session.subscribed_agent, None);

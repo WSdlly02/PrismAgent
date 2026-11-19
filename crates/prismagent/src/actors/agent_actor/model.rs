@@ -3,6 +3,7 @@ use crate::actors::storage_actor::model::agent::{Agent, AgentCreateRequest};
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
@@ -16,7 +17,7 @@ pub struct AgentHandle {
 
 pub struct AgentActor {
     pub(super) rx: mpsc::Receiver<AgentMsg>,
-    pub(super) entries: HashMap<String, AgentEntry>, // agent_uuid -> AgentEntry
+    pub(super) entries: HashMap<AgentAddr, AgentEntry>,
     pub(super) handles: AppHandles,
 }
 
@@ -33,8 +34,7 @@ pub enum AgentMsg {
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     Delete {
-        workspace_uuid: String,
-        agent_uuid: String,
+        addr: AgentAddr,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
     ForgetWorkspace {
@@ -42,12 +42,11 @@ pub enum AgentMsg {
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
     Contains {
-        workspace_uuid: String,
-        agent_uuid: String,
+        addr: AgentAddr,
         reply: oneshot::Sender<SubsystemResult<bool>>,
     },
     Snapshot {
-        agent_uuid: String,
+        addr: AgentAddr,
         reply: oneshot::Sender<SubsystemResult<AgentSnapshot>>,
     },
     SendMessage {
@@ -63,21 +62,21 @@ pub enum AgentMsg {
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
     Cancel {
-        agent_uuid: String,
+        addr: AgentAddr,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
     SetAutoLoop {
-        agent_uuid: String,
+        addr: AgentAddr,
         enabled: bool,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     InferenceFinished {
-        agent_uuid: String,
+        addr: AgentAddr,
         inference_uuid: String,
         result: AgentTaskResult<AgentInferenceOutput>,
     },
     ToolBatchFinished {
-        agent_uuid: String,
+        addr: AgentAddr,
         job_uuid: String,
         result: AgentTaskResult<ToolBatchOutput>,
     },
@@ -156,7 +155,7 @@ pub type AgentTaskResult<T> = Result<T, AgentTaskError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMessageRequest {
-    pub agent_uuid: String,
+    pub addr: AgentAddr,
     pub message_body: MessageBody,
 }
 
@@ -169,7 +168,7 @@ pub struct MessageBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelfUpdateRequest {
-    pub agent_uuid: String,
+    pub addr: AgentAddr,
     pub context_refs: Option<Vec<String>>,
     pub context_out: Option<Vec<String>>,
     pub auto_loop: Option<bool>,
@@ -185,7 +184,7 @@ pub struct Attachment {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApproveRequest {
-    pub agent_uuid: String,
+    pub addr: AgentAddr,
     pub request_uuid: String,
     pub approval_mask: u64,
 }

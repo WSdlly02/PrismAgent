@@ -1,3 +1,4 @@
+use crate::id::AgentAddr;
 use std::path::PathBuf;
 use tokio::sync::{mpsc, oneshot};
 
@@ -34,6 +35,10 @@ pub enum StorageMsg {
         workspace_uuid: String,
         reply: oneshot::Sender<SubsystemResult<Vec<String>>>,
     },
+    ReadAgent {
+        addr: AgentAddr,
+        reply: oneshot::Sender<SubsystemResult<Agent>>,
+    },
     ReadAgents {
         workspace_uuid: String,
         uuids: Vec<String>,
@@ -46,13 +51,11 @@ pub enum StorageMsg {
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     DeleteAgent {
-        workspace_uuid: String,
-        agent_uuid: String,
+        addr: AgentAddr,
         reply: oneshot::Sender<SubsystemResult<()>>,
     },
     SetAgentAutoLoop {
-        workspace_uuid: String,
-        agent_uuid: String,
+        addr: AgentAddr,
         enabled: bool,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
@@ -61,8 +64,7 @@ pub enum StorageMsg {
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },
     AppendAgentUnits {
-        workspace_uuid: String,
-        agent_uuid: String,
+        addr: AgentAddr,
         units: Vec<Unit>,
         reply: oneshot::Sender<SubsystemResult<Agent>>,
     },

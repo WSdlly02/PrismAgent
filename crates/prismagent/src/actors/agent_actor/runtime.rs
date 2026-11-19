@@ -14,6 +14,7 @@ use crate::actors::storage_actor::model::agent::{
 use crate::actors::storage_actor::model::unit::Unit;
 use crate::error::{ConflictKind, ResourceKind, SubsystemError, SubsystemResult};
 use crate::handles::AppHandles;
+use crate::id::AgentAddr;
 use crate::{actor_dispatch_mixed, impl_handle_methods};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -38,19 +39,19 @@ impl AgentActor {
                     AgentMsg::TryShutdown { ; reply } => self.try_shutdown(),
                     AgentMsg::List { workspace_uuid ; reply } => self.list(&workspace_uuid).await,
                     AgentMsg::Create { request ; reply } => self.create(request).await,
-                    AgentMsg::Delete { workspace_uuid, agent_uuid ; reply } => self.delete(&workspace_uuid, &agent_uuid).await,
+                    AgentMsg::Delete { addr ; reply } => self.delete(addr).await,
                     AgentMsg::ForgetWorkspace { workspace_uuid ; reply } => self.forget_workspace(&workspace_uuid),
-                    AgentMsg::Contains { workspace_uuid, agent_uuid ; reply } => Ok(self.contains(&workspace_uuid, &agent_uuid)),
-                    AgentMsg::Snapshot { agent_uuid ; reply } => self.snapshot(&agent_uuid).await,
+                    AgentMsg::Contains { addr ; reply } => self.contains(&addr).await,
+                    AgentMsg::Snapshot { addr ; reply } => self.snapshot(&addr).await,
                     AgentMsg::SendMessage { request ; reply } => self.send_message(request).await,
                     AgentMsg::SelfUpdate { request ; reply } => self.self_update(request).await,
                     AgentMsg::ApproveRequest { request ; reply } => self.approve_request(request).await,
-                    AgentMsg::Cancel { agent_uuid ; reply } => self.cancel(&agent_uuid).await,
-                    AgentMsg::SetAutoLoop { agent_uuid, enabled ; reply } => self.set_auto_loop(&agent_uuid, enabled).await,
+                    AgentMsg::Cancel { addr ; reply } => self.cancel(&addr).await,
+                    AgentMsg::SetAutoLoop { addr, enabled ; reply } => self.set_auto_loop(&addr, enabled).await,
                 }
                 fire {
-                    AgentMsg::InferenceFinished { agent_uuid, inference_uuid, result } => self.finish_inference(&agent_uuid, &inference_uuid, result).await,
-                    AgentMsg::ToolBatchFinished { agent_uuid, job_uuid, result } => self.finish_tool_batch(&agent_uuid, &job_uuid, result).await,
+                    AgentMsg::InferenceFinished { addr, inference_uuid, result } => self.finish_inference(&addr, &inference_uuid, result).await,
+                    AgentMsg::ToolBatchFinished { addr, job_uuid, result } => self.finish_tool_batch(&addr, &job_uuid, result).await,
                 }
             );
         }
@@ -60,7 +61,11 @@ impl AgentActor {
         let uuids = self.handles.storage.list_agents(workspace_uuid).await?;
         let uncached = uuids
             .into_iter()
-            .filter(|uuid| !self.entries.contains_key(uuid))
+            .filter(|uuid| {
+                !self
+                    .entries
+                    .contains_key(&AgentAddr::new(workspace_uuid, uuid))
+            })
             .collect::<Vec<_>>();
         let discovered = self
             .handles
@@ -69,22 +74,22 @@ impl AgentActor {
             .await?;
         for agent in discovered {
             self.entries.insert(
-                agent.uuid.clone(),
-                AgentEntry::idle(workspace_uuid.to_string(), agent),
+                AgentAddr::new(workspace_uuid, &agent.uuid),
+                AgentEntry::idle(agent),
             );
         }
         let mut agents = self
             .entries
-            .values()
-            .filter(|entry| entry.workspace_uuid == workspace_uuid)
-            .map(|entry| self.agent_summary(entry))
+            .iter()
+            .filter(|(addr, _)| addr.workspace_uuid == workspace_uuid)
+            .map(|(_, entry)| self.agent_summary(entry))
             .collect::<Vec<_>>();
         agents.sort_by(|left, right| left.agent_name.cmp(&right.agent_name));
         Ok(agents)
     }
 
     async fn create(&mut self, request: AgentCreateRequest) -> SubsystemResult<Agent> {
-        let workspace_uuid = request.workspace_uuid.clone();
+        let workspace_uuid = request.addr.workspace_uuid.clone();
         let profile_name = request.profile.clone();
         let context_refs = request.context_refs.clone();
         let has_initial_task = !context_refs.is_empty();
@@ -95,8 +100,7 @@ impl AgentActor {
             .handles
             .context
             .render_initial_prompts(Box::new(RenderInitialPromptsRequest {
-                workspace_uuid: workspace_uuid.clone(),
-                agent_uuid: request.uuid.clone(),
+                addr: request.addr.clone(),
                 context_refs,
                 profile,
             }))
@@ -106,26 +110,26 @@ impl AgentActor {
             .storage
             .create_agent(request, auto_loop, auto_loop_message)
             .await?;
+        // Storage returns the canonical ID used for the file name.
+        let addr = AgentAddr::new(workspace_uuid, &agent.uuid);
         if !initial_units.is_empty() {
             agent = self
                 .handles
                 .storage
-                .append_agent_units(workspace_uuid.clone(), agent.uuid.clone(), initial_units)
+                .append_agent_units(addr.clone(), initial_units)
                 .await?;
         }
-        self.entries.insert(
-            agent.uuid.clone(),
-            AgentEntry::idle(workspace_uuid.clone(), agent.clone()),
+        self.entries
+            .insert(addr.clone(), AgentEntry::idle(agent.clone()));
+        let summary =
+            self.agent_summary(self.entries.get(&addr).expect("agent entry inserted above"));
+        self.emit_workspace_event(
+            &addr.workspace_uuid,
+            WsEvent::AgentCreated { agent: summary },
         );
-        let summary = self.agent_summary(
-            self.entries
-                .get(&agent.uuid)
-                .expect("agent entry inserted above"),
-        );
-        self.emit_workspace_event(&workspace_uuid, WsEvent::AgentCreated { agent: summary });
         if has_initial_task && auto_loop {
             self.apply_next_action(
-                &agent.uuid,
+                &addr,
                 NextAction::ContinueInference {
                     turn: TurnContext::default(),
                 },
@@ -134,25 +138,20 @@ impl AgentActor {
         Ok(agent)
     }
 
-    async fn delete(&mut self, workspace_uuid: &str, agent_uuid: &str) -> SubsystemResult<()> {
-        if !self.contains(workspace_uuid, agent_uuid) {
-            return Err(SubsystemError::not_found(ResourceKind::Agent, agent_uuid));
-        }
-        if !self.state(agent_uuid)?.is_idle() {
+    async fn delete(&mut self, addr: AgentAddr) -> SubsystemResult<()> {
+        self.ensure_loaded(&addr).await?;
+        if !self.state(&addr)?.is_idle() {
             return Err(SubsystemError::conflict(
                 ConflictKind::AgentBusy,
-                agent_uuid,
+                &addr.agent_uuid,
             ));
         }
-        self.handles
-            .storage
-            .delete_agent(workspace_uuid.to_string(), agent_uuid.to_string())
-            .await?;
-        self.entries.remove(agent_uuid);
+        self.handles.storage.delete_agent(addr.clone()).await?;
+        self.entries.remove(&addr);
         self.emit_workspace_event(
-            workspace_uuid,
+            &addr.workspace_uuid,
             WsEvent::AgentDeleted {
-                agent_uuid: agent_uuid.to_string(),
+                agent_uuid: addr.agent_uuid,
             },
         );
         Ok(())
@@ -160,7 +159,7 @@ impl AgentActor {
 
     fn forget_workspace(&mut self, workspace_uuid: &str) -> SubsystemResult<()> {
         self.entries
-            .retain(|_, entry| entry.workspace_uuid != workspace_uuid);
+            .retain(|addr, _| addr.workspace_uuid != workspace_uuid);
         Ok(())
     }
 
@@ -170,15 +169,31 @@ impl AgentActor {
         Ok(self.entries.values().all(|entry| entry.state.is_idle()))
     }
 
-    fn contains(&self, workspace_uuid: &str, agent_uuid: &str) -> bool {
-        self.entries
-            .get(agent_uuid)
-            .is_some_and(|entry| entry.workspace_uuid == workspace_uuid)
+    async fn contains(&mut self, addr: &AgentAddr) -> SubsystemResult<bool> {
+        match self.ensure_loaded(addr).await {
+            Ok(()) => Ok(true),
+            Err(SubsystemError::NotFound {
+                resource: ResourceKind::Agent,
+                ..
+            }) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
-    async fn snapshot(&self, agent_uuid: &str) -> SubsystemResult<AgentSnapshot> {
-        let agent = self.agent(agent_uuid)?;
-        let workspace_uuid = self.workspace_uuid(agent_uuid)?;
+    // Request handlers may load from disk; late background completions must only
+    // inspect an existing entry and match their inference/job ID.
+    pub(super) async fn ensure_loaded(&mut self, addr: &AgentAddr) -> SubsystemResult<()> {
+        if !self.entries.contains_key(addr) {
+            let agent = self.handles.storage.read_agent(addr.clone()).await?;
+            self.entries.insert(addr.clone(), AgentEntry::idle(agent));
+        }
+        Ok(())
+    }
+
+    async fn snapshot(&mut self, addr: &AgentAddr) -> SubsystemResult<AgentSnapshot> {
+        self.ensure_loaded(addr).await?;
+        let agent = self.agent(addr)?;
+        let workspace_uuid = addr.workspace_uuid.as_str();
         let units = if agent.unit_chain.is_empty() {
             Vec::new()
         } else {
@@ -187,7 +202,7 @@ impl AgentActor {
                 .read_units(workspace_uuid, agent.unit_chain.clone())
                 .await?
         };
-        let state = self.state(agent_uuid)?;
+        let state = self.state(addr)?;
         Ok(AgentSnapshot {
             units,
             status: state.status(),
@@ -196,15 +211,16 @@ impl AgentActor {
     }
 
     async fn send_message(&mut self, request: SendMessageRequest) -> SubsystemResult<()> {
-        if !self.state(&request.agent_uuid)?.is_idle() {
+        self.ensure_loaded(&request.addr).await?;
+        if !self.state(&request.addr)?.is_idle() {
             return Err(SubsystemError::conflict(
                 ConflictKind::AgentBusy,
-                request.agent_uuid,
+                request.addr.to_string(),
             ));
         }
-        let agent_uuid = request.agent_uuid.clone();
+        let addr = request.addr.clone();
         self.apply_next_action(
-            &agent_uuid,
+            &addr,
             NextAction::StartInference {
                 request,
                 turn: TurnContext::default(),
@@ -213,7 +229,7 @@ impl AgentActor {
     }
 
     async fn self_update(&mut self, request: SelfUpdateRequest) -> SubsystemResult<Agent> {
-        self.agent(&request.agent_uuid)?;
+        self.ensure_loaded(&request.addr).await?;
         if request.context_refs.is_none()
             && request.context_out.is_none()
             && request.auto_loop.is_none()
@@ -229,91 +245,93 @@ impl AgentActor {
                 "self_update only supports setting auto_loop to false; use prismagent_task_finish for normal task completion",
             ));
         }
-        let workspace_uuid = self.workspace_uuid(&request.agent_uuid)?.to_string();
         let agent = self
             .handles
             .storage
             .update_agent(StorageAgentUpdateRequest {
-                workspace_uuid: workspace_uuid.clone(),
-                agent_uuid: request.agent_uuid.clone(),
+                addr: request.addr.clone(),
                 context_refs: request.context_refs,
                 context_out: request.context_out,
                 auto_loop: request.auto_loop,
                 auto_loop_message: request.auto_loop_message,
             })
             .await?;
-        self.entry_mut(&agent.uuid)?.agent = agent.clone();
-        let summary =
-            self.agent_summary(self.entries.get(&agent.uuid).expect("entry checked above"));
-        self.emit_workspace_event(&workspace_uuid, WsEvent::AgentUpdated { agent: summary });
+        self.entry_mut(&request.addr)?.agent = agent.clone();
+        let summary = self.agent_summary(
+            self.entries
+                .get(&request.addr)
+                .expect("entry checked above"),
+        );
+        self.emit_workspace_event(
+            &request.addr.workspace_uuid,
+            WsEvent::AgentUpdated { agent: summary },
+        );
         Ok(agent)
     }
 
     pub(super) async fn commit_units(
         &mut self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         units: Vec<Unit>,
     ) -> SubsystemResult<()> {
         if units.is_empty() {
             return Ok(());
         }
-        let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
         let updated_agent = self
             .handles
             .storage
-            .append_agent_units(workspace_uuid, agent_uuid.to_string(), units.clone())
+            .append_agent_units(addr.clone(), units.clone())
             .await?;
-        self.entry_mut(agent_uuid)?.agent = updated_agent;
+        self.entry_mut(addr)?.agent = updated_agent;
         for unit in units {
-            self.emit_agent_event(agent_uuid, WsEvent::UnitAppend { unit });
+            self.emit_agent_event(addr, WsEvent::UnitAppend { unit });
         }
         Ok(())
     }
 
-    async fn set_auto_loop(&mut self, agent_uuid: &str, enabled: bool) -> SubsystemResult<Agent> {
+    async fn set_auto_loop(&mut self, addr: &AgentAddr, enabled: bool) -> SubsystemResult<Agent> {
+        self.ensure_loaded(addr).await?;
         if enabled {
             return Err(SubsystemError::validation_field(
                 "auto_loop",
                 "set_auto_loop(true) is not supported yet",
             ));
         }
-        let workspace_uuid = self.workspace_uuid(agent_uuid)?.to_string();
         let agent = self
             .handles
             .storage
-            .set_agent_auto_loop(workspace_uuid.clone(), agent_uuid.to_string(), enabled)
+            .set_agent_auto_loop(addr.clone(), enabled)
             .await?;
-        self.entry_mut(agent_uuid)?.agent = agent.clone();
-        let summary =
-            self.agent_summary(self.entries.get(agent_uuid).expect("entry checked above"));
-        self.emit_workspace_event(&workspace_uuid, WsEvent::AgentUpdated { agent: summary });
+        self.entry_mut(addr)?.agent = agent.clone();
+        let summary = self.agent_summary(self.entries.get(addr).expect("entry checked above"));
+        self.emit_workspace_event(
+            &addr.workspace_uuid,
+            WsEvent::AgentUpdated { agent: summary },
+        );
         Ok(agent)
     }
 
-    pub(super) fn emit_agent_event(&self, agent_uuid: &str, event: WsEvent) {
+    pub(super) fn emit_agent_event(&self, addr: &AgentAddr, event: WsEvent) {
         // Intentionally best-effort: ShellActor can be awaiting an AgentActor
         // request, so awaiting a full Shell mailbox here could create a
         // ShellActor <-> AgentActor wait cycle.
-        let _ = self
-            .handles
-            .shell
-            .emit_agent_event(agent_uuid.to_string(), event);
+        let _ = self.handles.shell.emit_agent_event(addr.clone(), event);
     }
 
     /// Converts orchestration context plus an internal source error into the
     /// public asynchronous failure event consumed by web clients.
     pub(super) fn emit_task_failure(
         &self,
-        agent_uuid: &str,
+        addr: &AgentAddr,
         correlation_id: &str,
         error: AgentTaskError,
     ) {
         let AgentTaskError { stage, source } = error;
         self.emit_agent_event(
-            agent_uuid,
+            addr,
             WsEvent::OperationFailed {
-                workspace_uuid: self.workspace_uuid(agent_uuid).ok().map(str::to_string),
-                agent_uuid: agent_uuid.to_string(),
+                workspace_uuid: Some(addr.workspace_uuid.clone()),
+                agent_uuid: addr.agent_uuid.clone(),
                 correlation_id: correlation_id.to_string(),
                 stage,
                 error: source.public_error(),
@@ -343,44 +361,32 @@ impl AgentActor {
         }
     }
 
-    pub(super) fn agent(&self, agent_uuid: &str) -> SubsystemResult<&Agent> {
+    pub(super) fn agent(&self, addr: &AgentAddr) -> SubsystemResult<&Agent> {
         self.entries
-            .get(agent_uuid)
+            .get(addr)
             .map(|entry| &entry.agent)
-            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, agent_uuid))
+            .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, addr.to_string()))
     }
 
-    pub(super) fn state(&self, agent_uuid: &str) -> SubsystemResult<&AgentState> {
+    pub(super) fn state(&self, addr: &AgentAddr) -> SubsystemResult<&AgentState> {
         self.entries
-            .get(agent_uuid)
+            .get(addr)
             .map(|entry| &entry.state)
             .ok_or_else(|| {
                 SubsystemError::internal(
                     "access agent state",
-                    format!("state is missing for agent {agent_uuid}"),
+                    format!("state is missing for agent {addr}"),
                 )
             })
     }
 
-    pub(super) fn entry_mut(&mut self, agent_uuid: &str) -> SubsystemResult<&mut AgentEntry> {
-        self.entries.get_mut(agent_uuid).ok_or_else(|| {
+    pub(super) fn entry_mut(&mut self, addr: &AgentAddr) -> SubsystemResult<&mut AgentEntry> {
+        self.entries.get_mut(addr).ok_or_else(|| {
             SubsystemError::internal(
                 "access agent entry",
-                format!("entry is missing for agent {agent_uuid}"),
+                format!("entry is missing for agent {addr}"),
             )
         })
-    }
-
-    pub(super) fn workspace_uuid(&self, agent_uuid: &str) -> SubsystemResult<&str> {
-        self.entries
-            .get(agent_uuid)
-            .map(|entry| entry.workspace_uuid.as_str())
-            .ok_or_else(|| {
-                SubsystemError::internal(
-                    "resolve agent workspace",
-                    format!("workspace mapping is missing for agent {agent_uuid}"),
-                )
-            })
     }
 }
 
@@ -398,20 +404,20 @@ impl_handle_methods! {
     fn create(&self, request: AgentCreateRequest) -> Agent
         => Create { request: request };
 
-    fn delete(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> ()
-        => Delete { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
+    fn delete(&self, addr: AgentAddr) -> ()
+        => Delete { addr: addr };
 
     fn forget_workspace(&self, workspace_uuid: impl Into<String>) -> ()
         => ForgetWorkspace { workspace_uuid: workspace_uuid.into() };
 
-    fn contains(&self, workspace_uuid: impl Into<String>, agent_uuid: impl Into<String>) -> bool
-        => Contains { workspace_uuid: workspace_uuid.into(), agent_uuid: agent_uuid.into() };
+    fn contains(&self, addr: AgentAddr) -> bool
+        => Contains { addr: addr };
 
-    fn snapshot(&self, agent_uuid: impl Into<String>) -> AgentSnapshot
-        => Snapshot { agent_uuid: agent_uuid.into() };
+    fn snapshot(&self, addr: AgentAddr) -> AgentSnapshot
+        => Snapshot { addr: addr };
 
-    fn cancel(&self, agent_uuid: impl Into<String>) -> ()
-        => Cancel { agent_uuid: agent_uuid.into() };
+    fn cancel(&self, addr: AgentAddr) -> ()
+        => Cancel { addr: addr };
 
     fn send_message(&self, request: SendMessageRequest) -> ()
         => SendMessage { request: request };
@@ -419,8 +425,8 @@ impl_handle_methods! {
     fn self_update(&self, request: SelfUpdateRequest) -> Agent
         => SelfUpdate { request: request };
 
-    fn set_auto_loop(&self, agent_uuid: impl Into<String>, enabled: bool) -> Agent
-        => SetAutoLoop { agent_uuid: agent_uuid.into(), enabled: enabled };
+    fn set_auto_loop(&self, addr: AgentAddr, enabled: bool) -> Agent
+        => SetAutoLoop { addr: addr, enabled: enabled };
 
     fn approve_request(&self, request: ApproveRequest) -> ()
         => ApproveRequest { request: request };
@@ -431,13 +437,13 @@ impl_handle_methods! {
 impl AgentHandle {
     pub async fn inference_complete(
         &self,
-        agent_uuid: impl Into<String>,
+        addr: AgentAddr,
         inference_uuid: impl Into<String>,
         result: AgentTaskResult<AgentInferenceOutput>,
     ) -> SubsystemResult<()> {
         self.tx
             .send(AgentMsg::InferenceFinished {
-                agent_uuid: agent_uuid.into(),
+                addr,
                 inference_uuid: inference_uuid.into(),
                 result,
             })
@@ -447,13 +453,13 @@ impl AgentHandle {
 
     pub async fn tool_batch_complete(
         &self,
-        agent_uuid: impl Into<String>,
+        addr: AgentAddr,
         job_uuid: impl Into<String>,
         result: AgentTaskResult<ToolBatchOutput>,
     ) -> SubsystemResult<()> {
         self.tx
             .send(AgentMsg::ToolBatchFinished {
-                agent_uuid: agent_uuid.into(),
+                addr,
                 job_uuid: job_uuid.into(),
                 result,
             })
@@ -558,24 +564,124 @@ mod runtime_tests {
         let (_tx, rx) = mpsc::channel(1);
         let mut actor = AgentActor::load(rx, crate::handles::test_handles());
         actor.entries.insert(
-            "agent-a".to_string(),
-            AgentEntry::idle("workspace-a".to_string(), test_agent("agent-a")),
+            AgentAddr::new("workspace-a", "same"),
+            AgentEntry::idle(test_agent("same")),
         );
         actor.entries.insert(
-            "agent-b".to_string(),
-            AgentEntry::idle("workspace-b".to_string(), test_agent("agent-b")),
+            AgentAddr::new("workspace-b", "same"),
+            AgentEntry::idle(test_agent("same")),
         );
 
         actor.forget_workspace("workspace-a").unwrap();
 
-        assert!(!actor.entries.contains_key("agent-a"));
-        assert_eq!(
+        assert!(
+            !actor
+                .entries
+                .contains_key(&AgentAddr::new("workspace-a", "same"))
+        );
+        assert!(
             actor
                 .entries
-                .get("agent-b")
-                .map(|entry| entry.workspace_uuid.as_str()),
-            Some("workspace-b")
+                .contains_key(&AgentAddr::new("workspace-b", "same"))
         );
+    }
+
+    #[tokio::test]
+    async fn contains_and_delete_use_the_full_address() {
+        use crate::actors::storage_actor::model::{StorageActor, StorageHandle};
+
+        let root = std::env::temp_dir().join(format!("agent-delete-{}", uuid::Uuid::now_v7()));
+        let (tx, rx) = mpsc::channel(8);
+        StorageActor::from_root(rx, root.clone()).unwrap().spawn();
+        let mut handles = crate::handles::test_handles();
+        handles.storage = StorageHandle { tx };
+        let (tx, rx) = mpsc::channel(8);
+        let handle = AgentHandle { tx };
+        AgentActor::load(rx, handles).spawn();
+        let a = AgentAddr::new("a", "same");
+        let b = AgentAddr::new("b", "same");
+        for addr in [&a, &b] {
+            let dir = root.join(&addr.workspace_uuid).join("agents");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("same.json"),
+                serde_json::to_vec(&test_agent("same")).unwrap(),
+            )
+            .unwrap();
+        }
+        // The planner can update context after restart without listing agents first.
+        let updated = handle
+            .self_update(SelfUpdateRequest {
+                addr: a.clone(),
+                context_refs: None,
+                context_out: Some(vec!["out".into()]),
+                auto_loop: None,
+                auto_loop_message: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(updated.context_out, ["out"]);
+        assert!(handle.contains(a.clone()).await.unwrap());
+        assert!(handle.snapshot(b.clone()).await.unwrap().units.is_empty());
+        handle.delete(a.clone()).await.unwrap();
+        assert!(!handle.contains(a).await.unwrap());
+        assert!(handle.contains(b).await.unwrap());
+        assert!(!root.join("a/agents/same.json").exists());
+        assert!(root.join("b/agents/same.json").is_file());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cold_send_and_completion_are_scoped_to_one_workspace() {
+        use crate::actors::agent_actor::model::MessageBody;
+        use crate::actors::storage_actor::model::{StorageActor, StorageHandle};
+
+        let root = std::env::temp_dir().join(format!("agent-routing-{}", uuid::Uuid::now_v7()));
+        let (tx, rx) = mpsc::channel(8);
+        StorageActor::from_root(rx, root.clone()).unwrap().spawn();
+        let mut handles = crate::handles::test_handles();
+        handles.storage = StorageHandle { tx };
+        let (_tx, rx) = mpsc::channel(8);
+        let mut actor = AgentActor::load(rx, handles);
+        let a = AgentAddr::new("workspace-a", "same");
+        let b = AgentAddr::new("workspace-b", "same");
+        for addr in [&a, &b] {
+            let dir = root.join(&addr.workspace_uuid).join("agents");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("same.json"),
+                serde_json::to_vec(&test_agent("same")).unwrap(),
+            )
+            .unwrap();
+            actor
+                .send_message(SendMessageRequest {
+                    addr: addr.clone(),
+                    message_body: MessageBody {
+                        text: "hello".into(),
+                        attachments: vec![],
+                    },
+                })
+                .await
+                .unwrap();
+        }
+        let AgentState::RunningLlm { inference_uuid, .. } = actor.state(&a).unwrap().clone() else {
+            panic!("expected running inference")
+        };
+        let unit = Unit::from_user_text("only workspace A".into());
+        actor
+            .finish_inference(
+                &a,
+                &inference_uuid,
+                Ok(AgentInferenceOutput {
+                    units: vec![unit.clone()],
+                    is_tool_calls: false,
+                }),
+            )
+            .await;
+        assert_eq!(actor.snapshot(&a).await.unwrap().units[0].uuid, unit.uuid);
+        assert!(actor.snapshot(&b).await.unwrap().units.is_empty());
+        assert_eq!(actor.state(&b).unwrap().status(), AgentStatus::RunningLlm);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -586,18 +692,24 @@ mod runtime_tests {
         assert!(actor.try_shutdown().unwrap());
 
         actor.entries.insert(
-            "agent-a".to_string(),
-            AgentEntry::idle("workspace-a".to_string(), test_agent("agent-a")),
+            AgentAddr::new("workspace-a", "same"),
+            AgentEntry::idle(test_agent("same")),
         );
         assert!(actor.try_shutdown().unwrap());
 
-        actor.entries.get_mut("agent-a").unwrap().state = AgentState::RunningLlm {
+        actor
+            .entries
+            .get_mut(&AgentAddr::new("workspace-a", "same"))
+            .unwrap()
+            .state = AgentState::RunningLlm {
             inference_uuid: "inference".to_string(),
             turn: TurnContext::default(),
         };
         assert!(!actor.try_shutdown().unwrap());
         assert_eq!(
-            actor.entries["agent-a"].state.status(),
+            actor.entries[&AgentAddr::new("workspace-a", "same")]
+                .state
+                .status(),
             AgentStatus::RunningLlm
         );
     }

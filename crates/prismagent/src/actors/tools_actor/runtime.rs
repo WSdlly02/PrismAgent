@@ -123,8 +123,7 @@ async fn dispatch_batch(
         .await;
     let ctx = ToolExecutionContext {
         handles,
-        workspace_uuid: request.workspace_uuid,
-        caller_agent_uuid: request.caller_agent_uuid,
+        caller: request.caller,
         workspace_path: request.workspace_path,
     };
     let mut responses = Vec::with_capacity(request.tool_calls.len());
