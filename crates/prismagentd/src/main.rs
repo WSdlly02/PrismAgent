@@ -1,3 +1,5 @@
+mod web_assets;
+
 use axum::{
     Json, Router,
     body::Body,
@@ -35,7 +37,6 @@ use prismagent::{
     },
     error::{ErrorClass, PublicError, SubsystemError, SubsystemResult},
     handles::AppHandles,
-    web_assets,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};

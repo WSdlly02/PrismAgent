@@ -30,22 +30,22 @@ pub const EMBEDDED_PROFILES: &[EmbeddedProfile] = &[
     EmbeddedProfile {
         name: "default",
         filename: "default.toml",
-        content: include_str!("../stdlib/profiles/default.toml"),
+        content: include_str!("../../../stdlib/profiles/default.toml"),
     },
     EmbeddedProfile {
         name: "planner",
         filename: "planner.toml",
-        content: include_str!("../stdlib/profiles/planner.toml"),
+        content: include_str!("../../../stdlib/profiles/planner.toml"),
     },
     EmbeddedProfile {
         name: "executor",
         filename: "executor.toml",
-        content: include_str!("../stdlib/profiles/executor.toml"),
+        content: include_str!("../../../stdlib/profiles/executor.toml"),
     },
     EmbeddedProfile {
         name: "verifier",
         filename: "verifier.toml",
-        content: include_str!("../stdlib/profiles/verifier.toml"),
+        content: include_str!("../../../stdlib/profiles/verifier.toml"),
     },
 ];
 
@@ -54,36 +54,36 @@ pub const EMBEDDED_SKILLS: &[EmbeddedSkill] = &[EmbeddedSkill {
     files: &[
         EmbeddedSkillFile {
             relative_path: "SKILL.md",
-            content: include_str!("../stdlib/skills/multi-agent-collaboration/SKILL.md"),
+            content: include_str!("../../../stdlib/skills/multi-agent-collaboration/SKILL.md"),
         },
         EmbeddedSkillFile {
             relative_path: "assets/workflow-example.toml",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/assets/workflow-example.toml"
+                "../../../stdlib/skills/multi-agent-collaboration/assets/workflow-example.toml"
             ),
         },
         EmbeddedSkillFile {
             relative_path: "references/default.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/references/default.md"
+                "../../../stdlib/skills/multi-agent-collaboration/references/default.md"
             ),
         },
         EmbeddedSkillFile {
             relative_path: "references/planner.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/references/planner.md"
+                "../../../stdlib/skills/multi-agent-collaboration/references/planner.md"
             ),
         },
         EmbeddedSkillFile {
             relative_path: "references/executor.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/references/executor.md"
+                "../../../stdlib/skills/multi-agent-collaboration/references/executor.md"
             ),
         },
         EmbeddedSkillFile {
             relative_path: "references/verifier.md",
             content: include_str!(
-                "../stdlib/skills/multi-agent-collaboration/references/verifier.md"
+                "../../../stdlib/skills/multi-agent-collaboration/references/verifier.md"
             ),
         },
     ],

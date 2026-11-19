@@ -1578,18 +1578,13 @@ dependencies = [
 name = "prismagent"
 version = "0.9.0"
 dependencies = [
- "anyhow",
  "axum",
- "axum-server",
  "base64 0.23.1",
  "chrono",
  "dirs",
  "futures-util",
  "genai",
  "image",
- "include_dir",
- "ipnetwork",
- "mimalloc",
  "petname",
  "reqwest",
  "serde",
@@ -1599,6 +1594,23 @@ dependencies = [
  "toml",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "prismagentd"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-server",
+ "futures-util",
+ "include_dir",
+ "ipnetwork",
+ "mimalloc",
+ "prismagent",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

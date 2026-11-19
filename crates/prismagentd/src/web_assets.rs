@@ -4,7 +4,7 @@ use axum::{
 };
 use include_dir::{Dir, include_dir};
 
-static WEB_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
+static WEB_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../web/dist");
 
 pub struct EmbeddedAsset {
     pub bytes: &'static [u8],

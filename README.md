@@ -122,6 +122,7 @@ npm --prefix web run dev
 
 ```bash
 cargo test --locked
+cargo check --locked -p prismagent --lib  # 仅检查运行时，不依赖 web/dist
 npm --prefix web run test -- --run
 npm --prefix web run build
 ```
@@ -129,14 +130,15 @@ npm --prefix web run build
 ## 代码结构
 
 ```text
-src/bin/prismagentd.rs  HTTP / WebSocket 入口与 Actor 启动
-src/actors/            Agent、Context、Workflow、工具、模型等 Actor
-src/handles.rs         Actor 间通信句柄
-src/stdlib_assets.rs   内置 Profile 与 Skill 的嵌入和初始化
-src/web_assets.rs      Web 静态资源服务
-stdlib/                内置角色配置与协作 Skill
-web/                   React + TypeScript + Vite 前端
-build.rs               构建资源准备
+Cargo.toml                             Cargo 虚拟工作区，两个成员共用 Cargo.lock
+crates/prismagent/src/actors/          Agent、Context、Workflow、工具、模型等 Actor
+crates/prismagent/src/handles.rs       Actor 间通信句柄
+crates/prismagent/src/stdlib_assets.rs 内置 Profile 与 Skill 的嵌入和初始化
+crates/prismagentd/src/main.rs         HTTP / WebSocket 入口与 Actor 启动
+crates/prismagentd/src/web_assets.rs   Web 静态资源服务
+crates/prismagentd/build.rs            跟踪 web/dist，缺失时准备提示页
+stdlib/                                内置角色配置与协作 Skill
+web/                                   React + TypeScript + Vite 前端
 ```
 
 请求经 ShellActor 进入运行时，AgentActor 协调模型推理和工具执行；WorkflowActor 调度步骤，ContextActor 管理共享上下文，StorageActor 负责会话等数据的文件持久化。各 Actor 通过 Tokio channel 交换消息。
