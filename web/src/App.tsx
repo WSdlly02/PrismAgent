@@ -27,7 +27,8 @@ export function App() {
           profiles={session.profiles}
           expandedWorkspaceUuids={session.expandedWorkspaceUuids}
           workspaceAgents={session.workspaceAgents}
-          selectedAgentUuid={session.selectedAgent?.agent_uuid ?? null}
+          workspaceErrors={session.workspaceErrors}
+          selectedAddr={session.selectedAddr}
           onSelectWorkspace={session.expandWorkspace}
           onSelectAgent={session.selectAgent}
           onAddWorkspace={session.addWorkspace}
@@ -40,6 +41,7 @@ export function App() {
       }
       chat={
         <ChatPane
+          key={session.selectedAddr ? `${session.selectedAddr.workspace_uuid}/${session.selectedAddr.agent_uuid}` : "no-agent"}
           agent={session.selectedAgent}
           connectionStatus={session.connectionStatus}
           error={session.error}
@@ -56,7 +58,7 @@ export function App() {
       inspector={
         <InspectorPane
           agent={session.selectedAgent}
-          session={session.session}
+          session={session.selectedAddr}
           workspace={session.selectedWorkspace}
         />
       }

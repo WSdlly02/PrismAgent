@@ -1,5 +1,6 @@
 import { useState } from "react";
-import type { AgentCreateInput, AgentSummary, WorkspaceSummary } from "../../api/types";
+import { sameAgent } from "../../api/types";
+import type { AgentAddr, AgentCreateInput, AgentSummary, WorkspaceSummary } from "../../api/types";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 
 type WorkspaceSidebarProps = {
@@ -7,12 +8,13 @@ type WorkspaceSidebarProps = {
   profiles: string[];
   expandedWorkspaceUuids: string[];
   workspaceAgents: Record<string, AgentSummary[]>;
-  selectedAgentUuid: string | null;
+  workspaceErrors: Record<string, string>;
+  selectedAddr: AgentAddr | null;
   onSelectWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
-  onSelectAgent: (agent: AgentSummary) => Promise<void>;
+  onSelectAgent: (addr: AgentAddr) => Promise<void>;
   onAddWorkspace: (path: string) => Promise<void>;
   onCreateAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
-  onDeleteAgent: (agent: AgentSummary) => Promise<void>;
+  onDeleteAgent: (addr: AgentAddr) => Promise<void>;
   onDeleteWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
   collapsed?: boolean;
   onToggleCollapse?: () => void;
@@ -37,7 +39,8 @@ export function WorkspaceSidebar({
   profiles,
   expandedWorkspaceUuids,
   workspaceAgents,
-  selectedAgentUuid,
+  workspaceErrors,
+  selectedAddr,
   onSelectWorkspace,
   onSelectAgent,
   onAddWorkspace,
@@ -54,7 +57,7 @@ export function WorkspaceSidebar({
   const [contextRefs, setContextRefs] = useState("");
   const [contextOut, setContextOut] = useState("");
   const [wsToDelete, setWsToDelete] = useState<WorkspaceSummary | null>(null);
-  const [agentToDelete, setAgentToDelete] = useState<AgentSummary | null>(null);
+  const [agentToDelete, setAgentToDelete] = useState<{addr: AgentAddr; name: string} | null>(null);
 
   async function submitWorkspace(event: React.FormEvent) {
     event.preventDefault();
@@ -164,6 +167,10 @@ export function WorkspaceSidebar({
                   </button>
                 </div>
 
+                {workspaceErrors[workspace.workspace_uuid] && (
+                  <div className="error-banner" role="alert">{workspaceErrors[workspace.workspace_uuid]}</div>
+                )}
+
                 {/* 展开后显示 agents */}
                 {isExpanded ? (
                   <div className="ws-children">
@@ -220,36 +227,39 @@ export function WorkspaceSidebar({
                     )}
 
                     {/* Agent 列表 */}
-                    {children.map((agent) => (
-                      <div
-                        className="ws-agent-row"
-                        data-active={agent.agent_uuid === selectedAgentUuid}
-                        key={agent.agent_uuid}
-                      >
-                        <button
-                          className="ws-agent-select"
-                          onClick={() => void onSelectAgent(agent)}
-                          type="button"
+                    {children.map((agent) => {
+                      const addr = { workspace_uuid: workspace.workspace_uuid, agent_uuid: agent.agent_uuid };
+                      return (
+                        <div
+                          className="ws-agent-row"
+                          data-active={sameAgent(selectedAddr, addr)}
+                          key={agent.agent_uuid}
                         >
-                          <span className="ws-agent-icon">🤖</span>
-                          <span className="resource-main">
-                            <span className="resource-name">{agent.agent_name}</span>
-                            <span className="resource-meta">{agent.profile}</span>
-                          </span>
-                          <span className={`status-dot status-${agent.status}`} aria-label={agent.status} />
-                        </button>
-                        <button
-                          aria-label={`Delete agent ${agent.agent_name}`}
-                          className="ws-agent-delete"
-                          disabled={agent.status !== "idle"}
-                          onClick={() => setAgentToDelete(agent)}
-                          title={agent.status === "idle" ? "Delete agent" : "Agent must be idle"}
-                          type="button"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
+                          <button
+                            className="ws-agent-select"
+                            onClick={() => void onSelectAgent(addr)}
+                            type="button"
+                          >
+                            <span className="ws-agent-icon">🤖</span>
+                            <span className="resource-main">
+                              <span className="resource-name">{agent.agent_name}</span>
+                              <span className="resource-meta">{agent.profile}</span>
+                            </span>
+                            <span className={`status-dot status-${agent.status}`} aria-label={agent.status} />
+                          </button>
+                          <button
+                            aria-label={`Delete agent ${agent.agent_name}`}
+                            className="ws-agent-delete"
+                            disabled={agent.status !== "idle"}
+                            onClick={() => setAgentToDelete({ addr, name: agent.agent_name })}
+                            title={agent.status === "idle" ? "Delete agent" : "Agent must be idle"}
+                            type="button"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
 
                     {children.length === 0 && !isCreating ? (
                       <p className="empty-copy">No agents</p>
@@ -318,14 +328,14 @@ export function WorkspaceSidebar({
         title="Delete Agent"
         onConfirm={async () => {
           if (!agentToDelete) return;
-          await onDeleteAgent(agentToDelete);
+          await onDeleteAgent(agentToDelete.addr);
           setAgentToDelete(null);
         }}
         onCancel={() => setAgentToDelete(null)}
       >
         <p>This will permanently delete this agent and all its messages.</p>
         <p>
-          <strong>{agentToDelete?.agent_name ?? ""}</strong>
+          <strong>{agentToDelete?.name ?? ""}</strong>
         </p>
       </ConfirmDialog>
     </div>

@@ -68,7 +68,8 @@ describe("usePrismSession workspace leases", () => {
       await result.current.createAgent("workspace-1", AGENT_INPUT).catch(() => {});
     });
 
-    expect(result.current.error).toBe(
+    expect(result.current.error).toBeNull();
+    expect(result.current.workspaceErrors["workspace-1"]).toBe(
       "This workspace is currently in use by another client. Try again shortly.",
     );
   });
@@ -89,6 +90,7 @@ describe("usePrismSession workspace leases", () => {
       await result.current.createAgent("workspace-1", AGENT_INPUT).catch(() => {});
     });
 
-    expect(result.current.error).toBe("profile is invalid");
+    expect(result.current.error).toBeNull();
+    expect(result.current.workspaceErrors["workspace-1"]).toBe("profile is invalid");
   });
 });

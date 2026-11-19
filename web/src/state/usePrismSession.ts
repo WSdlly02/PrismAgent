@@ -15,15 +15,14 @@ import {
   releaseLease,
   sendMessage,
 } from "../api/client";
-import { createWebSocket, parseWsMessage, wsSend } from "../api/events";
+import { watchSubscription, type SubscriptionEvent } from "../api/events";
+import { sameAgent } from "../api/types";
 import type {
+  AgentAddr,
   AgentCreateInput,
-  AgentEvent,
   AgentSummary,
   PendingApproval,
   Unit,
-  WsClientMessage,
-  WsServerMessage,
   WorkspaceLease,
   WorkspaceSummary,
 } from "../api/types";
@@ -62,9 +61,10 @@ export type PrismSession = {
   profiles: string[];
   expandedWorkspaceUuids: string[];
   workspaceAgents: Record<string, AgentSummary[]>;
+  workspaceErrors: Record<string, string>;
   selectedAgent: AgentSummary | null;
   selectedWorkspace: WorkspaceSummary | null;
-  session: { workspace_uuid: string } | null;
+  selectedAddr: AgentAddr | null;
   units: Unit[];
   streamingText: string;
   streamingReasoningText: string;
@@ -74,10 +74,10 @@ export type PrismSession = {
   error: string | null;
   loadInitialData: () => Promise<void>;
   expandWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
-  selectAgent: (agent: AgentSummary) => Promise<void>;
+  selectAgent: (addr: AgentAddr) => Promise<void>;
   addWorkspace: (path: string) => Promise<void>;
   createAgent: (workspaceUuid: string, input: AgentCreateInput) => Promise<void>;
-  deleteAgent: (agent: AgentSummary) => Promise<void>;
+  deleteAgent: (addr: AgentAddr) => Promise<void>;
   deleteWorkspace: (workspace: WorkspaceSummary) => Promise<void>;
   send: (text: string) => Promise<void>;
   cancel: () => Promise<void>;
@@ -91,20 +91,16 @@ export function usePrismSession(): PrismSession {
   const [expandedWorkspaceUuids, setExpandedWorkspaceUuids] = useState<string[]>([]);
   const [workspaceAgents, setWorkspaceAgents] = useState<Record<string, AgentSummary[]>>({});
   const [workspaceLeases, setWorkspaceLeases] = useState<Record<string, WorkspaceLease & { expires_at: number }>>({});
-  const [selectedAgent, setSelectedAgent] = useState<AgentSummary | null>(null);
+  const [workspaceErrors, setWorkspaceErrors] = useState<Record<string, string>>({});
+  const [selectedAddr, setSelectedAddr] = useState<AgentAddr | null>(null);
   const [chat, setChat] = useState(initialChatState);
   const [connectionStatus, setConnectionStatus] =
     useState<PrismSession["connectionStatus"]>("idle");
   const [error, setError] = useState<string | null>(null);
 
   // --- Refs ---
-  const wsRef = useRef<WebSocket | null>(null);
-  const wsReadyRef = useRef(false);
-  const pendingMessagesRef = useRef<WsClientMessage[]>([]);
   const ignoreStreamUntilNextStatusRef = useRef(false);
-  const selectedAgentUuidRef = useRef<string | null>(null);
-  const subscribedWorkspaceUuidRef = useRef<string | null>(null);
-  const subscribedAgentUuidRef = useRef<string | null>(null);
+  const selectionRef = useRef<AgentAddr | null>(null);
   const workspaceLeasesRef = useRef(workspaceLeases);
   const streamDeltaBufferRef = useRef<ReturnType<
     typeof createStreamDeltaBuffer
@@ -123,152 +119,75 @@ export function usePrismSession(): PrismSession {
   }
   const streamDeltaBuffer = streamDeltaBufferRef.current;
 
-  // Message handler ref — updated every render to capture current state
-  const handleWsMessageRef = useRef<(msg: WsServerMessage) => void>(() => {});
-
-  useEffect(() => {
-    selectedAgentUuidRef.current = selectedAgent?.agent_uuid ?? null;
-  }, [selectedAgent?.agent_uuid]);
-
   useEffect(() => {
     workspaceLeasesRef.current = workspaceLeases;
   }, [workspaceLeases]);
 
+  const reportWorkspaceError = useCallback((id: string, message: string | null) => {
+    setWorkspaceErrors(prev => {
+      const next = { ...prev };
+      if (message === null) delete next[id];
+      else next[id] = message;
+      return next;
+    });
+  }, []);
+
   // Public REST actions cross this boundary so rejected requests consistently
   // reach the UI. Lower-level helpers remain transport/data-only functions.
-  const runRestAction = useCallback(async <T>(action: () => Promise<T>): Promise<T> => {
-    setError(null);
+  const runRestAction = useCallback(async <T>(action: () => Promise<T>, owner?: AgentAddr | string): Promise<T> => {
+    if (typeof owner === "string") reportWorkspaceError(owner, null);
+    else setError(null);
     try {
       return await action();
     } catch (error) {
-      setError(userFacingError(error));
+      if (typeof owner === "string") reportWorkspaceError(owner, userFacingError(error));
+      else if (!owner || owner === selectionRef.current) setError(userFacingError(error));
       throw error;
     }
-  }, []);
+  }, [reportWorkspaceError]);
 
   // --- Derived state ---
 
-  const activeSession = useMemo(() => {
-    if (!selectedAgent) {
-      return null;
-    }
-    const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
-      agents.some((agent) => agent.agent_uuid === selectedAgent.agent_uuid),
-    )?.[0];
-    return wsUuid ? { workspace_uuid: wsUuid } : null;
-  }, [selectedAgent, workspaceAgents]);
-
+  const selectedAgent = selectedAddr
+    ? workspaceAgents[selectedAddr.workspace_uuid]?.find(agent => agent.agent_uuid === selectedAddr.agent_uuid) ?? null
+    : null;
   const selectedWorkspace = useMemo(
-    () =>
-      workspaces.find((ws) => ws.workspace_uuid === activeSession?.workspace_uuid) ?? null,
-    [workspaces, activeSession?.workspace_uuid],
+    () => workspaces.find(ws => ws.workspace_uuid === selectedAddr?.workspace_uuid) ?? null,
+    [workspaces, selectedAddr],
   );
 
-  // --- WebSocket connection management ---
+  const clearSelection = useCallback(() => {
+    selectionRef.current = null;
+    setSelectedAddr(null);
+    streamDeltaBuffer.clear();
+    setChat(initialChatState());
+    setConnectionStatus("idle");
+    setError(null);
+  }, [streamDeltaBuffer]);
 
-  // Stable sendOrQueue (ensureWs is declared first so closure captures it)
-  const ensureWs = useCallback(() => {
-    if (
-      wsRef.current &&
-      (wsRef.current.readyState === WebSocket.OPEN ||
-        wsRef.current.readyState === WebSocket.CONNECTING)
-    ) {
-      return wsRef.current;
-    }
+  const removeAgentLocally = useCallback((addr: AgentAddr) => {
+    if (sameAgent(selectionRef.current, addr)) clearSelection();
+    setWorkspaceAgents(prev => ({
+      ...prev,
+      [addr.workspace_uuid]: (prev[addr.workspace_uuid] ?? []).filter(agent => agent.agent_uuid !== addr.agent_uuid),
+    }));
+  }, [clearSelection]);
 
-    const ws = createWebSocket();
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      wsReadyRef.current = true;
-      // Flush queued messages
-      for (const msg of pendingMessagesRef.current) {
-        wsSend(ws, msg);
-      }
-      pendingMessagesRef.current = [];
-      // Re-subscribe on reconnect
-      if (subscribedWorkspaceUuidRef.current) {
-        wsSend(ws, {
-          type: "subscribe_workspace",
-          workspace_uuid: subscribedWorkspaceUuidRef.current,
-        });
-      }
-      if (subscribedAgentUuidRef.current) {
-        wsSend(ws, {
-          type: "subscribe_agent",
-          agent_uuid: subscribedAgentUuidRef.current,
-        });
-      }
-    };
-
-    ws.onmessage = (event) => {
-      handleWsMessageRef.current(parseWsMessage(event.data as string));
-    };
-
-    ws.onclose = () => {
-      wsReadyRef.current = false;
-      wsRef.current = null;
-      // Auto-reconnect after 1 second
-      setTimeout(() => ensureWs(), 1000);
-    };
-
-    return ws;
-  }, []);
-
-  const sendOrQueue = useCallback(
-    (msg: WsClientMessage) => {
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        wsSend(ws, msg);
-      } else {
-        pendingMessagesRef.current.push(msg);
-        ensureWs();
-      }
-    },
-    [ensureWs],
-  );
-
-  // ---- Unified workspace removal ----
-  // Called by deleteWorkspace() after API success, and by workspace_deleted WS event.
   const removeWorkspaceLocally = useCallback((workspaceUuid: string) => {
-    // Unsubscribe via WS if this workspace is currently subscribed
-    if (subscribedWorkspaceUuidRef.current === workspaceUuid) {
-      sendOrQueue({ type: "unsubscribe_workspace" });
-      if (subscribedAgentUuidRef.current) {
-        sendOrQueue({ type: "unsubscribe_agent" });
-        subscribedAgentUuidRef.current = null;
-      }
-      subscribedWorkspaceUuidRef.current = null;
-      selectedAgentUuidRef.current = null;
-      streamDeltaBuffer.clear();
-      setChat(initialChatState());
-      setConnectionStatus("idle");
-    }
-
-    // Clear selected agent if it belongs to this workspace
-    setSelectedAgent((current) => {
-      if (!current) return null;
-      return workspaceAgents[workspaceUuid]?.some(
-        (a) => a.agent_uuid === current.agent_uuid,
-      )
-        ? null
-        : current;
-    });
-
-    // Remove workspace from all state collections
-    setWorkspaces((prev) => prev.filter((ws) => ws.workspace_uuid !== workspaceUuid));
-    setExpandedWorkspaceUuids((prev) => prev.filter((id) => id !== workspaceUuid));
-    setWorkspaceAgents((prev) => {
+    if (selectionRef.current?.workspace_uuid === workspaceUuid) clearSelection();
+    setWorkspaces(prev => prev.filter(ws => ws.workspace_uuid !== workspaceUuid));
+    setExpandedWorkspaceUuids(prev => prev.filter(id => id !== workspaceUuid));
+    setWorkspaceAgents(prev => {
       const next = { ...prev };
       delete next[workspaceUuid];
       return next;
     });
-    setWorkspaceLeases((prev) => {
+    setWorkspaceLeases(prev => {
       const next = { ...prev };
       delete next[workspaceUuid];
       return next;
     });
-  }, [sendOrQueue, streamDeltaBuffer, workspaceAgents]);
+  }, [clearSelection]);
 
   const ensureWorkspaceLease = useCallback(
     async (workspaceUuid: string): Promise<WorkspaceLease> => {
@@ -310,144 +229,137 @@ export function usePrismSession(): PrismSession {
     [clientId, workspaceLeases],
   );
 
-  // Update message handler on each render
-  handleWsMessageRef.current = (msg: WsServerMessage) => {
-    // --- Ping / Connected / Error ---
-    if (msg.type === "ping") {
-      sendOrQueue({ type: "pong" });
-      return;
-    }
-    if (msg.type === "connected") {
-      setConnectionStatus("connected");
-      return;
-    }
-    if (msg.type === "error") {
-      setError(msg.error.message);
-      return;
-    }
-
-    // --- Workspace events ---
-    const wsUuid = subscribedWorkspaceUuidRef.current;
-
+  const handleWorkspaceEvent = useCallback((wsUuid: string, msg: SubscriptionEvent) => {
     if (msg.type === "agent_created" || msg.type === "agent_updated") {
-      if (wsUuid) {
-        setWorkspaceAgents((prev) => ({
-          ...prev,
-          [wsUuid]: upsertAgent(prev[wsUuid] ?? [], msg.agent),
-        }));
-        setSelectedAgent((current) =>
-          current?.agent_uuid === msg.agent.agent_uuid ? msg.agent : current,
-        );
-      }
+      setWorkspaceAgents((prev) => ({
+        ...prev,
+        [wsUuid]: upsertAgent(prev[wsUuid] ?? [], msg.agent),
+      }));
       return;
     }
 
     if (msg.type === "agent_status_changed") {
-      if (wsUuid) {
-        setWorkspaceAgents((prev) => ({
-          ...prev,
-          [wsUuid]: (prev[wsUuid] ?? []).map((agent) =>
-            agent.agent_uuid === msg.agent_uuid
-              ? { ...agent, status: msg.status }
-              : agent,
-          ),
-        }));
-        setSelectedAgent((current) =>
-          current?.agent_uuid === msg.agent_uuid
-            ? { ...current, status: msg.status }
-            : current,
-        );
-      }
+      setWorkspaceAgents((prev) => ({
+        ...prev,
+        [wsUuid]: (prev[wsUuid] ?? []).map((agent) =>
+          agent.agent_uuid === msg.agent_uuid
+            ? { ...agent, status: msg.status }
+            : agent,
+        ),
+      }));
       return;
     }
 
     if (msg.type === "agent_deleted") {
-      if (wsUuid) {
-        setWorkspaceAgents((prev) => ({
-          ...prev,
-          [wsUuid]: (prev[wsUuid] ?? []).filter(
-            (agent) => agent.agent_uuid !== msg.agent_uuid,
-          ),
-        }));
-        setSelectedAgent((current) =>
-          current?.agent_uuid === msg.agent_uuid ? null : current,
-        );
-        if (selectedAgentUuidRef.current === msg.agent_uuid) {
-          subscribedAgentUuidRef.current = null;
-          streamDeltaBuffer.clear();
-          setChat(initialChatState());
-          setConnectionStatus("idle");
-        }
-      }
+      removeAgentLocally({ workspace_uuid: wsUuid, agent_uuid: msg.agent_uuid });
       return;
     }
 
     if (msg.type === "workspace_deleted") {
       removeWorkspaceLocally(msg.workspace_uuid);
-      return;
     }
+  }, [removeAgentLocally, removeWorkspaceLocally]);
 
-    // Workspace resource events — not yet handled in UI, safely ignore
-    if (
-      msg.type === "context_created" ||
-      msg.type === "workflow_created" ||
-      msg.type === "workflow_started" ||
-      msg.type === "workflow_cancel_requested"
-    ) {
-      return;
+  const sidebarSubscriptions = useRef(new Map<string, () => void>());
+  useEffect(() => {
+    const subscriptions = sidebarSubscriptions.current;
+    for (const [id, close] of subscriptions) {
+      if (expandedWorkspaceUuids.includes(id)) continue;
+      close();
+      subscriptions.delete(id);
+      reportWorkspaceError(id, null);
     }
+    for (const id of expandedWorkspaceUuids) {
+      if (subscriptions.has(id)) continue;
+      subscriptions.set(id, watchSubscription(id, {
+        load: async () => {
+          const agents = await listAgents(id);
+          return () => {
+            setWorkspaceAgents(prev => ({ ...prev, [id]: agents }));
+            const selected = selectionRef.current;
+            if (selected?.workspace_uuid === id && !agents.some(agent => agent.agent_uuid === selected.agent_uuid)) {
+              clearSelection();
+            }
+            reportWorkspaceError(id, null);
+          };
+        },
+        receive: msg => handleWorkspaceEvent(id, msg),
+        disconnected: () => reportWorkspaceError(id, "Workspace disconnected. Reconnecting..."),
+        failed: error => reportWorkspaceError(id, userFacingError(error)),
+      }));
+    }
+  }, [expandedWorkspaceUuids, clearSelection, handleWorkspaceEvent, reportWorkspaceError]);
+  useEffect(() => {
+    const subscriptions = sidebarSubscriptions.current;
+    return () => {
+      for (const close of subscriptions.values()) close();
+      subscriptions.clear();
+    };
+  }, []);
 
-    // --- Agent events ---
-    if (msg.type === "stream_delta" || msg.type === "reasoning_delta") {
-      if (ignoreStreamUntilNextStatusRef.current) {
-        return;
-      }
-      if (msg.type === "stream_delta") {
-        streamDeltaBuffer.appendText(msg.text);
-      } else {
-        streamDeltaBuffer.appendReasoning(msg.text);
-      }
-      return;
-    }
-    if (msg.type === "status_changed") {
-      ignoreStreamUntilNextStatusRef.current = false;
-    }
-    if (
-      msg.type === "operation_failed" &&
-      msg.agent_uuid !== selectedAgentUuidRef.current
-    ) {
-      return;
-    }
-    if (msg.type === "unit_append" || msg.type === "operation_failed") {
-      streamDeltaBuffer.clear();
-    } else {
-      streamDeltaBuffer.flush();
-    }
-    setChat((current) => applyAgentEvent(current, msg as AgentEvent));
-  };
+  useEffect(() => {
+    const addr = selectedAddr;
+    if (!addr) return;
+    return watchSubscription(addr, {
+      load: async () => {
+        const snapshot = await agentSnapshot(addr);
+        return () => {
+          if (selectionRef.current !== addr) return;
+          streamDeltaBuffer.clear();
+          ignoreStreamUntilNextStatusRef.current = false;
+          setChat({
+            ...initialChatState(),
+            units: snapshot.units,
+            status: snapshot.status,
+            pendingApproval: snapshot.pending_approval,
+          });
+          setConnectionStatus("connected");
+          setError(null);
+        };
+      },
+      disconnected: () => {
+        if (selectionRef.current === addr) setConnectionStatus("connecting");
+      },
+      failed: error => {
+        if (selectionRef.current !== addr) return;
+        setConnectionStatus("error");
+        setError(userFacingError(error));
+      },
+      receive: msg => {
+        if (selectionRef.current !== addr) return;
+        switch (msg.type) {
+          case "stream_delta":
+          case "reasoning_delta":
+            if (ignoreStreamUntilNextStatusRef.current) return;
+            if (msg.type === "stream_delta") streamDeltaBuffer.appendText(msg.text);
+            else streamDeltaBuffer.appendReasoning(msg.text);
+            return;
+          case "status_changed":
+            ignoreStreamUntilNextStatusRef.current = false;
+            break;
+          case "operation_failed":
+            if (msg.agent_uuid !== addr.agent_uuid ||
+                (msg.workspace_uuid !== null && msg.workspace_uuid !== addr.workspace_uuid)) return;
+            break;
+          case "approve_request":
+          case "unit_append":
+            break;
+          default:
+            return; // Workspace events belong exclusively to the folder subscription.
+        }
+        if (msg.type === "unit_append" || msg.type === "operation_failed") streamDeltaBuffer.clear();
+        else streamDeltaBuffer.flush();
+        setChat(current => applyAgentEvent(current, msg));
+      },
+    });
+  }, [selectedAddr, streamDeltaBuffer]);
 
   // --- Actions ---
 
   const expandWorkspace = useCallback(
     async (workspace: WorkspaceSummary) => {
       if (expandedWorkspaceUuids.includes(workspace.workspace_uuid)) {
-        // Collapse: unsubscribe agent if it belongs to this workspace
-        if (
-          selectedAgent &&
-          workspaceAgents[workspace.workspace_uuid]?.some(
-            (agent) => agent.agent_uuid === selectedAgent.agent_uuid,
-          )
-        ) {
-          sendOrQueue({ type: "unsubscribe_agent" });
-          subscribedAgentUuidRef.current = null;
-          setSelectedAgent(null);
-          streamDeltaBuffer.clear();
-          setChat(initialChatState());
-          setConnectionStatus("idle");
-        }
-        // Unsubscribe workspace
-        sendOrQueue({ type: "unsubscribe_workspace" });
-        subscribedWorkspaceUuidRef.current = null;
+        if (selectionRef.current?.workspace_uuid === workspace.workspace_uuid) clearSelection();
         setExpandedWorkspaceUuids((prev) =>
           prev.filter((id) => id !== workspace.workspace_uuid),
         );
@@ -459,66 +371,24 @@ export function usePrismSession(): PrismSession {
         return;
       }
 
-      // Expand: subscribe workspace and fetch agents
-      sendOrQueue({ type: "subscribe_workspace", workspace_uuid: workspace.workspace_uuid });
-      subscribedWorkspaceUuidRef.current = workspace.workspace_uuid;
       setExpandedWorkspaceUuids((prev) => [...prev, workspace.workspace_uuid]);
-      setError(null);
-
-      await runRestAction(async () => {
-        const agents = await listAgents(workspace.workspace_uuid);
-        setWorkspaceAgents((prev) => ({ ...prev, [workspace.workspace_uuid]: agents }));
-      });
     },
-    [expandedWorkspaceUuids, runRestAction, selectedAgent, sendOrQueue, workspaceAgents],
+    [expandedWorkspaceUuids, clearSelection],
   );
 
   const selectAgent = useCallback(
-    async (agent: AgentSummary) => {
-      const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
-        agents.some((candidate) => candidate.agent_uuid === agent.agent_uuid),
-      )?.[0];
-      if (!wsUuid) {
-        return;
-      }
-
-      // If the workspace changed, switch subscriptions
-      if (subscribedWorkspaceUuidRef.current && subscribedWorkspaceUuidRef.current !== wsUuid) {
-        sendOrQueue({ type: "unsubscribe_workspace" });
-        if (subscribedAgentUuidRef.current) {
-          sendOrQueue({ type: "unsubscribe_agent" });
-          subscribedAgentUuidRef.current = null;
-        }
-      }
-      if (subscribedWorkspaceUuidRef.current !== wsUuid) {
-        sendOrQueue({ type: "subscribe_workspace", workspace_uuid: wsUuid });
-        subscribedWorkspaceUuidRef.current = wsUuid;
-      }
-
-      // Subscribe to agent (server auto-unsubscribes previous)
-      sendOrQueue({ type: "subscribe_agent", agent_uuid: agent.agent_uuid });
-      subscribedAgentUuidRef.current = agent.agent_uuid;
-      selectedAgentUuidRef.current = agent.agent_uuid;
-      setSelectedAgent(agent);
+    async (target: AgentAddr) => {
+      // Each selection owns its requests, including A -> B -> A and retries.
+      const addr = { ...target };
+      selectionRef.current = addr;
+      setSelectedAddr(addr);
       streamDeltaBuffer.clear();
       setChat(initialChatState());
       setConnectionStatus("connecting");
       setError(null);
       ignoreStreamUntilNextStatusRef.current = false;
-
-      // Fetch snapshot via REST
-      const snapshot = await runRestAction(() => agentSnapshot(wsUuid, agent.agent_uuid));
-      if (selectedAgentUuidRef.current !== agent.agent_uuid) {
-        return;
-      }
-      setChat({
-        ...initialChatState(),
-        units: snapshot.units,
-        status: snapshot.status,
-        pendingApproval: snapshot.pending_approval,
-      });
     },
-    [runRestAction, sendOrQueue, streamDeltaBuffer, workspaceAgents],
+    [streamDeltaBuffer],
   );
 
   const loadInitialData = useCallback(
@@ -548,25 +418,20 @@ export function usePrismSession(): PrismSession {
       await runRestAction(async () => {
         const access = await ensureWorkspaceLease(wsUuid);
         await createAgentApi(access, input);
-      });
+      }, wsUuid);
     },
     [ensureWorkspaceLease, runRestAction],
   );
 
   const deleteAgent = useCallback(
-    async (agent: AgentSummary) => {
-      const wsUuid = Object.entries(workspaceAgents).find(([, agents]) =>
-        agents.some((candidate) => candidate.agent_uuid === agent.agent_uuid),
-      )?.[0];
-      if (!wsUuid) {
-        return;
-      }
+    async (addr: AgentAddr) => {
       await runRestAction(async () => {
-        const access = await ensureWorkspaceLease(wsUuid);
-        await deleteAgentApi(access, agent.agent_uuid);
-      });
+        const access = await ensureWorkspaceLease(addr.workspace_uuid);
+        await deleteAgentApi(addr, access.lease_token);
+      }, addr.workspace_uuid);
+      removeAgentLocally(addr);
     },
-    [ensureWorkspaceLease, runRestAction, workspaceAgents],
+    [ensureWorkspaceLease, runRestAction, removeAgentLocally],
   );
 
   const deleteWorkspace = useCallback(
@@ -574,7 +439,7 @@ export function usePrismSession(): PrismSession {
       await runRestAction(async () => {
         const access = await ensureWorkspaceLease(workspace.workspace_uuid);
         await deleteWorkspaceApi(access);
-      });
+      }, workspace.workspace_uuid);
       removeWorkspaceLocally(workspace.workspace_uuid);
     },
     [ensureWorkspaceLease, removeWorkspaceLocally, runRestAction],
@@ -582,7 +447,7 @@ export function usePrismSession(): PrismSession {
 
   const send = useCallback(
     async (text: string) => {
-      if (!selectedAgent || !activeSession) {
+      if (!selectedAgent || !selectedAddr) {
         throw new Error("No agent selected");
       }
 
@@ -605,14 +470,15 @@ export function usePrismSession(): PrismSession {
 
       try {
         await runRestAction(async () => {
-          const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+          const access = await ensureWorkspaceLease(selectedAddr.workspace_uuid);
           await sendMessage(
-            access,
-            selectedAgent.agent_uuid,
+            selectedAddr,
+            access.lease_token,
             text,
           );
-        });
+        }, selectedAddr);
       } catch (err) {
+        if (selectionRef.current !== selectedAddr) throw err;
         setChat((current) => ({
           ...current,
           units: current.units.filter((unit) => unit.uuid !== optimisticUuid),
@@ -622,24 +488,25 @@ export function usePrismSession(): PrismSession {
         throw err;
       }
     },
-    [activeSession, ensureWorkspaceLease, runRestAction, selectedAgent],
+    [selectedAddr, ensureWorkspaceLease, runRestAction, selectedAgent],
   );
 
   const approve = useCallback(
     async (approvalMask: number) => {
-      if (!selectedAgent || !chat.pendingApproval || !activeSession) {
+      if (!selectedAgent || !chat.pendingApproval || !selectedAddr) {
         return;
       }
       const requestUuid = chat.pendingApproval.request_uuid;
       await runRestAction(async () => {
-        const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
+        const access = await ensureWorkspaceLease(selectedAddr.workspace_uuid);
         await approveRequest(
-          access,
-          selectedAgent.agent_uuid,
+          selectedAddr,
+          access.lease_token,
           requestUuid,
           approvalMask,
         );
-      });
+      }, selectedAddr);
+      if (selectionRef.current !== selectedAddr) return;
       streamDeltaBuffer.clear();
       setChat((current) => ({
         ...current,
@@ -649,7 +516,7 @@ export function usePrismSession(): PrismSession {
       }));
     },
     [
-      activeSession,
+      selectedAddr,
       chat.pendingApproval,
       ensureWorkspaceLease,
       runRestAction,
@@ -659,7 +526,7 @@ export function usePrismSession(): PrismSession {
   );
 
   const cancel = useCallback(async () => {
-    if (!selectedAgent || !activeSession) {
+    if (!selectedAgent || !selectedAddr) {
       return;
     }
     const status = chat.status ?? selectedAgent.status;
@@ -682,11 +549,11 @@ export function usePrismSession(): PrismSession {
       }));
       try {
         await runRestAction(async () => {
-          const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
-          await cancelAgent(access, selectedAgent.agent_uuid);
-        });
+          const access = await ensureWorkspaceLease(selectedAddr.workspace_uuid);
+          await cancelAgent(selectedAddr, access.lease_token);
+        }, selectedAddr);
       } catch (err) {
-        ignoreStreamUntilNextStatusRef.current = false;
+        if (selectionRef.current === selectedAddr) ignoreStreamUntilNextStatusRef.current = false;
         throw err;
       }
       return;
@@ -699,11 +566,11 @@ export function usePrismSession(): PrismSession {
       streamingReasoningText: "",
     }));
     await runRestAction(async () => {
-      const access = await ensureWorkspaceLease(activeSession.workspace_uuid);
-      await cancelAgent(access, selectedAgent.agent_uuid);
-    });
+      const access = await ensureWorkspaceLease(selectedAddr.workspace_uuid);
+      await cancelAgent(selectedAddr, access.lease_token);
+    }, selectedAddr);
   }, [
-    activeSession,
+    selectedAddr,
     approve,
     chat.status,
     ensureWorkspaceLease,
@@ -716,8 +583,6 @@ export function usePrismSession(): PrismSession {
   useEffect(
     () => () => {
       streamDeltaBuffer.clear();
-      wsRef.current?.close();
-      wsRef.current = null;
       for (const lease of Object.values(workspaceLeasesRef.current)) {
         void releaseLease(lease.workspace_uuid, lease.lease_token).catch(() => {});
       }
@@ -731,8 +596,9 @@ export function usePrismSession(): PrismSession {
     profiles,
     expandedWorkspaceUuids,
     workspaceAgents,
+    workspaceErrors,
     selectedAgent,
-    session: activeSession,
+    selectedAddr,
     selectedWorkspace,
     units: chat.units,
     streamingText: chat.streamingText,

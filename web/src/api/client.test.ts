@@ -11,6 +11,8 @@ import {
 
 const LEASE = { workspace_uuid: "workspace-1", lease_token: "lease-1" };
 
+const ADDR = { workspace_uuid: "workspace-1", agent_uuid: "agent-1" };
+
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -89,15 +91,15 @@ describe("api client", () => {
   it("deletes agents through /api/agents/delete", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ deleted: true }));
 
-    await deleteAgent(LEASE, "agent-1");
+    await deleteAgent(ADDR, LEASE.lease_token);
 
     expect(fetch).toHaveBeenCalledWith("/api/agents/delete", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         workspace_uuid: "workspace-1",
-        lease_token: "lease-1",
         agent_uuid: "agent-1",
+        lease_token: "lease-1",
       }),
     });
   });
@@ -128,7 +130,7 @@ describe("api client", () => {
       }),
     );
 
-    const snapshot = await agentSnapshot("workspace-1", "agent-1");
+    const snapshot = await agentSnapshot(ADDR);
 
     expect(fetch).toHaveBeenCalledWith(
       "/api/agents/snapshot?workspace_uuid=workspace-1&agent_uuid=agent-1",
@@ -138,15 +140,15 @@ describe("api client", () => {
   });
 
   it("sends message bodies with attachments array by default", async () => {
-    await sendMessage(LEASE, "agent-1", "hello");
+    await sendMessage(ADDR, LEASE.lease_token, "hello");
 
     expect(fetch).toHaveBeenCalledWith("/api/agents/send_message", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         workspace_uuid: "workspace-1",
-        lease_token: "lease-1",
         agent_uuid: "agent-1",
+        lease_token: "lease-1",
         message_body: { text: "hello", attachments: [] },
       }),
     });

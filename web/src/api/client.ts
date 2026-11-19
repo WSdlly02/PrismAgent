@@ -1,4 +1,5 @@
 import type {
+  AgentAddr,
   AgentCreateInput,
   AgentSnapshot,
   AgentSummary,
@@ -119,33 +120,33 @@ export function createAgent(access: WorkspaceLease, agent: AgentCreateInput) {
   });
 }
 
-export function deleteAgent(access: WorkspaceLease, agentUuid: string) {
+export function deleteAgent(addr: AgentAddr, leaseToken: string) {
   return apiJson<{ deleted: true }>("/api/agents/delete", {
     method: "POST",
     body: JSON.stringify({
-      ...access,
-      agent_uuid: agentUuid,
+      ...addr,
+      lease_token: leaseToken,
     }),
   });
 }
 
-export function agentSnapshot(workspaceUuid: string, agentUuid: string) {
+export function agentSnapshot(addr: AgentAddr) {
   return apiJson<AgentSnapshot>(
-    `/api/agents/snapshot?workspace_uuid=${encodeURIComponent(workspaceUuid)}&agent_uuid=${encodeURIComponent(agentUuid)}`,
+    `/api/agents/snapshot?workspace_uuid=${encodeURIComponent(addr.workspace_uuid)}&agent_uuid=${encodeURIComponent(addr.agent_uuid)}`,
   );
 }
 
 export function sendMessage(
-  access: WorkspaceLease,
-  agentUuid: string,
+  addr: AgentAddr,
+  leaseToken: string,
   text: string,
   attachments: Array<{ data: string; filename: string; mimetype: string }> = [],
 ) {
   return apiJson<{ accepted: true }>("/api/agents/send_message", {
     method: "POST",
     body: JSON.stringify({
-      ...access,
-      agent_uuid: agentUuid,
+      ...addr,
+      lease_token: leaseToken,
       message_body: { text, attachments },
     }),
   });
@@ -159,28 +160,28 @@ export function deleteWorkspace(access: WorkspaceLease) {
 }
 
 export function approveRequest(
-  access: WorkspaceLease,
-  agentUuid: string,
+  addr: AgentAddr,
+  leaseToken: string,
   request_uuid: string,
   approval_mask: number,
 ) {
   return apiJson<{ accepted: true }>("/api/agents/approve_request", {
     method: "POST",
     body: JSON.stringify({
-      ...access,
-      agent_uuid: agentUuid,
+      ...addr,
+      lease_token: leaseToken,
       request_uuid,
       approval_mask,
     }),
   });
 }
 
-export function cancelAgent(access: WorkspaceLease, agentUuid: string) {
+export function cancelAgent(addr: AgentAddr, leaseToken: string) {
   return apiJson<{ cancelled: true }>("/api/agents/cancel", {
     method: "POST",
     body: JSON.stringify({
-      ...access,
-      agent_uuid: agentUuid,
+      ...addr,
+      lease_token: leaseToken,
     }),
   });
 }

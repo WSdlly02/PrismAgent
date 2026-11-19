@@ -41,13 +41,16 @@ export function applyAgentEvent(
       };
     case "unit_append": {
       const incomingRole = event.unit.content.role.toLowerCase();
-      const units = incomingRole === "user" && state.pendingUserUuid
+      const known = state.units.some(unit => unit.uuid === event.unit.uuid);
+      const confirmsPending = !known && incomingRole === "user" && state.pendingUserUuid;
+      const units = confirmsPending
         ? state.units.filter((u) => u.uuid !== state.pendingUserUuid)
         : state.units;
       return {
         ...state,
-        units: [...units, event.unit],
-        pendingUserUuid: incomingRole === "user" ? null : state.pendingUserUuid,
+        // A snapshot can already include a commit whose WS frame is in flight.
+        units: known ? units : [...units, event.unit],
+        pendingUserUuid: confirmsPending ? null : state.pendingUserUuid,
         streamingText: "",
         streamingReasoningText: "",
       };
@@ -55,7 +58,7 @@ export function applyAgentEvent(
     case "approve_request":
       return { ...state, pendingApproval: event.request };
     case "status_changed":
-      return { ...state, status: event.status };
+      return { ...state, status: event.status, pendingApproval: event.status === "waiting_approval" ? state.pendingApproval : null };
     case "operation_failed":
       return {
         ...state,

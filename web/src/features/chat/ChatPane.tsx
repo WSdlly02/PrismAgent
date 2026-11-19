@@ -48,13 +48,12 @@ export function ChatPane({
       {error ? <div className="error-banner">{error}</div> : null}
 
       <MessageTimeline
-        key={agent?.agent_uuid ?? "no-agent"}
         units={units}
         streamingReasoningText={streamingReasoningText}
         streamingText={streamingText}
       />
 
-      {pendingApproval ? (
+      {pendingApproval && connectionStatus === "connected" ? (
         <ApprovalCard
           request={pendingApproval}
           onApprove={() => void onApprove(approvalMaskForManual(pendingApproval.manual_approval_mask))}
@@ -63,7 +62,7 @@ export function ChatPane({
       ) : null}
 
       <ChatComposer
-        hasAgent={Boolean(agent)}
+        hasAgent={Boolean(agent) && connectionStatus === "connected"}
         onCancel={onCancel}
         onSend={onSend}
         statusLabel={statusLabel}

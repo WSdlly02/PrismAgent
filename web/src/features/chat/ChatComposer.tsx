@@ -23,6 +23,7 @@ export const ChatComposer = memo(function ChatComposer({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (!hasAgent) return;
     if (canCancel) {
       await onCancel();
       if (isRunningLlm) {
@@ -33,7 +34,7 @@ export const ChatComposer = memo(function ChatComposer({
     }
 
     const text = draft.trim();
-    if (!text || !hasAgent) {
+    if (!text) {
       return;
     }
     lastSentRef.current = text;
@@ -57,7 +58,7 @@ export const ChatComposer = memo(function ChatComposer({
       />
       <button
         className={canCancel ? "secondary-button" : "primary-button"}
-        disabled={!canCancel && (!hasAgent || !draft.trim())}
+        disabled={!hasAgent || (!canCancel && !draft.trim())}
         type="submit"
       >
         {canCancel ? "Cancel" : "Send"}

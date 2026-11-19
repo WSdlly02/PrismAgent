@@ -53,6 +53,9 @@ pub enum EventTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsEvent {
+    // Sent only to the requesting connection, after the subscription succeeds.
+    WorkspaceSubscribed,
+    AgentSubscribed,
     // ---- Workspace events ----
     AgentCreated {
         agent: AgentSummary,

@@ -359,7 +359,7 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
 
     // Channel for heartbeat → write_task ping signaling
     let (ping_tx, mut ping_rx) = mpsc::channel::<()>(1);
-    // Protocol errors originate in the read task after the socket is split.
+    // Protocol replies (subscription confirmations and errors) are connection-local.
     // This connection-local channel lets the write task return them without
     // routing transport concerns through ShellActor.
     let (connection_event_tx, mut connection_event_rx) = mpsc::channel::<WsEvent>(8);
@@ -431,10 +431,10 @@ async fn handle_ws(mut socket: WebSocket, shell: ShellHandle, connection_id: Con
                 msg = ws_receiver.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
-                            if let Err(error) = handle_client_message(&read_shell, connection_id, &text, &last_pong).await {
-                                let event = WsEvent::Error {
-                                    error: error.public_error(),
-                                };
+                            let reply = handle_client_message(&read_shell, connection_id, &text, &last_pong)
+                                .await
+                                .unwrap_or_else(|error| Some(WsEvent::Error { error: error.public_error() }));
+                            if let Some(event) = reply {
                                 // Unlike cross-actor event delivery, awaiting is safe here:
                                 // this channel is local to one WebSocket connection and
                                 // applies backpressure only to that connection's read task.
@@ -480,7 +480,7 @@ async fn handle_client_message(
     connection_id: ConnectionId,
     text: &str,
     last_pong: &AtomicU64,
-) -> SubsystemResult<()> {
+) -> SubsystemResult<Option<WsEvent>> {
     let msg: serde_json::Value = serde_json::from_str(text).map_err(|error| {
         SubsystemError::validation_field("message", format!("invalid JSON: {error}"))
     })?;
@@ -503,6 +503,7 @@ async fn handle_client_message(
             shell
                 .subscribe_workspace(connection_id, workspace_uuid)
                 .await?;
+            return Ok(Some(WsEvent::WorkspaceSubscribed));
         }
         "unsubscribe_workspace" => {
             shell.unsubscribe_workspace(connection_id);
@@ -518,6 +519,7 @@ async fn handle_client_message(
                 })?
                 .to_string();
             shell.subscribe_agent(connection_id, agent_uuid).await?;
+            return Ok(Some(WsEvent::AgentSubscribed));
         }
         "unsubscribe_agent" => {
             shell.unsubscribe_agent(connection_id);
@@ -532,7 +534,7 @@ async fn handle_client_message(
             ));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn now_secs() -> u64 {
@@ -867,6 +869,59 @@ mod tests {
         .expect("second signal should interrupt agent readiness wait");
 
         assert_eq!(decision, ShutdownDecision::Force);
+    }
+
+    #[tokio::test]
+    async fn websocket_acknowledges_only_successful_subscriptions() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let shell = ShellHandle { tx };
+        let actor = tokio::spawn(async move {
+            let Some(ShellMsg::SubscribeWorkspace { reply, .. }) = rx.recv().await else {
+                panic!("expected workspace subscription");
+            };
+            reply.send(Ok(())).unwrap();
+            let Some(ShellMsg::SubscribeAgent { reply, .. }) = rx.recv().await else {
+                panic!("expected agent subscription");
+            };
+            reply.send(Ok(())).unwrap();
+            let Some(ShellMsg::SubscribeAgent { reply, .. }) = rx.recv().await else {
+                panic!("expected missing agent subscription");
+            };
+            reply
+                .send(Err(SubsystemError::not_found(
+                    ResourceKind::Agent,
+                    "missing",
+                )))
+                .unwrap();
+        });
+        let pong = AtomicU64::new(0);
+        for (request, expected) in [
+            (
+                json!({"type":"subscribe_workspace","workspace_uuid":"ws"}),
+                "workspace_subscribed",
+            ),
+            (
+                json!({"type":"subscribe_agent","agent_uuid":"agent"}),
+                "agent_subscribed",
+            ),
+        ] {
+            let ack = handle_client_message(&shell, 1, &request.to_string(), &pong)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(serde_json::to_value(ack).unwrap(), json!({"type":expected}));
+        }
+        assert!(
+            handle_client_message(
+                &shell,
+                1,
+                r#"{"type":"subscribe_agent","agent_uuid":"missing"}"#,
+                &pong
+            )
+            .await
+            .is_err()
+        );
+        actor.await.unwrap();
     }
 
     #[tokio::test]

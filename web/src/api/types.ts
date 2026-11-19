@@ -29,6 +29,12 @@ export type AgentStatus =
   | "running_tool"
   | "waiting_approval";
 
+export type AgentAddr = { workspace_uuid: string; agent_uuid: string };
+
+export function sameAgent(left: AgentAddr | null, right: AgentAddr): boolean {
+  return left?.workspace_uuid === right.workspace_uuid && left.agent_uuid === right.agent_uuid;
+}
+
 export type AgentSummary = {
   agent_uuid: string;
   agent_name: string;
@@ -193,6 +199,8 @@ export type WsClientMessage =
 
 // WS 消息类型（服务端推送）
 export type WsServerMessage =
+  | { type: "workspace_subscribed" }
+  | { type: "agent_subscribed" }
   | { type: "connected" }
   | { type: "ping"; ts: number }
   | { type: "error"; error: PublicError }
