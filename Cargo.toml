@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/prismagent", "crates/prismagentd"]
+members = ["crates/prismagent", "crates/prismagentd", "crates/prismagent-sender"]
 resolver = "3"
 
 [workspace.package]

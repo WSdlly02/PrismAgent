@@ -53,6 +53,19 @@ PRISMAGENTD_ADDR=127.0.0.1:7618 ./target/release/prismagentd
 
 后端不会自动加载仓库中的 `.env` 文件。其他 API Key 同样需要在启动进程前通过环境变量传入。
 
+### 从命令行发送
+
+Agent 地址为 `<workspace_uuid>/<agent_uuid>`，不是显示名称。以下三种输入方式互斥：
+
+```bash
+addr="$workspace_uuid/$agent_uuid"
+prismagent-sender "$addr" "请继续"
+prismagent-sender "$addr" --stdin < message.txt
+prismagent-sender --server http://host:7618 "$addr" --file message.txt
+```
+
+从源码构建后可使用 `./target/release/prismagent-sender`。默认连接 `http://127.0.0.1:7618`。发送器读完正文后获取 workspace 租约，提交消息后释放；若其他客户端持有租约则报错，不抢占、不自动重发。`accepted` 表示 daemon 已接受发送请求，不代表模型已完成回复。
+
 可以用以下命令检查 HTTP 服务是否可达；它不检查模型服务或工具是否可用：
 
 ```bash
@@ -130,7 +143,8 @@ npm --prefix web run build
 ## 代码结构
 
 ```text
-Cargo.toml                             Cargo 虚拟工作区，两个成员共用 Cargo.lock
+Cargo.toml                             Cargo 虚拟工作区，所有成员共用 Cargo.lock
+crates/prismagent-sender/              通过 HTTP 向指定 Agent 发送消息的 CLI
 crates/prismagent/src/actors/          Agent、Context、Workflow、工具、模型等 Actor
 crates/prismagent/src/handles.rs       Actor 间通信句柄
 crates/prismagent/src/stdlib_assets.rs 内置 Profile 与 Skill 的嵌入和初始化
