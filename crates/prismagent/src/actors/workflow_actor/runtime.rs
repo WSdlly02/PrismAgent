@@ -197,12 +197,18 @@ impl WorkflowActor {
 
     async fn self_show(&self, request: SelfShowRequest) -> SubsystemResult<SelfShowResponse> {
         self.list_agents(ListAgentsRequest {
-            workspace_uuid: request.addr.workspace_uuid,
+            workspace_uuid: request.addr.workspace_uuid.clone(),
         })
         .await?
         .agents
         .into_iter()
         .find(|agent| agent.agent_uuid == request.addr.agent_uuid)
+        .and_then(|agent| {
+            Some(SelfShowResponse {
+                addr: request.addr.clone(),
+                agent,
+            })
+        })
         .ok_or_else(|| SubsystemError::not_found(ResourceKind::Agent, request.addr.agent_uuid))
     }
 

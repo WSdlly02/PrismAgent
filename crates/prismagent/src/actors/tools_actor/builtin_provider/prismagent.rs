@@ -252,9 +252,9 @@ pub async fn execute_workflow_start(ctx: ToolExecutionContext, args: Value) -> T
 pub async fn execute_self_show(ctx: ToolExecutionContext, _args: Value) -> ToolResult {
     let request = SelfShowRequest { addr: ctx.caller };
     match ctx.handles.workflow.self_show(request).await {
-        Ok(response) => ToolResult::success(json!({
-            "agent": response,
-        })),
+        Ok(response) => ToolResult::success(serde_json::to_value(response).unwrap_or_else(
+            |error| json!({"error": format!("failed to serialize self_show response: {}", error)}),
+        )),
         Err(error) => tool_error(error),
     }
 }

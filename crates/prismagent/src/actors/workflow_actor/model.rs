@@ -121,7 +121,11 @@ pub struct AgentView {
     pub context_out: Vec<ContextStatus>,
 }
 
-pub type SelfShowResponse = AgentView;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfShowResponse {
+    pub addr: AgentAddr,
+    pub agent: AgentView,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListAgentsResponse {
